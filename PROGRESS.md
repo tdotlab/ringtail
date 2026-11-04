@@ -97,4 +97,43 @@ touch averyveryveryveryveryveryverylongname (should report too long)
 sleep abc (should report Usage, not sleep 0)
 Shift + a (should print A), Caps Lock + a (should print A)
 
-Next: scheduler / multitasking (the timer now makes a scheduling quantum possible)
+v0.3.0 - Input queue + overflow fixes + host tests
+- heap.c: kmalloc rejects size > max usable before aligning, and
+  sizes whose alignment arithmetic would wrap past 2^32; malloc
+  4294967295 now returns NULL instead of a wrapped 0-byte block
+- timer.c: timer_sleep returns int, rejects seconds > 21474836
+  (2^31 ticks), and waits on wrap-safe elapsed ticks (ticks -
+  start) instead of an absolute target; timer_sleeping removed
+- keyboard.c: ISR only reads a scancode, enqueues it in a 256-entry
+  ring (head written by ISR, tail by main loop, full queue drops
+  rather than overwrites), and sends EOI; keyboard_poll and
+  keyboard_process_scancode (the v0.2.3 state machine, unchanged
+  in behavior) run in the main loop
+- kernel.c: main loop drains the input queue, then halts; the PIT
+  tick every 10 ms guarantees a wakeup, so there is no lost-wakeup
+  deadlock; sleep in the main loop needs no sti/cli dance, and
+  keys typed during sleep become typeahead instead of being dropped
+- shell.c: sleep reports "Duration too large" for rejected
+  durations; version v0.3.0
+- tests/ NEW: test_heap_ramfs.c (60 checks: alloc/free, coalescing,
+  invalid/double free, overflow rejections, RAMFS create/write/
+  read/delete, OOM write preserving old content) plus Makefile
+  (gcc -m32, make run). Host build needs gcc-multilib; the test
+  binary itself has not yet been run on this box for that reason.
+  Timer/keyboard are QEMU-only by design (port I/O faults in
+  user mode).
+- Not changed, deliberately: heap split/coalesce logic, RAMFS
+  create/read/delete/list, memory-map-based heap placement (the
+  kernel still checks mem_upper and the heap still assumes 4 MB
+  contiguous after the kernel; that is a real-hardware concern,
+  not a QEMU one, and it stays open)
+
+Test:
+malloc 4294967295 (should report Out of memory, not allocate)
+sleep 42949673 (should report Duration too large)
+sleep 2, type during sleep (keys should appear after, as typeahead)
+cd tests && make run (once gcc-multilib is installed)
+
+Next: scheduler / multitasking, cooperative task system first,
+then timer-driven preemption (the shell is now out of interrupt
+context, so the foundation for tasks is clean)

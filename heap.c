@@ -68,7 +68,15 @@ static void split_block(block_t* block, uint32_t size) {
 
 void* kmalloc(uint32_t size) {
     if (size == 0) return NULL;
+    // Overflow guards (ChatGPT review, v0.2.3): align_up adds 7
+    // before masking, so a size near 2^32 wrapped to a tiny value
+    // and kmalloc happily returned a small block for a huge request.
+    // Reject anything that cannot fit in the heap at all, and
+    // anything whose alignment arithmetic would wrap, before aligning.
+    if (size > HEAP_SIZE - sizeof(block_t)) return NULL;
+    if (size > 0xFFFFFFFFu - (ALIGNMENT - 1)) return NULL;
     size = align_up(size, ALIGNMENT);
+    if (size > HEAP_SIZE - sizeof(block_t)) return NULL;
 
     block_t* block = find_free(size);
     if (!block) return NULL;

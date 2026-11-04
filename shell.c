@@ -31,7 +31,7 @@ extern int ramfs_read(const char* name, char* out, uint32_t max);
 extern int ramfs_delete(const char* name);
 extern int ramfs_exists(const char* name);
 extern uint32_t timer_get_ticks(void);
-extern void timer_sleep(uint32_t seconds);
+extern int timer_sleep(uint32_t seconds);
 extern void print_color(const char* s, unsigned char color);
 extern void set_color(unsigned char c);
 
@@ -269,7 +269,7 @@ static void cmd_help(void) {
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.2.3 - Audit fixes\n");
+    print("RingTail v0.3.0 - Input queue\n");
 }
 
 static void cmd_heap(void) {
@@ -425,8 +425,9 @@ void shell_execute(void) {
         uint32_t secs;
         if (parse_num(buf + 6, &secs) != 0) {
             print_color("Usage: sleep <seconds>\n", 0x0C);
+        } else if (timer_sleep(secs) != 0) {
+            print_color("Duration too large (max 21474836 seconds)\n", 0x0C);
         } else {
-            timer_sleep(secs);
             print("Slept ");
             print_num(secs);
             print(" seconds\n");

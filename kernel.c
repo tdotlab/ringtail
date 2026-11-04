@@ -106,6 +106,8 @@ extern uint32_t heap_get_free(void);
 extern void shell_init(void);
 extern void ramfs_init(void);
 extern void timer_init(void);
+extern int keyboard_poll(void);
+extern void keyboard_process_scancode(uint8_t scancode);
 
 // v0.2.3: kernel_main now takes the multiboot magic and info pointer
 // from boot.asm (cdecl: first two stack arguments), so it can verify
@@ -136,7 +138,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
             }
         }
     }
-    print_color("RingTail v0.2.3 - Audit fixes\n", COLOR_TITLE);
+    print_color("RingTail v0.3.0 - Input queue\n", COLOR_TITLE);
     print_color("RAM filesystem, files in heap\n", COLOR_DIM);
     print("--------------\n");
 
@@ -150,5 +152,16 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     idt_init();
     __asm__ volatile("sti");
 
-    while(1) __asm__ volatile("hlt");
+    // Main loop (v0.3.0): the shell no longer runs inside the
+    // keyboard ISR. Drain the input queue, then halt until the next
+    // interrupt. If an IRQ arrives between the drain and the halt,
+    // the worst case is a 10 ms delay, not a lost wakeup: the PIT
+    // ticks every 10 ms and wakes the halt regardless.
+    while (1) {
+        int sc;
+        while ((sc = keyboard_poll()) >= 0) {
+            keyboard_process_scancode((uint8_t)sc);
+        }
+        __asm__ volatile("hlt");
+    }
 }
