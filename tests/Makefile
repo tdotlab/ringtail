@@ -7,7 +7,7 @@ TEST = test_heap_ramfs
 
 all: $(TEST)
 
-$(TEST): test_heap_ramfs.c ../heap.c ../ramfs.c
+$(TEST): test_heap_ramfs.c ../src/mm/heap.c ../src/fs/ramfs.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Native 32-bit execution is unavailable on some VMs (on this one

@@ -163,6 +163,39 @@ Test:
 make myos.bin CC=gcc 'LD=ld -m elf_i386' CFLAGS='-ffreestanding -O2 -Wall -Wextra -nostdlib -lgcc -fno-builtin -fno-stack-protector -m32'
 qemu-system-i386 -kernel myos.bin -m 16 -display none -monitor unix:/tmp/ringtail-mon,server,nowait
 
+v0.3.2 - Layout (no behavior change)
+- Sources moved from a flat ringtail/ into src/ by subsystem:
+  src/boot (boot.asm, linker.ld), src/kernel (kernel.c, idt.c,
+  isr.asm), src/drivers (keyboard.c, timer.c), src/mm (heap.c),
+  src/fs (ramfs.c), src/shell (shell.c). tests/ unchanged.
+  Makefile object list and linker path updated, tests Makefile
+  paths updated. No source file includes another, so the move is
+  mechanical; rebuild, host tests, and QEMU boot re-verified
+  after the move.
+- Build artifacts (.o, myos.bin, myos.iso, isodir) are not part
+  of the source tree; make clean removes them.
+
+v0.4.0 - Cooperative tasks (no behavior change to anything else)
+- New src/kernel/task.c + task.asm: a task is a function with its
+  own 4096-byte heap stack. switch_to (asm) saves only the
+  callee-saved registers and the stack pointer, because a switch
+  only happens at a yield point, never mid-expression. A new
+  task's stack is faked to look like a task that just called
+  switch_to, so its first switch "returns" into a trampoline
+  that runs its entry function and then exits it.
+- Scheduler: round-robin over a linked list, main loop is task 0
+  ("shell"). task_yield picks the next ready task, task_sleep
+  blocks until a wrap-safe wake tick, task_exit marks dead and
+  the main loop's task_cleanup frees the stack. No locks: with
+  no preemption, a print or heap operation is never interrupted
+  by a task switch.
+- Shell: tasks (list), spawn counter (demo task counting once a
+  second), kill <id>. Known limitation: shell `sleep` still uses
+  timer_sleep and blocks the scheduler while it runs; task_sleep
+  is for tasks only.
+- Test: spawn counter, watch it count while typing, tasks, kill,
+  then tasks again; host tests still pass, QEMU boot re-verified.
+
 Next: scheduler / multitasking, cooperative task system first,
 then timer-driven preemption (the shell is now out of interrupt
 context, so the foundation for tasks is clean)

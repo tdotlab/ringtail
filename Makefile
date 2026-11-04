@@ -7,19 +7,22 @@ ASFLAGS = -f elf32
 
 all: myos.iso
 
-OBJS = boot.o isr.o kernel.o idt.o keyboard.o shell.o heap.o ramfs.o timer.o
+OBJS = src/boot/boot.o src/kernel/isr.o src/kernel/kernel.o src/kernel/idt.o src/kernel/task.o src/kernel/task_asm.o src/drivers/keyboard.o src/shell/shell.o src/mm/heap.o src/fs/ramfs.o src/drivers/timer.o
 
-boot.o: boot.asm
-	$(AS) $(ASFLAGS) boot.asm -o boot.o
+src/boot/boot.o: src/boot/boot.asm
+	$(AS) $(ASFLAGS) src/boot/boot.asm -o src/boot/boot.o
 
-isr.o: isr.asm
-	$(AS) $(ASFLAGS) isr.asm -o isr.o
+src/kernel/isr.o: src/kernel/isr.asm
+	$(AS) $(ASFLAGS) src/kernel/isr.asm -o src/kernel/isr.o
 
-%.o: %.c
+src/kernel/task_asm.o: src/kernel/task.asm
+	$(AS) $(ASFLAGS) src/kernel/task.asm -o src/kernel/task_asm.o
+
+src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-myos.bin: $(OBJS) linker.ld
-	$(LD) -T linker.ld -o myos.bin $(OBJS)
+myos.bin: $(OBJS) src/boot/linker.ld
+	$(LD) -T src/boot/linker.ld -o myos.bin $(OBJS)
 
 myos.iso: myos.bin
 	mkdir -p isodir/boot/grub
@@ -31,4 +34,4 @@ run: myos.iso
 	qemu-system-i386 -cdrom myos.iso
 
 clean:
-	rm -rf *.o *.bin *.iso isodir
+	rm -rf src/*/*.o *.bin *.iso isodir
