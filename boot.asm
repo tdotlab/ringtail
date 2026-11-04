@@ -1,6 +1,8 @@
-; Part 1 - Multiboot bootloader stub
-; This is the FIRST code the CPU runs after GRUB/Limine loads us
-; CPU starts in 32-bit protected mode, we set up a stack and jump to C
+; RingTail - Boot
+; v0.2.3: own GDT (no longer trusting GRUB's segment setup), a
+; multiboot magic check, and explicit BSS clearing before C runs.
+; GRUB leaves the CPU in 32-bit protected mode with eax = magic,
+; ebx = multiboot info pointer.
 
 MAGIC equ 0x1BADB002
 FLAGS equ 0x00
@@ -15,12 +17,41 @@ align 4
 section .text
 global _start
 extern kernel_main
+extern _bss_start
+extern _bss_end
 
 _start:
-    ; set up stack (stack grows down, so point to top)
+    cli
+    cmp eax, 0x2BADB002
+    jne .bad_boot
+
+    ; Load our own GDT so IDT segment 0x08 and data segment 0x10
+    ; are valid whatever the loader left behind.
+    lgdt [gdt_ptr]
+    jmp 0x08:reload_cs
+reload_cs:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
     mov esp, stack_top
 
-    ; call C kernel - this is where we leave assembly world
+    ; Save magic/info across the BSS clear: the clear loop uses
+    ; edi, ecx and eax, but not esi or ebx.
+    mov esi, eax
+    mov edi, _bss_start
+    mov ecx, _bss_end
+    sub ecx, edi
+    shr ecx, 2
+    xor eax, eax
+    cld
+    rep stosd
+
+    ; cdecl: push info, then magic, then call.
+    push ebx
+    push esi
     call kernel_main
 
     ; if kernel returns (it shouldn't), halt forever
@@ -28,6 +59,38 @@ _start:
 .hang:
     hlt
     jmp .hang
+
+.bad_boot:
+    ; Red 'B' in the top-left VGA cell, then halt.
+    mov edi, 0xB8000
+    mov word [edi], 0x0C42
+    cli
+.hang2:
+    hlt
+    jmp .hang2
+
+section .data
+align 4
+gdt_start:
+    dq 0 ; null descriptor
+    ; code: base 0, limit 4 GB, execute/read, present, DPL0, 32-bit
+    dw 0xFFFF
+    dw 0x0000
+    db 0x00
+    db 0x9A
+    db 0xCF
+    db 0x00
+    ; data: base 0, limit 4 GB, read/write, present, DPL0, 32-bit
+    dw 0xFFFF
+    dw 0x0000
+    db 0x00
+    db 0x92
+    db 0xCF
+    db 0x00
+gdt_end:
+gdt_ptr:
+    dw gdt_end - gdt_start - 1
+    dd gdt_start
 
 section .bss
 align 16

@@ -2,7 +2,7 @@ CC = i686-elf-gcc
 AS = nasm
 LD = i686-elf-ld
 
-CFLAGS = -ffreestanding -O2 -Wall -Wextra -nostdlib -lgcc
+CFLAGS = -ffreestanding -O2 -Wall -Wextra -nostdlib -lgcc -fno-builtin -fno-stack-protector
 ASFLAGS = -f elf32
 
 all: myos.iso

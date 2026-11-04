@@ -107,7 +107,11 @@ extern void shell_init(void);
 extern void ramfs_init(void);
 extern void timer_init(void);
 
-void kernel_main(void) {
+// v0.2.3: kernel_main now takes the multiboot magic and info pointer
+// from boot.asm (cdecl: first two stack arguments), so it can verify
+// it was really loaded by a multiboot loader and that there is enough
+// RAM for the 4 MB heap, instead of assuming both.
+void kernel_main(uint32_t magic, uint32_t mbi) {
     // enable cursor: set scanlines 0-15
     outb(0x3D4, 10);
     outb(0x3D5, 0);
@@ -115,7 +119,24 @@ void kernel_main(void) {
     outb(0x3D5, 15);
 
     clear_screen();
-    print_color("RingTail v0.2.2 - Timer\n", COLOR_TITLE);
+    if (magic != 0x2BADB002) {
+        print_color("Bad multiboot magic - halting.\n", 0x0C);
+        while (1) __asm__ volatile("hlt");
+    }
+    if (mbi != 0) {
+        uint32_t* info = (uint32_t*)mbi;
+        if (info[0] & 0x1) {
+            // info[2] is mem_upper: KB of RAM above 1 MB. The heap
+            // needs 4 MB, plus the kernel itself above 1 MB, so
+            // require at least 5 MB above 1 MB. If the flags bit is
+            // clear the size is unknown and we skip the check.
+            if (info[2] < 5120) {
+                print_color("Not enough RAM for 4 MB heap - halting.\n", 0x0C);
+                while (1) __asm__ volatile("hlt");
+            }
+        }
+    }
+    print_color("RingTail v0.2.3 - Audit fixes\n", COLOR_TITLE);
     print_color("RAM filesystem, files in heap\n", COLOR_DIM);
     print("--------------\n");
 
@@ -123,7 +144,7 @@ void kernel_main(void) {
     ramfs_init();
     timer_init();
     shell_init();
-    print_color("ringtail> ", 0x0A);
+    print_color("ringtail> ", COLOR_PROMPT);
     update_cursor();
 
     idt_init();

@@ -21,8 +21,9 @@ extern void* kmalloc(uint32_t size);
 extern uint32_t heap_get_used(void);
 extern uint32_t heap_get_free(void);
 extern uint32_t heap_get_start(void);
-extern void kfree(void* ptr);
+extern int kfree(void* ptr);
 extern uint32_t heap_get_free_blocks(void);
+extern uint32_t heap_get_total(void);
 extern void ramfs_list(void);
 extern int ramfs_create(const char* name);
 extern int ramfs_write(const char* name, const char* content);
@@ -147,13 +148,55 @@ static void print_num(uint32_t n) {
         print_char(buf[--i]);
     }
 }
-static uint32_t atoi(const char* s) {
+// Real hex output. The old code printed decimal after a "0x" prefix,
+// so addresses looked like hex but were not.
+static void print_hex(uint32_t n) {
+    char buf[9];
+    int i = 0;
+    print("0x");
+    if (n == 0) { print_char('0'); return; }
+    while (n > 0) {
+        uint32_t d = n % 16;
+        buf[i++] = (d < 10) ? ('0' + d) : ('a' + d - 10);
+        n /= 16;
+    }
+    while (i > 0) {
+        print_char(buf[--i]);
+    }
+}
+// Strict parsers: the old atoi silently turned "abc" into 0 and
+// stopped at trailing garbage, so "free abc" reported success and
+// "sleep abc" slept zero seconds. Both return 0 on success, -1 on
+// empty input, non-digit input, trailing garbage, or overflow.
+static int parse_num(const char* s, uint32_t* out) {
     uint32_t n = 0;
+    if (!*s) return -1;
     while (*s >= '0' && *s <= '9') {
-        n = n * 10 + (*s - '0');
+        uint32_t d = *s - '0';
+        if (n > (0xFFFFFFFFu - d) / 10) return -1;
+        n = n * 10 + d;
         s++;
     }
-    return n;
+    if (*s) return -1;
+    *out = n;
+    return 0;
+}
+static int parse_hex(const char* s, uint32_t* out) {
+    uint32_t n = 0;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    if (!*s) return -1;
+    while (*s) {
+        uint32_t d;
+        if (*s >= '0' && *s <= '9') d = *s - '0';
+        else if (*s >= 'a' && *s <= 'f') d = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'F') d = *s - 'A' + 10;
+        else return -1;
+        if (n > (0xFFFFFFFFu - d) / 16) return -1;
+        n = n * 16 + d;
+        s++;
+    }
+    *out = n;
+    return 0;
 }
 
 static void cmd_color(const char* name) {
@@ -211,7 +254,7 @@ static void cmd_help(void) {
     print("  echo <text>\n");
     print("  heap      - show heap stats\n");
     print("  malloc <n> - alloc n bytes\n");
-    print("  free <addr> - free at addr\n");
+    print("  free <hex addr> - free at addr (as printed by malloc)\n");
     print("  history - show last commands\n");
     print("  ls - list files\n");
     print("  touch <file> - create file\n");
@@ -226,13 +269,15 @@ static void cmd_help(void) {
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.2.2 - Timer\n");
+    print("RingTail v0.2.3 - Audit fixes\n");
 }
 
 static void cmd_heap(void) {
-    print("Heap start: 0x");
-    print_num(heap_get_start());
-    print("\nUsed: ");
+    print("Heap start: ");
+    print_hex(heap_get_start());
+    print("\nTotal: ");
+    print_num(heap_get_total());
+    print(" bytes\nUsed: ");
     print_num(heap_get_used());
     print(" bytes\nFree: ");
     print_num(heap_get_free());
@@ -271,15 +316,28 @@ void shell_execute(void) {
         ramfs_list();
     } else if (strncmp(buf, "touch ", 6) == 0) {
         char* name = buf+6;
-        if (ramfs_create(name)==0) {
-            print_color("Created ", 0x0A);
-            print(name);
-            print("\n");
+        if (name[0] == 0) {
+            print_color("Usage: touch <file>\n", 0x0C);
         } else {
-            print_color("Failed (exists?)\n", 0x0C);
+            int r = ramfs_create(name);
+            if (r == 0) {
+                print_color("Created ", 0x0A);
+                print(name);
+                print("\n");
+            } else if (r == -1) {
+                print_color("Already exists\n", 0x0C);
+            } else if (r == -2) {
+                print_color("Name too long (max 31)\n", 0x0C);
+            } else {
+                print_color("Failed\n", 0x0C);
+            }
         }
     } else if (strncmp(buf, "cat ", 4) == 0) {
         char* name = buf+4;
+        if (name[0] == 0) {
+            print_color("Usage: cat <file>\n", 0x0C);
+            return;
+        }
         char out[256];
         int r = ramfs_read(name, out, 256);
         if (r>=0) {
@@ -290,7 +348,9 @@ void shell_execute(void) {
         }
     } else if (strncmp(buf, "rm ", 3) == 0) {
         char* name = buf+3;
-        if (ramfs_delete(name)==0) {
+        if (name[0] == 0) {
+            print_color("Usage: rm <file>\n", 0x0C);
+        } else if (ramfs_delete(name)==0) {
             print_color("Deleted\n", 0x0A);
         } else {
             print_color("No such file\n", 0x0C);
@@ -304,29 +364,52 @@ void shell_execute(void) {
             *sp=0;
             char* fname = rest;
             char* text = sp+1;
-            if (ramfs_write(fname, text)==0) {
-                print_color("Wrote\n", 0x0A);
+            if (fname[0] == 0) {
+                print_color("Usage: write <file> <text>\n", 0x0C);
             } else {
-                print_color("Failed\n", 0x0C);
+                int r = ramfs_write(fname, text);
+                if (r == 0) {
+                    print_color("Wrote\n", 0x0A);
+                } else if (r == -2) {
+                    print_color("Out of memory!\n", 0x0C);
+                } else {
+                    print_color("Failed\n", 0x0C);
+                }
             }
         }
     } else if (strncmp(buf, "free ", 5) == 0) {
-        uint32_t addr = atoi(buf+5);
-        kfree((void*)addr);
-        print("Freed 0x");
-        print_num(addr);
-        print("\n");
-    } else if (strncmp(buf, "malloc ", 7) == 0) {
-        uint32_t sz = atoi(buf+7);
-        void* p = kmalloc(sz);
-        if (p) {
-            print("Allocated ");
-            print_num(sz);
-            print(" bytes at 0x");
-            print_num((uint32_t)p);
-            print("\n");
+        uint32_t addr;
+        if (parse_hex(buf+5, &addr) != 0) {
+            print_color("Invalid address (hex, e.g. 0x10500c)\n", 0x0C);
         } else {
-            print_color("Out of memory!\n", 0x0C);
+            int r = kfree((void*)addr);
+            if (r == 0) {
+                print("Freed ");
+                print_hex(addr);
+                print("\n");
+            } else if (r == -2) {
+                print_color("Already freed\n", 0x0C);
+            } else {
+                print_color("Invalid address\n", 0x0C);
+            }
+        }
+    } else if (strncmp(buf, "malloc ", 7) == 0) {
+        uint32_t sz;
+        if (parse_num(buf+7, &sz) != 0) {
+            print_color("Invalid size\n", 0x0C);
+        } else if (sz == 0) {
+            print_color("Cannot allocate 0 bytes\n", 0x0C);
+        } else {
+            void* p = kmalloc(sz);
+            if (p) {
+                print("Allocated ");
+                print_num(sz);
+                print(" bytes at ");
+                print_hex((uint32_t)p);
+                print("\n");
+            } else {
+                print_color("Out of memory!\n", 0x0C);
+            }
         }
     } else if (strcmp(buf, "history") == 0) {
         cmd_history();
@@ -339,11 +422,15 @@ void shell_execute(void) {
     } else if (strcmp(buf, "tick") == 0) {
         cmd_tick();
     } else if (strncmp(buf, "sleep ", 6) == 0) {
-        uint32_t secs = atoi(buf + 6);
-        timer_sleep(secs);
-        print("Slept ");
-        print_num(secs);
-        print(" seconds\n");
+        uint32_t secs;
+        if (parse_num(buf + 6, &secs) != 0) {
+            print_color("Usage: sleep <seconds>\n", 0x0C);
+        } else {
+            timer_sleep(secs);
+            print("Slept ");
+            print_num(secs);
+            print(" seconds\n");
+        }
     } else if (strncmp(buf, "echo ", 5) == 0) {
         print(buf + 5);
         print("\n");

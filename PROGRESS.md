@@ -59,4 +59,42 @@ tick
 sleep 2
 uptime (should be about 2 seconds larger)
 
+v0.2.3 - Audit fixes (full code audit, 2026-11-04)
+- idt.c: PIC masks 0xF8/0xFF (only timer, keyboard, cascade unmasked);
+  exception handlers for vectors 0-31 that print the vector and halt
+  instead of triple-faulting with no diagnostic
+- isr.asm: exception stubs 0-31 via macro, recording the vector in
+  exc_vector; the common handler never irets, so CPU error codes
+  pushed for some vectors are harmless
+- heap.c: kfree now returns 0/-1/-2 and only dereferences a pointer
+  after finding it in the free list; block header padded to 16 bytes
+  for 8-byte alignment; heap_get_total added
+- ramfs.c: write allocates the new data before freeing the old, so
+  out-of-memory no longer leaves a dangling pointer; read guards max==0
+- keyboard.c: E0 extended-key state machine, shift (left/right) and
+  caps lock with shifted symbols, tab ignored instead of printing a
+  VGA glyph
+- shell.c: real hex addresses (print_hex) and free takes hex as
+  printed by malloc; strict decimal/hex parsers (no more silent 0 for
+  garbage input); touch/cat/rm/write report the real failure reason
+  (exists, too long, empty name, out of memory); heap shows total
+- boot.asm: own GDT, multiboot magic check (red B on failure), BSS
+  clearing, passes magic + info pointer to kernel_main
+- kernel.c: verifies multiboot magic, requires at least 5 MB above
+  1 MB for the 4 MB heap when the info flags give a size
+- linker.ld: _bss_start/_bss_end symbols; timer.c: divisor 11932
+  (99.998 Hz, closer than 11931); Makefile: -fno-builtin
+  -fno-stack-protector so -O2 cannot invent memcpy/memset calls
+- Not changed: heap split/coalesce logic, RAMFS create/read/delete/
+  list, IDT remap sequence, VGA scroll/cursor, timer sleep coupling
+  (still runs inside the keyboard ISR; a scheduler is what fixes that)
+
+Test:
+malloc 64
+free <hex address printed by malloc>
+free 123 (should report Invalid address, not corrupt the heap)
+touch averyveryveryveryveryveryverylongname (should report too long)
+sleep abc (should report Usage, not sleep 0)
+Shift + a (should print A), Caps Lock + a (should print A)
+
 Next: scheduler / multitasking (the timer now makes a scheduling quantum possible)

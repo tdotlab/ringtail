@@ -16,7 +16,7 @@ typedef struct file {
 static file_t* file_list = NULL;
 
 extern void* kmalloc(uint32_t size);
-extern void kfree(void* ptr);
+extern int kfree(void* ptr);
 extern void print(const char* s);
 extern void print_char(char c);
 
@@ -71,10 +71,12 @@ int ramfs_write(const char* name, const char* content) {
         if (!f) return -1;
     }
     uint32_t len = strlen(content);
-    // free old data
-    if (f->data) kfree(f->data);
+    // Allocate first, then free the old data. The old code freed
+    // first, so an out-of-memory write left the file pointing at a
+    // freed block with its old size.
     uint8_t* new_data = (uint8_t*)kmalloc(len+1);
     if (!new_data) return -2;
+    if (f->data) kfree(f->data);
     memcpy(new_data, (uint8_t*)content, len);
     new_data[len]=0;
     f->data = new_data;
@@ -83,6 +85,7 @@ int ramfs_write(const char* name, const char* content) {
 }
 
 int ramfs_read(const char* name, char* out, uint32_t max) {
+    if (max == 0) return -1; // otherwise max-1 below would underflow
     file_t* f = ramfs_find(name);
     if (!f) return -1;
     if (!f->data) {

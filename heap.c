@@ -13,6 +13,9 @@ typedef struct block {
     uint32_t size; // usable size after header
     struct block* next;
     uint8_t free;
+    uint8_t _pad[3];
+    uint32_t reserved; // pad header to 16 bytes: keeps every block and
+                       // every data pointer 8-byte aligned after a split
 } block_t;
 
 static uint8_t* heap_start = 0;
@@ -77,16 +80,24 @@ void* kmalloc(uint32_t size) {
     return (void*)(block + 1);
 }
 
-void kfree(void* ptr) {
-    if (!ptr) return;
-    block_t* block = ((block_t*)ptr) - 1;
-    if (block->free) return; // double free guard
+int kfree(void* ptr) {
+    if (!ptr) return -1;
+    // Find the block in the list first; never dereference ptr-1 until
+    // we know it really is a block header in this heap.
+    block_t* target = ((block_t*)ptr) - 1;
+    block_t* curr = free_list;
+    while (curr) {
+        if (curr == target) break;
+        curr = curr->next;
+    }
+    if (!curr) return -1; // not a heap allocation at all
+    if (curr->free) return -2; // already freed
 
-    block->free = 1;
-    heap_used -= block->size + sizeof(block_t);
+    curr->free = 1;
+    heap_used -= curr->size + sizeof(block_t);
 
     // coalesce adjacent free blocks
-    block_t* curr = free_list;
+    curr = free_list;
     while (curr && curr->next) {
         uint8_t* curr_end = (uint8_t*)curr + sizeof(block_t) + curr->size;
         if (curr->free && curr->next->free && curr_end == (uint8_t*)curr->next) {
@@ -97,9 +108,11 @@ void kfree(void* ptr) {
         }
         curr = curr->next;
     }
+    return 0;
 }
 
 uint32_t heap_get_used(void) { return heap_used; }
+uint32_t heap_get_total(void) { return HEAP_SIZE; }
 
 uint32_t heap_get_free(void) {
     uint32_t free = 0;

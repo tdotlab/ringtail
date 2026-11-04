@@ -3,7 +3,7 @@
 Bare-metal x86 operating system, built from scratch: Multiboot/GRUB boot,
 freestanding C + NASM, no libc.
 
-Current version: v0.2.2 - Timer
+Current version: v0.2.3 - Audit fixes
 
 - Boot, VGA print/scroll/hardware cursor
 - IDT + PIC remap + keyboard with shell history
@@ -12,6 +12,11 @@ Current version: v0.2.2 - Timer
 - Colors: print_color, `color <name>`, `colors` palette demo, errors in red,
   successes in green, `clear` resets the color
 - Timer: PIT at ~100 Hz, `uptime`, `tick`, `sleep <seconds>`
+- v0.2.3 audit fixes: exception handlers, PIC masking, validated free,
+  allocate-before-free RAMFS writes, shift/caps/E0 keyboard handling,
+  real hex addresses, strict number parsing, own GDT, BSS clearing,
+  multiboot magic and RAM checks (free now takes a hex address, as
+  printed by malloc)
 
 Build (from this folder):
 

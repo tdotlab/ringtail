@@ -8,7 +8,7 @@
 #define PIT_COMMAND  0x43
 #define PIT_HZ       1193182
 #define TICKS_PER_SEC 100
-#define PIT_DIVISOR  (PIT_HZ / TICKS_PER_SEC) // 11931, close enough to 10 ms
+#define PIT_DIVISOR  11932 // nearest integer to 1193182/100: 99.998 Hz, error under 0.002% (11931 was 100.007 Hz)
 
 static volatile uint32_t ticks = 0;
 
