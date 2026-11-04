@@ -70,8 +70,3 @@ make run
 ```
 
 Needs gcc -m32 (gcc-multilib on Ubuntu).
-
-History: earlier versions (v0.0.7 through v0.2.0) were tracked as concatenated
-source documents in Google Drive ("RingTail OS - Version History"), because
-that was all the Meta AI app had available. From v0.2.1 on, this repo is the
-home of the source. The Drive docs are kept as an archive.
