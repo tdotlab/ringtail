@@ -1,4 +1,4 @@
-// RingTail host tests - heap and RAMFS, v0.3.0
+// RingTail host tests - heap and RAMFS
 //
 // Runs the real kernel heap.c and ramfs.c on the host, in 32-bit
 // mode, so the pointer-width assumptions in the kernel code hold

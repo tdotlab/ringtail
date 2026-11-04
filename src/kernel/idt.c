@@ -1,5 +1,4 @@
-// RingTail - Piece 5: IDT (Interrupt Descriptor Table)
- // This is how the CPU knows where to jump when a key is pressed
+// This is how the CPU knows where to jump when a key is pressed
 
 #include <stdint.h>
 
@@ -24,6 +23,7 @@ extern void timer_isr(void);
 extern uint32_t exc_vector;
 extern void print(const char* s);
 extern void print_char(char c);
+extern void vga_lock_break(void);
 
 static void print_dec(uint32_t n) {
     char buf[12];
@@ -37,6 +37,11 @@ static void print_dec(uint32_t n) {
 // faulting code: the common stub halts after this returns, so the
 // error code the CPU may have pushed for some vectors is irrelevant.
 void exception_handler(void) {
+    // v0.5.1: break the print lock before printing. If the fault
+    // happened while a task held it, printing here would otherwise
+    // spin forever on a lock held by a task that will never run
+    // again, and the diagnostic would never appear.
+    vga_lock_break();
     print("\nEXCEPTION ");
     print_dec(exc_vector);
     print(" - system halted.\n");

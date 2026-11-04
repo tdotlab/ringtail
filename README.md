@@ -3,7 +3,7 @@
 Bare-metal x86 operating system, built from scratch: Multiboot/GRUB boot,
 freestanding C + NASM, no libc.
 
-Current version: v0.4.0 - Cooperative tasks
+Current version: v0.5.1 - Preemption hardening
 
 - Boot, VGA print/scroll/hardware cursor
 - IDT + PIC remap + keyboard with shell history

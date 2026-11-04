@@ -1,4 +1,3 @@
-; RingTail - Piece 5: ISR glue
 ; CPU can't call C directly from IDT, needs this wrapper
 
 global idt_load
@@ -21,9 +20,23 @@ keyboard_isr:
 global timer_isr
 extern timer_handler
 
+; v0.5.0: the timer ISR is the preemption point, so it re-enables
+; interrupts (sti) before calling the handler, unlike the keyboard
+; ISR, which keeps them off for its short run. The sti matters for
+; two reasons. First, the task that gets switched in by
+; task_preempt must resume with interrupts on, or the timer would
+; never fire again and the system would go quiet. Second, a tick
+; that arrives while the handler is picking a task must not be
+; lost: with interrupts on, it stays pending behind task_preempt's
+; cli and fires as soon as that cli lifts. The cli before popa is
+; the mirror image: the register restore and the iret must not be
+; interrupted, because iret itself restores the interrupted task's
+; interrupt flag from its saved EFLAGS.
 timer_isr:
     pusha               ; save all registers
+    sti                 ; re-enable interrupts for the handler
     call timer_handler
+    cli                 ; protect the restore + iret
     popa                ; restore registers
     iret                ; return from interrupt
 

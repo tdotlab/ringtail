@@ -1,5 +1,4 @@
-// RingTail - Piece 6.5: Keyboard with history navigation
-// v0.3.0: the interrupt handler no longer runs the shell. It only
+// The interrupt handler no longer runs the shell. It only
 // reads the scancode, enqueues it, and sends EOI. The kernel main
 // loop dequeues scancodes and calls keyboard_process_scancode, so
 // file operations, allocations, and terminal output all happen in

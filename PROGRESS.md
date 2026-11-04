@@ -196,6 +196,129 @@ v0.4.0 - Cooperative tasks (no behavior change to anything else)
 - Test: spawn counter, watch it count while typing, tasks, kill,
   then tasks again; host tests still pass, QEMU boot re-verified.
 
-Next: scheduler / multitasking, cooperative task system first,
-then timer-driven preemption (the shell is now out of interrupt
-context, so the foundation for tasks is clean)
+v0.5.0 - Preemptive tasks
+- timer.c: timer_handler now calls task_preempt() on every tick
+  (100 Hz), after sending the PIC EOI, so the next tick can fire
+  while the newly switched-in task runs. EOI before the switch
+  matters: EOI after the switch would stall ticks until the old
+  task resumed.
+- task.c: task_preempt() mirrors task_yield, but the timer, not
+  the task, decided to switch, so the current task may be mid-loop,
+  mid-print, or mid-sleep. Reusing switch_to from an interrupt
+  handler works because the interrupted task's interrupt frame
+  (timer_isr's pusha registers plus the CPU's EFLAGS/CS/EIP) stays
+  parked on its stack underneath the switch_to frame, and is
+  unwound by popa/iret when that task is switched back to.
+- task.c: critical sections use cli/sti, not a lock counter.
+  task_yield, task_preempt, task_create, task_kill, and
+  task_cleanup all cli before touching the task list or picking
+  the next task, and sti after the switch resumes, so each task
+  restores its own interrupt state. A lock counter would be
+  wrong here: a yield's lock stays held across the switch and is
+  only released by the incoming task's resume, so the count would
+  hover above zero forever and preemption would never fire.
+- isr.asm: timer_isr now does sti before calling timer_handler
+  (so the switched-in task resumes with interrupts on) and cli
+  before popa/iret (so the restore is not itself interrupted).
+  The keyboard ISR is unchanged: short, no switch, interrupts
+  stay off for its run.
+- Bug found by actually testing, not by reading: the first
+  v0.5.0 build froze the moment a busy task was spawned, because
+  switch_to is called with interrupts off and a fresh task's
+  trampoline inherited that state. A task that never yields
+  (busy) then spun forever with the timer and keyboard masked,
+  so no preemption could ever reach it. Fix: task_trampoline
+  does sti before calling the entry function, so every new task
+  starts with interrupts on. Existing tasks already restore
+  interrupts via the sti after their yield/preempt switch.
+- Shell: spawn busy (a task that spins forever, never yields,
+  never prints; under cooperative scheduling it would freeze the
+  OS, under preemption it is harmless and the shell stays
+  responsive). version v0.5.0.
+- Side effect, and an improvement: shell `sleep` no longer
+  blocks other tasks. In v0.4.0 it did, because nothing switched
+  during the sleep loop. Now the timer preempts the sleeping main
+  task on every tick, so counter and busy keep running during a
+  shell sleep, and the sleep still ends on time.
+- Known limits, stated plainly: heap, RAMFS, and VGA output are
+  NOT protected by cli/sti here. That is safe for the tasks that
+  exist (shell is the only task touching heap/RAMFS; counter and
+  busy only print, sleep, or spin), but a future task that
+  allocates or edits files while the shell does the same would
+  need the same protection or it could corrupt the free list or
+  the file list. Prints are no longer atomic either: a task can
+  be preempted mid-print, so output can interleave mid-line
+  (seen in testing: "tacounter: 5"). A print lock is the obvious
+  next hardening step.
+- Test (QEMU, -kernel and GRUB ISO boots both reach the shell;
+  host tests still pass): tasks, spawn busy, tasks (shell
+  responsive, busy ready), echo hello, sleep 2 (completes on
+  time despite busy), spawn counter (counts 0-4 alongside busy),
+  tasks (shell running, busy ready, counter sleeping), kill 1
+  (busy stops, counter keeps counting), tasks, kill 2, tasks
+  (shell only, no further counter output). Interleaving seen
+  and expected; no corruption, no freeze.
+
+v0.5.1 - Preemption hardening (not 1.0: versioning rule is that
+1.0 waits for a significant milestone, and this is a correctness
+pass, not a milestone)
+- kernel.c: VGA print lock, a recursive spinlock (xchg acquire,
+  pause spin, owner = current task id, count). print() itself
+  does NOT lock: a counter line is three print calls, and
+  per-call locking would still interleave between them. Instead
+  a logical output unit locks once: the counter locks around its
+  whole line, the shell locks around a whole command's output
+  (shell_enter, newline through next prompt). Command output is
+  now atomic; the v0.5.0 "tacounter: 5" split inside command
+  output is gone.
+- Why a spinlock, not cli/sti, for prints: the shell's sleep
+  branch releases the print lock before waiting and takes it
+  again after, so the counter keeps printing during a sleep and
+  ticks keep flowing. A cli lock held across a sleep would mask
+  the timer and deadlock the sleep. A spinning task is
+  preemptible, so the lock holder always gets slices to finish
+  and release; no deadlock as long as holders run to unlock,
+  which both holders here do. Recursive because print_color
+  calls print and the sleep branch unlocks/relocks inside an
+  outer lock; a plain flag would deadlock on the second acquire.
+- Typed input echo is deliberately NOT locked: shell_putchar
+  prints one character per key, and holding the lock across a
+  typing session would stall the counter while the user pauses.
+  Typed characters can still interleave with counter output in
+  the display, and that is normal terminal behavior; the shell
+  still reads the typed command correctly, and command output
+  itself is clean. Do not mistake echo interleaving for a
+  failed print lock.
+- task.c: task_current_id() for the print lock's owner check
+  (-1 before task_init, which never locks).
+- idt.c: exception_handler breaks the print lock before
+  printing, or a fault mid-print would spin forever on a lock
+  held by a task that will never run again.
+- heap.c, ramfs.c: interrupt save/restore around kmalloc,
+  kfree, heap free-list walks, and every public ramfs function
+  (single return points, as in task_create). Save/restore nests
+  safely, unlike bare cli/sti, which would re-enable too early
+  on an inner restore. The heap wrapper form (impl + wrapper)
+  covers every early return by construction. The RINGTAIL_KERNEL
+  guard is load-bearing: cli/sti fault in user mode, so host
+  tests compile them out as no-ops (correct there, since host
+  tests are single-threaded); kernel builds define it via the
+  Makefile CFLAGS, and a kernel build forgetting it would
+  silently lose heap/RAMFS locking.
+- Makefile: CFLAGS now includes -DRINGTAIL_KERNEL.
+- Test (QEMU, -kernel and GRUB ISO boots; host tests still
+  pass): counter running, tasks/heap/ls/cat/malloc all produce
+  clean output lines while the counter counts; touch/write/ls/
+  cat hello.txt (15 bytes) work concurrently with the counter
+  with no corruption, and heap accounting stays exact (used
+  4192 -> 4368 = malloc 64 block plus file struct and data);
+  spawn busy, sleep 2 with busy and counter running completes
+  on time with the counter counting straight through the sleep
+  (proving the sleep lock release works, not just that sleep
+  returns); tasks shows shell/counter/busy cleanly; kill busy,
+  kill counter, tasks shows shell only, no further counter
+  output. Typed echo interleaving still visible and expected.
+
+Next: the program layer: user mode, syscalls, and programs
+that run on RingTail instead of inside its kernel. Disk
+persistence and a GUI remain further out, after that.

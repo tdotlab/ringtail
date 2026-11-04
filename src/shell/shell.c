@@ -1,6 +1,5 @@
 #include <stdint.h>
 
-// RingTail - Piece 6.5: Shell with history
  // Buffer + backspace + enter + command history (up/down)
 
 static char buf[256];
@@ -33,10 +32,13 @@ extern int ramfs_exists(const char* name);
 extern uint32_t timer_get_ticks(void);
 extern void task_list_tasks(void);
 extern int task_spawn_counter(void);
+extern int task_spawn_busy(void);
 extern int task_kill(int id);
 extern int timer_sleep(uint32_t seconds);
 extern void print_color(const char* s, unsigned char color);
 extern void set_color(unsigned char c);
+extern void vga_lock(void);
+extern void vga_unlock(void);
 
 static int strcmp(const char* a, const char* b) {
     while (*a && *a == *b) { a++; b++; }
@@ -271,11 +273,12 @@ static void cmd_help(void) {
     print("  sleep <seconds> - wait\n");
     print("  tasks - list tasks\n");
     print("  spawn counter - start a counting task\n");
+    print("  spawn busy - start a task that never yields\n");
     print("  kill <id> - stop a task\n");
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.4.0 - Cooperative tasks\n");
+    print("RingTail v0.5.1 - Preemption hardening\n");
 }
 
 static void cmd_heap(void) {
@@ -434,6 +437,15 @@ void shell_execute(void) {
             print_num((uint32_t)id);
             print("\n");
         }
+    } else if (strcmp(buf, "spawn busy") == 0) {
+        int id = task_spawn_busy();
+        if (id < 0) {
+            print_color("Out of memory!\n", 0x0C);
+        } else {
+            print("Spawned busy as task ");
+            print_num((uint32_t)id);
+            print("\n");
+        }
     } else if (strncmp(buf, "kill ", 5) == 0) {
         uint32_t id;
         if (parse_num(buf + 5, &id) != 0) {
@@ -453,12 +465,24 @@ void shell_execute(void) {
         uint32_t secs;
         if (parse_num(buf + 6, &secs) != 0) {
             print_color("Usage: sleep <seconds>\n", 0x0C);
-        } else if (timer_sleep(secs) != 0) {
-            print_color("Duration too large (max 21474836 seconds)\n", 0x0C);
         } else {
-            print("Slept ");
-            print_num(secs);
-            print(" seconds\n");
+            // v0.5.1: the print lock must NOT be held across the
+            // wait. shell_enter holds it for the whole command, and
+            // holding it here would stall the counter's prints for
+            // the entire sleep (and, with a cli lock, would stop
+            // ticks entirely and deadlock the sleep). Release it,
+            // wait with ticks flowing and the counter free to
+            // print, then take it again before reporting.
+            vga_unlock();
+            int r = timer_sleep(secs);
+            vga_lock();
+            if (r != 0) {
+                print_color("Duration too large (max 21474836 seconds)\n", 0x0C);
+            } else {
+                print("Slept ");
+                print_num(secs);
+                print(" seconds\n");
+            }
         }
     } else if (strncmp(buf, "echo ", 5) == 0) {
         print(buf + 5);
@@ -471,9 +495,19 @@ void shell_execute(void) {
 }
 
 void shell_enter(void) {
+    // v0.5.1: one lock for a whole command's output, from the
+    // newline before it to the next prompt. The counter cannot
+    // print in the middle of a command's output anymore, only
+    // between commands. The sleep branch inside shell_execute
+    // temporarily releases this lock (see there) and takes it
+    // again, so the count stays balanced at 1 on entry and exit
+    // here. Early returns inside shell_execute do not unlock:
+    // they return to here, and this unlock covers them.
+    vga_lock();
     print_char('\n');
     shell_execute();
     pos = 0;
     buf[0] = 0;
     print_color("ringtail> ", 0x0A);
+    vga_unlock();
 }

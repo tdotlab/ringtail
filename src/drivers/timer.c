@@ -1,4 +1,3 @@
-// RingTail - v0.2.2 Piece 11: PIT timer
 // The OS finally has a notion of time: a tick counter at ~100 Hz.
 // IRQ0 (PIT channel 0) -> interrupt 32, same ISR pattern as the keyboard.
 
@@ -16,10 +15,20 @@ static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
+extern void task_preempt(void);
+
 // Called from timer_isr (isr.asm), like keyboard_handler is from keyboard_isr.
+// v0.5.0: the EOI goes out BEFORE the preemptive switch, so the PIC
+// can deliver the next tick while the newly switched-in task runs.
+// If the EOI waited until the old task resumed, ticks would stall
+// for as long as the old task was parked, and sleeps would lag.
+// task_preempt runs with interrupts re-enabled (timer_isr does sti
+// before calling here), so a tick during the pick is masked only by
+// task_preempt's own cli, and fires as soon as it sti's again.
 void timer_handler(void) {
     ticks++;
     outb(0x20, 0x20); // EOI to master PIC only: IRQ0 lives on the master
+    task_preempt();
 }
 
 void timer_init(void) {
@@ -49,7 +58,11 @@ uint32_t timer_get_ticks(void) {
 // the duration is under 2^31 ticks, which MAX_SLEEP_SECONDS ensures.
 // Runs in the main loop with interrupts already on (see kernel.c),
 // so there is no sti/cli dance and no key-drop guard: keyboard
-// input during sleep just queues up as typeahead.
+// input during sleep just queues up as typeahead. v0.5.0: other
+// tasks now keep running during this sleep, because the timer
+// preempts the main task on every tick inside the hlt loop; in
+// v0.4.0 the sleep blocked the scheduler, and that is fixed here
+// as a side effect of preemption, not by changing this function.
 int timer_sleep(uint32_t seconds) {
     if (seconds > MAX_SLEEP_SECONDS) return -1;
     uint32_t duration = seconds * TICKS_PER_SEC;

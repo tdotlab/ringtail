@@ -1,5 +1,4 @@
-// RingTail - v0.1.1 Piece 9: Heap with free list + coalescing
- // Now kfree actually works, memory can be reused
+// Now kfree actually works, memory can be reused
 
 #include <stdint.h>
 #include <stddef.h>
@@ -22,6 +21,40 @@ static uint8_t* heap_start = 0;
 static uint8_t* heap_end = 0;
 static block_t* free_list = 0;
 static uint32_t heap_used = 0;
+
+// v0.5.1: interrupt save/restore for heap operations. A heap
+// operation (split, coalesce, free-list walk) must not be
+// preempted in the middle, or another task's heap operation could
+// see a half-updated list and corrupt it. Disabling interrupts
+// for the operation prevents the timer from switching tasks
+// mid-operation. The save/restore form matters: it nests safely.
+// An outer save records interrupts on, an inner save (from a
+// ramfs function that already disabled them, or from kfree called
+// inside a locked heap walk) records them off and restores them
+// off, so only the outermost restore re-enables them. A bare
+// cli/sti pair would re-enable too early on the inner restore.
+// The guard is load-bearing: cli/sti are privileged instructions
+// that fault in user mode, so host tests must NOT compile them
+// in. Kernel builds define RINGTAIL_KERNEL (see the Makefile);
+// host test builds do not, and get no-op helpers instead, which
+// is correct there because host tests are single-threaded and
+// nothing preempts them. If a kernel build ever forgets the
+// define, heap locking silently becomes a no-op, so the define
+// is part of the build, not an optional extra.
+#ifdef RINGTAIL_KERNEL
+static uint32_t irq_save(void) {
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0" : "=r"(flags));
+    __asm__ volatile("cli");
+    return flags;
+}
+static void irq_restore(uint32_t flags) {
+    if (flags & 0x200) __asm__ volatile("sti");
+}
+#else
+static uint32_t irq_save(void) { return 0x200; }
+static void irq_restore(uint32_t flags) { (void)flags; }
+#endif
 
 static uint32_t align_up(uint32_t addr, uint32_t align) {
     return (addr + align - 1) & ~(align - 1);
@@ -66,7 +99,11 @@ static void split_block(block_t* block, uint32_t size) {
     }
 }
 
-void* kmalloc(uint32_t size) {
+// The real allocator, with interrupts already off (see kmalloc
+// below). Keeping the lock in the wrapper, not in the body, means
+// every return path is covered by construction: the body can
+// return early as it always did, and the wrapper restores.
+static void* kmalloc_impl(uint32_t size) {
     if (size == 0) return NULL;
     // Overflow guards (ChatGPT review, v0.2.3): align_up adds 7
     // before masking, so a size near 2^32 wrapped to a tiny value
@@ -88,7 +125,14 @@ void* kmalloc(uint32_t size) {
     return (void*)(block + 1);
 }
 
-int kfree(void* ptr) {
+void* kmalloc(uint32_t size) {
+    uint32_t flags = irq_save();
+    void* p = kmalloc_impl(size);
+    irq_restore(flags);
+    return p;
+}
+
+static int kfree_impl(void* ptr) {
     if (!ptr) return -1;
     // Find the block in the list first; never dereference ptr-1 until
     // we know it really is a block header in this heap.
@@ -119,16 +163,31 @@ int kfree(void* ptr) {
     return 0;
 }
 
+int kfree(void* ptr) {
+    uint32_t flags = irq_save();
+    int r = kfree_impl(ptr);
+    irq_restore(flags);
+    return r;
+}
+
 uint32_t heap_get_used(void) { return heap_used; }
 uint32_t heap_get_total(void) { return HEAP_SIZE; }
 
 uint32_t heap_get_free(void) {
+    // Walk under the same protection: a concurrent split or
+    // coalesce changing next pointers mid-walk would give a
+    // wrong total, and in the worst case a stale walk. The
+    // single-value getters (used, total, start, end) need no
+    // lock: a 32-bit aligned load is atomic on x86, and total,
+    // start, and end never change after heap_init.
+    uint32_t flags = irq_save();
     uint32_t free = 0;
     block_t* curr = free_list;
     while (curr) {
         if (curr->free) free += curr->size;
         curr = curr->next;
     }
+    irq_restore(flags);
     return free;
 }
 
@@ -137,11 +196,13 @@ uint32_t heap_get_end(void) { return (uint32_t)heap_end; }
 
 // debug: count free blocks
 uint32_t heap_get_free_blocks(void) {
+    uint32_t flags = irq_save();
     uint32_t count = 0;
     block_t* curr = free_list;
     while (curr) {
         if (curr->free) count++;
         curr = curr->next;
     }
+    irq_restore(flags);
     return count;
 }
