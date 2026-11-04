@@ -1,3 +1,4 @@
 build/
 tests/test_heap_diskfs
 tests/test_disk.img
+__pycache__/
