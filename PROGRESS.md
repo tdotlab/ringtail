@@ -134,6 +134,35 @@ sleep 42949673 (should report Duration too large)
 sleep 2, type during sleep (keys should appear after, as typeahead)
 cd tests && make run (once gcc-multilib is installed)
 
+v0.3.1 - Boot fixes (found by actually building and booting in QEMU)
+- boot.asm: save the multiboot magic into esi BEFORE loading the
+  GDT, because mov ax, 0x10 in the segment reload clobbered the
+  low 16 bits of eax and kernel_main halted with "Bad multiboot
+  magic" (v0.3.0 as pushed would not boot at all); .bad_boot
+  renamed to bad_boot because a dot-label after reload_cs belonged
+  to reload_cs, not to _start, and NASM refused to assemble it
+- Makefile: grub.cfg generation changed from a multi-line echo
+  (invalid make: only the first line had a tab, so make failed
+  with "missing separator" before building anything) to a single
+  printf line
+- boot.asm, isr.asm: .note.GNU-stack section, silencing the ld
+  warning about an executable stack (irrelevant on bare metal,
+  but the link is now clean)
+- tests/Makefile: run target falls back to qemu-i386 if the native
+  32-bit binary cannot run (on this VM even a trivial 32-bit
+  binary segfaults, loader and static alike, so native 32-bit
+  execution is unavailable here; qemu-i386 runs the tests fine)
+- Host tests: all 60 checks pass under qemu-i386. QEMU system
+  boot: v0.3.0 with the boot fix boots to a working shell;
+  version, heap (start 0x10c000, total 4194304, free 4194288),
+  touch/write/cat/ls, echo with shift, malloc overflow, sleep
+  overflow, sleep 2 with typeahead uptime, and up-arrow history
+  all verified from screendumps.
+
+Test:
+make myos.bin CC=gcc 'LD=ld -m elf_i386' CFLAGS='-ffreestanding -O2 -Wall -Wextra -nostdlib -lgcc -fno-builtin -fno-stack-protector -m32'
+qemu-system-i386 -kernel myos.bin -m 16 -display none -monitor unix:/tmp/ringtail-mon,server,nowait
+
 Next: scheduler / multitasking, cooperative task system first,
 then timer-driven preemption (the shell is now out of interrupt
 context, so the foundation for tasks is clean)

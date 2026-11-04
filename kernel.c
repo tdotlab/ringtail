@@ -138,7 +138,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
             }
         }
     }
-    print_color("RingTail v0.3.0 - Input queue\n", COLOR_TITLE);
+    print_color("RingTail v0.3.1 - Boot fixes\n", COLOR_TITLE);
     print_color("RAM filesystem, files in heap\n", COLOR_DIM);
     print("--------------\n");
 

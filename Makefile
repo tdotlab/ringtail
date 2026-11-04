@@ -24,12 +24,7 @@ myos.bin: $(OBJS) linker.ld
 myos.iso: myos.bin
 	mkdir -p isodir/boot/grub
 	cp myos.bin isodir/boot/myos.bin
-	echo 'set timeout=0
-set default=0
-menuentry "MyOS" {
-  multiboot /boot/myos.bin
-  boot
-}' > isodir/boot/grub/grub.cfg
+	printf 'set timeout=0\nset default=0\nmenuentry "MyOS" {\n  multiboot /boot/myos.bin\n  boot\n}\n' > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o myos.iso isodir
 
 run: myos.iso

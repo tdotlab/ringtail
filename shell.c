@@ -269,7 +269,7 @@ static void cmd_help(void) {
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.3.0 - Input queue\n");
+    print("RingTail v0.3.1 - Boot fixes\n");
 }
 
 static void cmd_heap(void) {

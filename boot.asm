@@ -23,8 +23,14 @@ extern _bss_end
 _start:
     cli
     cmp eax, 0x2BADB002
-    jne .bad_boot
+    jne bad_boot
 
+    ; Save the multiboot magic NOW: the segment reload below does
+    ; mov ax, 0x10, which clobbers the low 16 bits of eax (the magic
+    ; lives in eax). Saving after the reload saved 0x2BAD0010 and
+    ; made kernel_main halt with "Bad multiboot magic". Found by
+    ; actually booting in QEMU; no syntax check can catch this.
+    mov esi, eax
     ; Load our own GDT so IDT segment 0x08 and data segment 0x10
     ; are valid whatever the loader left behind.
     lgdt [gdt_ptr]
@@ -38,9 +44,8 @@ reload_cs:
     mov ss, ax
     mov esp, stack_top
 
-    ; Save magic/info across the BSS clear: the clear loop uses
-    ; edi, ecx and eax, but not esi or ebx.
-    mov esi, eax
+    ; BSS clear: the loop uses edi, ecx and eax, but not esi
+    ; (magic, saved above) or ebx (info pointer).
     mov edi, _bss_start
     mov ecx, _bss_end
     sub ecx, edi
@@ -60,7 +65,7 @@ reload_cs:
     hlt
     jmp .hang
 
-.bad_boot:
+bad_boot:
     ; Red 'B' in the top-left VGA cell, then halt.
     mov edi, 0xB8000
     mov word [edi], 0x0C42
@@ -97,3 +102,5 @@ align 16
 stack_bottom:
     resb 16384 ; 16KB stack - tiny but enough for TUI
 stack_top:
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -88,3 +88,5 @@ EXC_STUB 28
 EXC_STUB 29
 EXC_STUB 30
 EXC_STUB 31
+
+section .note.GNU-stack noalloc noexec nowrite progbits
