@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
-"""Build a RingTail FAT16 disk image. Usage:
-    mkdisk.py -o disk.img hello:hello.bin count:count.bin welcome:welcome.txt
-Each name:file pair becomes one file on the disk, with the given
-name (DOS 8.3, as in src/fs/diskfs.c) and the file's bytes.
-The layout matches src/fs/diskfs.c exactly: sector 0 is a FAT16
-boot sector with a BPB, then two identical FAT copies, then a
-512-entry root directory, then the data area, where files are
-chains of 1-sector clusters, allocated in argument order, so
-an initial image's chains happen to be contiguous (later
-create/delete cycles in the OS will fragment them, which is
-the point of chains). This script is a host tool, not OS code:
-it runs on the machine that builds the disk image, and the OS
-never sees it. The disk image itself is not checked in (it is
-a binary blob, and push-files is text-only); rebuild it with
-this script whenever the programs change. Default size is
-16 MB, which with 1-sector clusters gives a valid FAT16
-cluster count (4085..65524), unlike a tiny test disk.
+"""Build a RingTail FAT16 disk image.
+
+    mkdisk.py -o disk.img HELLO:build/programs/hello WELCOME.TXT:disk/welcome.txt
+
+Each NAME:path pair becomes one file in the root directory. The
+image is plain FAT16 (one reserved sector, two FATs, a 512-entry
+root, 1-sector clusters), so mtools and fsck.fat read it too. The
+default 16 MB is large enough for a FAT16 cluster count.
 """
 import argparse
 import struct

@@ -1,21 +1,31 @@
-// badptr: the syscall fault proof. It asks the kernel to print
-// from an unmapped address (0x09000000: no page table entry in
-// this task's directory), which passes the syscall's shallow
-// validation (the pointer is non-null and the length is small)
-// and then faults when the kernel actually reads the bytes, in
-// ring 0, during the print syscall. The fault is still the user
-// program's fault, because it supplied the bad pointer, so
-// v0.7.1 kills only this program, and the shell keeps running.
-// If fault recovery had been decided by privilege level instead
-// of by task, this case would wrongly halt the OS: the fault
-// happened in kernel mode, but the blame belongs to the caller.
-// Same packaging as the other programs: separate binary, linked
-// at 0x08000000, entry at offset 0.
-#include "syscall_stub.h"
+// Hand the kernel bad pointers and bad requests from user space. Each
+// must fail with an error code; none may crash the kernel or kill
+// this program.
+#include "ulib.h"
 
-__attribute__((section(".text._start"))) void _start(void) {
-    sys_print((const char*)0x09000000u, 10);
-    const char* msg = "badptr did not fault\n";
-    sys_print(msg, prog_strlen(msg));
-    sys_exit();
+#define UNMAPPED ((void*)0x50000000)
+
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
+    char buf[16];
+    check(sys_print(0, 10) == -EFAULT, "print from a null pointer gives EFAULT");
+    check(sys_print(UNMAPPED, 10) == -EFAULT, "print from an unmapped page gives EFAULT");
+    check(sys_write(STDOUT_FILENO, UNMAPPED, 10) == -EFAULT, "write from an unmapped page gives EFAULT");
+    int fd = sys_open("WELCOME.TXT", O_RDONLY);
+    check(fd >= 0, "open WELCOME.TXT");
+    check(sys_read(fd, UNMAPPED, 10) == -EFAULT, "read into an unmapped page gives EFAULT");
+    check(sys_read(fd, buf, 4) == 4, "the descriptor still works afterwards");
+    sys_close(fd);
+    check(sys_open(UNMAPPED, O_RDONLY) == -EFAULT, "open with an unmapped name gives EFAULT");
+    check(sys_print(buf, 0) == 0, "print of zero bytes is fine");
+    check(sys_gfx_pixel(1, 1, 1) == -EPERM, "drawing without the display gives EPERM");
+    check(sys_key_get() == -EPERM, "raw keys without the display give EPERM");
+    check(sys_gfx_end() == -EPERM, "releasing a display we do not own gives EPERM");
+    check(syscall3(99, 0, 0, 0) == -ENOSYS, "unknown system call gives ENOSYS");
+    check(syscall3(-1, 0, 0, 0) == -ENOSYS, "negative system call number gives ENOSYS");
+    check(sys_join(sys_getpid()) == -ESRCH, "joining yourself gives ESRCH");
+    check(sys_join(999999) == -ESRCH, "joining a task that never existed gives ESRCH");
+    check(sys_spawn("NOSUCH") == -ENOENT, "spawning a missing program gives ENOENT");
+    check(sys_spawn("WELCOME.TXT") == -ENOEXEC, "spawning a text file gives ENOEXEC");
+    return check_summary("badptr");
 }

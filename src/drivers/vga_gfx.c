@@ -1,74 +1,32 @@
-// VGA graphics: mode 13h (320x200, 256 colors), the mouse cursor,
-// and the graphics demo. Plain terms first: text mode shows
-// characters from a grid, graphics mode shows individual pixels
-// from a framebuffer, a block of memory where one byte is one
-// pixel's color. In mode 13h that block lives at 0xA0000, is
-// 320*200 = 64000 bytes, and pixel (x, y) is byte y*320 + x.
-// That address is below 16 MB, so it is already identity-mapped
-// by paging, and the kernel can write it directly, no extra
-// mapping needed.
+// VGA mode 13h graphics: 320x200, 256 colours, one byte per pixel
+// at 0xA0000. The mode is set by programming the VGA registers
+// directly (BIOS calls need real mode), and undone by restoring
+// every register, the palette and the text font, which mode 13h
+// overwrites because it uses the same video memory planes.
 //
-// Why the mode switch is done by writing VGA registers, not by
-// a BIOS call: the kernel runs in protected mode, where BIOS
-// interrupts do not work (they need real mode). The VGA chip is
-// programmed directly through its ports, with the standard mode
-// 13h register tables: miscellaneous output, sequencer, CRTC
-// (the timing generator), graphics controller, and attribute
-// controller. The tables below are the published mode 13h values;
-// QEMU's screendump is the verification that they took effect.
-//
-// Save and restore, the whole point of doing this as a demo
-// rather than a one-way trip: before switching, the driver saves
-// the VGA register state, the color palette, the text screen
-// (4000 bytes at 0xB8000), and the text font. After the demo it
-// restores all four, so the shell comes back exactly as it was.
-// The font needs special care: mode 13h writes go through the
-// same video memory the font lives in (plane 2), so the demo
-// would clobber the font if it were not saved and restored too.
-// The font itself is not embedded here: it is read out of video
-// memory plane 2, where the BIOS loaded it at boot, so the demo
-// text uses the real VGA font, not a hand-drawn approximation.
-//
-// The cursor is drawn with save-underneath and restore: before
-// drawing the arrow, the pixels under it are copied to RAM, and
-// when the cursor moves, those pixels are put back before the
-// arrow is drawn at the new spot. That is what keeps the cursor
-// from leaving a trail, and what keeps a dot drawn by a click
-// intact when the cursor passes over it.
+// One task at a time owns the display. While it does, the console
+// writes to an off-screen copy of the text screen, so nothing
+// printed meanwhile is lost, and the keyboard delivers raw scancodes
+// to the owner instead of characters to the terminal.
+#include "kernel.h"
+#include "arch.h"
+#include "console.h"
+#include "drivers.h"
+#include "task.h"
+#include "ringtail/abi.h"
 
-#include <stdint.h>
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-#define FB_WIDTH 320
-#define FB_HEIGHT 200
+#define W GFX_WIDTH
+#define H GFX_HEIGHT
 static volatile uint8_t* const FB = (volatile uint8_t*)0xA0000;
-static volatile uint8_t* const TEXT_BUF = (volatile uint8_t*)0xB8000;
 
-// ---- VGA register tables for mode 13h ----
-// Sequencer (port 0x3C4 index, 0x3C5 data), indices 0-4.
+// ---- Register tables for mode 13h (the standard published values) ----
 static const uint8_t seq_13h[5] = { 0x03, 0x01, 0x0F, 0x00, 0x0E };
-// CRTC (0x3D4/0x3D5), indices 0-24.
 static const uint8_t crtc_13h[25] = {
     0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0x41,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9C, 0x0E, 0x8F, 0x28,
     0x40, 0x96, 0xB9, 0xA3, 0xFF
 };
-// Graphics controller (0x3CE/0x3CF), indices 0-8.
-static const uint8_t gfx_13h[9] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF
-};
-// Attribute controller (0x3C0), indices 0-20. Palette entries
-// 0-15 are identity (color n shows as palette n), then mode
-// control 0x41 (graphics mode, palette enabled), overscan 0,
-// plane enable all, panning 0, color select 0.
+static const uint8_t gc_13h[9] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF };
 static const uint8_t attr_13h[21] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
     0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
@@ -76,34 +34,30 @@ static const uint8_t attr_13h[21] = {
 };
 #define MISC_13H 0x63
 
-// Saved text-mode state, filled by gfx_save_state before the
-// switch and written back by gfx_restore_state after it.
+// The 16 text-mode colours, as 6-bit DAC values, so colour numbers
+// mean the same thing in both modes.
+static const uint8_t palette16[16 * 3] = {
+    0, 0, 0,     0, 0, 42,    0, 42, 0,    0, 42, 42,
+    42, 0, 0,    42, 0, 42,   42, 21, 0,   42, 42, 42,
+    21, 21, 21,  21, 21, 63,  21, 63, 21,  21, 63, 63,
+    63, 21, 21,  63, 21, 63,  63, 63, 21,  63, 63, 63
+};
+
 static uint8_t save_misc;
-static uint8_t save_seq[5];
-static uint8_t save_crtc[25];
-static uint8_t save_gfx[9];
-static uint8_t save_attr[21];
+static uint8_t save_seq[5], save_crtc[25], save_gc[9], save_attr[21];
 static uint8_t save_palette[256 * 3];
-static uint8_t save_text[80 * 25 * 2];
-static uint8_t save_font[256 * 32];
+// Font plane: 256 glyphs in 32-byte slots, 16 rows used, bit 7 is
+// the leftmost pixel. Read at boot, written back after graphics.
+static uint8_t font_plane[256 * 32];
+static uint8_t font16[256 * 16];  // compact copy handed to programs
+static int font_loaded;
 
-// The working font: 256 glyphs, 16 rows each, copied from video
-// memory plane 2 at demo start. Glyph n is font[n*32 + row]:
-// the VGA character generator addresses each glyph in a 32-byte
-// slot (char*32 + row), so an 8x16 font uses the first 16 bytes
-// of each slot and the rest is padding. Reading with a 16-byte
-// stride, as the first version did, maps every character to the
-// wrong glyph, which is exactly what the first screenshots showed.
-// Bit 7 is the leftmost pixel of a row.
-static uint8_t font_buf[256 * 32];
+static volatile int owner = -1;
+static int active;
 
-// ---- Register access helpers ----
-// Attribute controller: every access goes through port 0x3C0,
-// which alternates between "index" and "data" on each write, so
-// the flip-flop must be reset (by reading 0x3DA) before an index
-// write, or an index can be mistaken for data. Resetting before
-// every register, rather than once per table, costs one port
-// read and removes all doubt about the toggle state.
+// ---- Register access ----
+// The attribute controller shares one port for index and data; a
+// read of 0x3DA resets it to "index next".
 static void ac_write(uint8_t idx, uint8_t val) {
     (void)inb(0x3DA);
     outb(0x3C0, idx);
@@ -114,31 +68,25 @@ static uint8_t ac_read(uint8_t idx) {
     outb(0x3C0, idx);
     return inb(0x3C1);
 }
-// After writing attribute registers, palette access must be
-// re-enabled: reset the flip-flop and write 0x20, which is index
-// 0 with the palette-enable bit set. Without this the screen
-// stays blank, because the palette is switched off.
+// Writing the attribute registers blanks the screen until palette
+// access is re-enabled (index write with bit 5 set).
 static void ac_enable_palette(void) {
     (void)inb(0x3DA);
     outb(0x3C0, 0x20);
 }
 
 static void write_seq(const uint8_t* t) {
-    // Synchronous reset on, write regs 1-4, reset off: the
-    // sequencer must be held in reset while its clocking and
-    // memory-mode registers change, or the chip can glitch.
+    // Hold the sequencer in reset while its clocking changes.
     outb(0x3C4, 0); outb(0x3C5, 0x01);
     for (int i = 1; i < 5; i++) { outb(0x3C4, (uint8_t)i); outb(0x3C5, t[i]); }
     outb(0x3C4, 0); outb(0x3C5, t[0]);
 }
 static void write_crtc(const uint8_t* t) {
-    // CRTC registers 0-7 are write-protected while register 0x11
-    // bit 7 is set, so clear it first; the table itself then sets
-    // 0x11 to its real value (0x0E here, protect bit clear).
+    // CRTC 0-7 are write protected while 0x11 bit 7 is set.
     outb(0x3D4, 0x11); outb(0x3D5, 0x00);
     for (int i = 0; i < 25; i++) { outb(0x3D4, (uint8_t)i); outb(0x3D5, t[i]); }
 }
-static void write_gfx(const uint8_t* t) {
+static void write_gc(const uint8_t* t) {
     for (int i = 0; i < 9; i++) { outb(0x3CE, (uint8_t)i); outb(0x3CF, t[i]); }
 }
 static void write_attr(const uint8_t* t) {
@@ -146,112 +94,156 @@ static void write_attr(const uint8_t* t) {
     ac_enable_palette();
 }
 
-static void gfx_save_state(void) {
+static void save_state(void) {
     save_misc = inb(0x3CC);
     for (int i = 0; i < 5; i++) { outb(0x3C4, (uint8_t)i); save_seq[i] = inb(0x3C5); }
     for (int i = 0; i < 25; i++) { outb(0x3D4, (uint8_t)i); save_crtc[i] = inb(0x3D5); }
-    for (int i = 0; i < 9; i++) { outb(0x3CE, (uint8_t)i); save_gfx[i] = inb(0x3CF); }
+    for (int i = 0; i < 9; i++) { outb(0x3CE, (uint8_t)i); save_gc[i] = inb(0x3CF); }
     for (int i = 0; i < 21; i++) save_attr[i] = ac_read((uint8_t)i);
-    for (int i = 0; i < 256; i++) {
-        outb(0x3C7, (uint8_t)i);
-        save_palette[i * 3] = inb(0x3C9);
-        save_palette[i * 3 + 1] = inb(0x3C9);
-        save_palette[i * 3 + 2] = inb(0x3C9);
-    }
-    for (int i = 0; i < 80 * 25 * 2; i++) save_text[i] = TEXT_BUF[i];
+    ac_enable_palette();
+    outb(0x3C7, 0);
+    for (int i = 0; i < 256 * 3; i++) save_palette[i] = inb(0x3C9);
 }
 
-static void gfx_restore_state(void) {
+static void restore_state(void) {
     outb(0x3C2, save_misc);
     write_seq(save_seq);
     write_crtc(save_crtc);
-    write_gfx(save_gfx);
+    write_gc(save_gc);
     write_attr(save_attr);
     outb(0x3C8, 0);
     for (int i = 0; i < 256 * 3; i++) outb(0x3C9, save_palette[i]);
-    for (int i = 0; i < 80 * 25 * 2; i++) TEXT_BUF[i] = save_text[i];
 }
 
-// ---- Font in and out of video memory plane 2 ----
-// Reading or writing a single plane needs two temporary changes,
-// both restored afterwards: the graphics mode register must have
-// odd/even addressing off (text mode has it on, and it overrides
-// the plane selection with the address bit), and the memory map
-// must point at 0xA0000 so plane memory is CPU-visible. Display
-// is unaffected: it reads video memory through the CRTC, not
-// through these CPU-access registers.
-static void plane_access_begin(uint8_t plane, uint8_t* save_mode, uint8_t* save_misc2, uint8_t* save_map) {
-    outb(0x3CE, 5); *save_mode = inb(0x3CF);
-    outb(0x3C4, 2); *save_map = inb(0x3C5);
-    outb(0x3CE, 6); *save_misc2 = inb(0x3CF);
-    outb(0x3CE, 5); outb(0x3CF, 0x00); // write mode 0, odd/even off
-    // Sequencer map mask is a BITMASK, not a plane number: bit n
-    // enables plane n. Plane 2 alone is 0x04, not 0x02. Writing
-    // 0x02 here selected plane 1, so the first font restore
-    // overwrote the text attributes with font bytes (the rainbow
-    // garbage after the demo) and left the real font broken.
-    // The graphics read map above IS a plane number, so reads
-    // were correct all along, which is why demo text worked.
+// Direct CPU access to one memory plane. Text mode's odd/even
+// addressing must be off, the memory map must point at 0xA0000, and
+// the sequencer map mask selects planes as a bitmask (plane 2 is
+// 0x04) while the graphics read map takes a plane number.
+static uint8_t pa_mode, pa_misc, pa_map, pa_mem;
+static void plane_begin(uint8_t plane) {
+    outb(0x3CE, 5); pa_mode = inb(0x3CF);
+    outb(0x3C4, 2); pa_map = inb(0x3C5);
+    outb(0x3CE, 6); pa_misc = inb(0x3CF);
+    outb(0x3CE, 5); outb(0x3CF, 0x00);
+    outb(0x3C4, 4); pa_mem = inb(0x3C5);
+    outb(0x3C4, 4); outb(0x3C5, pa_mem | 0x04);  // sequential, not odd/even
     outb(0x3C4, 2); outb(0x3C5, (uint8_t)(1 << plane));
-    outb(0x3CE, 4); outb(0x3CF, plane); // graphics read map: this plane (reads)
-    outb(0x3CE, 6); outb(0x3CF, (uint8_t)((*save_misc2 & ~0x0C) | 0x00)); // A0000, 128K
+    outb(0x3CE, 4); outb(0x3CF, plane);
+    outb(0x3CE, 6); outb(0x3CF, (uint8_t)(pa_misc & ~0x0E) | 0x04);  // A0000, 64K, no chain
 }
-static void plane_access_end(uint8_t save_mode, uint8_t save_misc2, uint8_t save_map) {
+static void plane_end(void) {
     outb(0x3CE, 4); outb(0x3CF, 0x00);
-    outb(0x3C4, 2); outb(0x3C5, save_map);
-    outb(0x3CE, 5); outb(0x3CF, save_mode);
-    outb(0x3CE, 6); outb(0x3CF, save_misc2);
+    outb(0x3C4, 2); outb(0x3C5, pa_map);
+    outb(0x3CE, 5); outb(0x3CF, pa_mode);
+    outb(0x3CE, 6); outb(0x3CF, pa_misc);
+    outb(0x3C4, 4); outb(0x3C5, pa_mem);
 }
 
-static void gfx_load_font(void) {
-    uint8_t sm, smisc, smap;
-    plane_access_begin(2, &sm, &smisc, &smap);
-    for (int i = 0; i < 256 * 32; i++) font_buf[i] = FB[i];
-    plane_access_end(sm, smisc, smap);
-    for (int i = 0; i < 256 * 32; i++) save_font[i] = font_buf[i];
-}
-static void gfx_restore_font(void) {
-    uint8_t sm, smisc, smap;
-    plane_access_begin(2, &sm, &smisc, &smap);
-    for (int i = 0; i < 256 * 32; i++) FB[i] = save_font[i];
-    plane_access_end(sm, smisc, smap);
+static void load_font(void) {
+    plane_begin(2);
+    for (int i = 0; i < 256 * 32; i++) font_plane[i] = FB[i];
+    plane_end();
+    for (int c = 0; c < 256; c++)
+        for (int r = 0; r < 16; r++) font16[c * 16 + r] = font_plane[c * 32 + r];
+    font_loaded = 1;
 }
 
-// ---- Palette ----
-// DAC values are 6-bit (0-63), written as R, G, B triples after
-// selecting an index on 0x3C8; the index auto-increments.
-static void gfx_set_palette(const uint8_t* rgb, int count) {
+static void restore_font(void) {
+    plane_begin(2);
+    for (int i = 0; i < 256 * 32; i++) FB[i] = font_plane[i];
+    plane_end();
+}
+
+const uint8_t* gfx_font(void) {
+    return font16;
+}
+
+static void enter_graphics(void) {
+    if (!font_loaded) load_font();
+    console_detach();
+    save_state();
+    outb(0x3C2, MISC_13H);
+    write_seq(seq_13h);
+    write_crtc(crtc_13h);
+    write_gc(gc_13h);
+    write_attr(attr_13h);
     outb(0x3C8, 0);
-    for (int i = 0; i < count * 3; i++) outb(0x3C9, rgb[i]);
+    for (int i = 0; i < 16 * 3; i++) outb(0x3C9, palette16[i]);
+    keyboard_raw_flush();
+    active = 1;
+    gfx_clear(1);
 }
-static const uint8_t demo_palette[16 * 3] = {
-    0, 0, 0,     0, 0, 42,    0, 42, 0,    0, 42, 42,
-    42, 0, 0,    42, 0, 42,   42, 21, 0,   42, 42, 42,
-    21, 21, 21,  21, 21, 63,  21, 63, 21,  21, 63, 63,
-    63, 21, 21,  63, 21, 63,  63, 63, 21,  63, 63, 63
-};
 
-// ---- Drawing primitives ----
-// Every primitive goes through gfx_pixel, so the bounds check
-// here is the only clipping the driver needs: anything drawn
-// partly off screen is cut cleanly instead of writing past the
-// 64K framebuffer into unrelated video memory.
+static void leave_graphics(void) {
+    if (!active) return;
+    active = 0;
+    restore_state();
+    restore_font();
+    console_attach();
+}
+
+void gfx_init_font(void) {
+    load_font();
+}
+
+// ---- Ownership ----
+
+int gfx_acquire(int task_id) {
+    uint32_t f = irq_save();
+    int r = 0;
+    if (owner == task_id) r = 0;
+    else if (owner != -1) r = -EBUSY;
+    else owner = task_id;
+    irq_restore(f);
+    if (r == 0 && !active) enter_graphics();
+    return r;
+}
+
+int gfx_release(int task_id) {
+    if (owner != task_id) return -EPERM;
+    leave_graphics();
+    keyboard_raw_flush();
+    owner = -1;
+    return 0;
+}
+
+int gfx_owner(void) { return owner; }
+
+void gfx_task_exit(int task_id) {
+    if (owner == task_id) gfx_release(task_id);
+}
+
+void gfx_emergency_text(void) {
+    if (active) leave_graphics();
+    owner = -1;
+}
+
+// ---- Drawing. Every primitive clips through gfx_pixel or does its
+// own bounds check, so nothing can write outside the framebuffer.
+
 void gfx_pixel(int x, int y, uint8_t color) {
-    if (x < 0 || x >= FB_WIDTH || y < 0 || y >= FB_HEIGHT) return;
-    FB[y * FB_WIDTH + x] = color;
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+    FB[y * W + x] = color;
 }
+
 void gfx_clear(uint8_t color) {
-    for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) FB[i] = color;
+    memset((void*)FB, color, W * H);
 }
+
+void gfx_blit(const uint8_t* pixels) {
+    memcpy((void*)FB, pixels, W * H);
+}
+
 void gfx_line(int x0, int y0, int x1, int y1, uint8_t color) {
-    // Bresenham: walk the longer axis, keep a running error for
-    // the shorter one, step it when the error crosses half.
-    int dx = x1 - x0, dy = y1 - y0;
-    int sx = (dx > 0) ? 1 : -1, sy = (dy > 0) ? 1 : -1;
-    if (dx < 0) dx = -dx;
-    if (dy < 0) dy = -dy;
+    // Bresenham. Endpoints are clamped to a generous box first so a
+    // huge coordinate cannot make the loop run for billions of steps.
+    x0 = MAX(-W, MIN(2 * W, x0)); x1 = MAX(-W, MIN(2 * W, x1));
+    y0 = MAX(-H, MIN(2 * H, y0)); y1 = MAX(-H, MIN(2 * H, y1));
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int dy = y1 > y0 ? y1 - y0 : y0 - y1;
+    int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     int err = dx - dy;
-    while (1) {
+    for (;;) {
         gfx_pixel(x0, y0, color);
         if (x0 == x1 && y0 == y1) break;
         int e2 = 2 * err;
@@ -259,21 +251,24 @@ void gfx_line(int x0, int y0, int x1, int y1, uint8_t color) {
         if (e2 < dx) { err += dx; y0 += sy; }
     }
 }
+
 void gfx_rect(int x, int y, int w, int h, uint8_t color, int filled) {
-    if (filled) {
-        for (int yy = 0; yy < h; yy++)
-            for (int xx = 0; xx < w; xx++)
-                gfx_pixel(x + xx, y + yy, color);
-    } else {
+    if (w <= 0 || h <= 0) return;
+    if (!filled) {
         gfx_line(x, y, x + w - 1, y, color);
         gfx_line(x, y + h - 1, x + w - 1, y + h - 1, color);
         gfx_line(x, y, x, y + h - 1, color);
         gfx_line(x + w - 1, y, x + w - 1, y + h - 1, color);
+        return;
     }
+    int x0 = MAX(0, x), y0 = MAX(0, y);
+    int x1 = MIN(W, x + w), y1 = MIN(H, y + h);
+    if (x + w < x || y + h < y) { x1 = W; y1 = H; }  // overflowed: clip to the screen
+    for (int yy = y0; yy < y1; yy++)
+        if (x1 > x0) memset((void*)(FB + yy * W + x0), color, (size_t)(x1 - x0));
 }
+
 void gfx_circle(int cx, int cy, int r, uint8_t color) {
-    // Midpoint circle: eight symmetric points per step, walking
-    // the first octant and mirroring it around the center.
     int x = 0, y = r, d = 1 - r;
     while (x <= y) {
         gfx_pixel(cx + x, cy + y, color); gfx_pixel(cx - x, cy + y, color);
@@ -285,123 +280,50 @@ void gfx_circle(int cx, int cy, int r, uint8_t color) {
         x++;
     }
 }
+
 void gfx_text(int x, int y, const char* s, uint8_t color) {
-    int cx = x;
-    while (*s) {
-        const uint8_t* g = &font_buf[(uint8_t)*s * 32];
-        for (int row = 0; row < 16; row++) {
-            uint8_t bits = g[row];
-            for (int col = 0; col < 8; col++) {
-                if (bits & (0x80 >> col)) gfx_pixel(cx + col, y + row, color);
-            }
-        }
-        cx += 9; // 8 pixel glyph + 1 pixel spacing
-        s++;
+    for (; *s && x < W; s++, x += 9) {
+        const uint8_t* g = &font16[(uint8_t)*s * 16];
+        for (int row = 0; row < 16; row++)
+            for (int col = 0; col < 8; col++)
+                if (g[row] & (0x80 >> col)) gfx_pixel(x + col, y + row, color);
     }
 }
 
-// ---- Cursor ----
-// Arrow, 12 wide by 16 tall, tip at the top-left (the hotspot:
-// the reported mouse position is the tip, so a click draws
-// exactly where the tip points). Rows are 12-bit values, bit 11
-// is the leftmost pixel.
+// ---- The shell's graphics demo ----
+
 #define CUR_W 12
 #define CUR_H 16
 static const uint16_t cursor_shape[CUR_H] = {
     0x800, 0xC00, 0xE00, 0xF00, 0xF80, 0xFC0, 0xFE0, 0xFF0,
     0xF80, 0xEC0, 0xC60, 0x830, 0x018, 0x000, 0x000, 0x000
 };
-static uint8_t cursor_saved[CUR_W * CUR_H];
-static int cursor_x = -1, cursor_y = -1, cursor_on = 0;
+static uint8_t under_cursor[CUR_W * CUR_H];
 
 static void cursor_show(int x, int y) {
-    for (int row = 0; row < CUR_H; row++) {
-        for (int col = 0; col < CUR_W; col++) {
-            int sx = x + col, sy = y + row;
-            if (sx >= 0 && sx < FB_WIDTH && sy >= 0 && sy < FB_HEIGHT)
-                cursor_saved[row * CUR_W + col] = FB[sy * FB_WIDTH + sx];
+    for (int r = 0; r < CUR_H; r++)
+        for (int c = 0; c < CUR_W; c++) {
+            int px = x + c, py = y + r;
+            if (px < W && py < H) under_cursor[r * CUR_W + c] = FB[py * W + px];
         }
-    }
-    for (int row = 0; row < CUR_H; row++) {
-        for (int col = 0; col < CUR_W; col++) {
-            if (cursor_shape[row] & (0x800 >> col))
-                gfx_pixel(x + col, y + row, 15);
-        }
-    }
-    cursor_x = x; cursor_y = y; cursor_on = 1;
-}
-static void cursor_hide(void) {
-    if (!cursor_on) return;
-    for (int row = 0; row < CUR_H; row++) {
-        for (int col = 0; col < CUR_W; col++) {
-            int sx = cursor_x + col, sy = cursor_y + row;
-            if (sx >= 0 && sx < FB_WIDTH && sy >= 0 && sy < FB_HEIGHT)
-                FB[sy * FB_WIDTH + sx] = cursor_saved[row * CUR_W + col];
-        }
-    }
-    cursor_on = 0;
+    for (int r = 0; r < CUR_H; r++)
+        for (int c = 0; c < CUR_W; c++)
+            if (cursor_shape[r] & (0x800 >> c)) gfx_pixel(x + c, y + r, 15);
 }
 
-// ---- Graphics mode entry/exit, shared by the kernel demo and
-// by user programs through the graphics syscalls ----
-extern void text_cursor_get(int* x, int* y);
-extern void text_cursor_set(int x, int y);
-static int saved_cx = 0, saved_cy = 0;
-// gfx_graphics_begin: save text state, load the font (which must
-// happen while still in text mode, because the font lives in
-// video memory plane 2), switch to mode 13h, set the demo
-// palette, clear to blue. gfx_graphics_end undoes it, in the
-// reverse order the restore needs: registers and text screen
-// first, then the font (which writes to plane 2 through the
-// temporary plane-access settings, and must not run before the
-// text registers are back, or its writes would land wrong).
-void gfx_graphics_begin(void) {
-    text_cursor_get(&saved_cx, &saved_cy);
-    gfx_save_state();
-    gfx_load_font();
-    outb(0x3C2, MISC_13H);
-    write_seq(seq_13h);
-    write_crtc(crtc_13h);
-    write_gfx(gfx_13h);
-    write_attr(attr_13h);
-    gfx_set_palette(demo_palette, 16);
-    gfx_clear(1);
-}
-void gfx_graphics_end(void) {
-    gfx_restore_state();
-    gfx_restore_font();
-    text_cursor_set(saved_cx, saved_cy);
-}
-extern int mouse_get_x(void);
-extern int mouse_get_y(void);
-extern int mouse_get_buttons(void);
-extern int keyboard_poll(void);
-extern uint32_t timer_get_ticks(void);
-
-static void coords_text(char* buf, int x, int y, int b) {
-    // Fixed-width, so the erase rectangle never needs resizing:
-    // "X=160 Y=100 LMR", digits space-padded, buttons as letters
-    // or dashes. Built by hand, no sprintf in a freestanding kernel.
-    buf[0] = 'X'; buf[1] = '=';
-    buf[2] = (x >= 100) ? (char)('0' + x / 100) : ' ';
-    buf[3] = (x >= 10) ? (char)('0' + (x / 10) % 10) : ' ';
-    buf[4] = (char)('0' + x % 10);
-    buf[5] = ' ';
-    buf[6] = 'Y'; buf[7] = '=';
-    buf[8] = (y >= 100) ? (char)('0' + y / 100) : ' ';
-    buf[9] = (y >= 10) ? (char)('0' + (y / 10) % 10) : ' ';
-    buf[10] = (char)('0' + y % 10);
-    buf[11] = ' ';
-    buf[12] = (b & 1) ? 'L' : '-';
-    buf[13] = (b & 4) ? 'M' : '-';
-    buf[14] = (b & 2) ? 'R' : '-';
-    buf[15] = 0;
+static void cursor_hide(int x, int y) {
+    for (int r = 0; r < CUR_H; r++)
+        for (int c = 0; c < CUR_W; c++) {
+            int px = x + c, py = y + r;
+            if (px < W && py < H) FB[py * W + px] = under_cursor[r * CUR_W + c];
+        }
 }
 
 void gfx_demo(void) {
-    char coords[32];
-    gfx_graphics_begin();
-
+    if (gfx_acquire(current->id)) {
+        kprintf_color(COLOR_ERROR, "Graphics busy: task %d owns the display\n", gfx_owner());
+        return;
+    }
     gfx_text(10, 8, "RINGTAIL GRAPHICS", 15);
     gfx_rect(20, 35, 70, 40, 4, 1);
     gfx_rect(110, 35, 70, 40, 14, 0);
@@ -411,63 +333,28 @@ void gfx_demo(void) {
     gfx_text(10, 125, "0123456789", 15);
     gfx_text(10, 150, "MOVE MOUSE - CLICK DRAWS", 11);
 
-    int last_x = mouse_get_x();
-    int last_y = mouse_get_y();
-    int last_b = mouse_get_buttons();
-    coords_text(coords, last_x, last_y, last_b);
+    int x, y, b, lx, ly, lb;
+    mouse_get(&lx, &ly, &lb);
+    char coords[32];
+    snprintf(coords, sizeof(coords), "X=%3d Y=%3d %c%c%c", lx, ly, (lb & 1) ? 'L' : '-', (lb & 4) ? 'M' : '-', (lb & 2) ? 'R' : '-');
     gfx_text(10, 170, coords, 15);
-    cursor_show(last_x, last_y);
-
-    // Frame loop, paced by the timer tick (~100 Hz): on each
-    // frame, check the mouse and the keyboard queue. The keyboard
-    // queue is normally drained by the main loop, but the main
-    // loop is inside this demo (it is a shell command), so the
-    // demo drains it itself, and any key press ends the demo.
-    // hlt between frames idles the CPU until the next interrupt.
-    uint32_t last_tick = timer_get_ticks();
-    int exit_demo = 0, ext = 0;
-    while (!exit_demo) {
-        int x = mouse_get_x();
-        int y = mouse_get_y();
-        int b = mouse_get_buttons();
-        if (x != last_x || y != last_y || b != last_b) {
-            int left_edge = (b & 1) && !(last_b & 1);
-            cursor_hide();
-            // Coords redraw on ANY change, not just buttons: the
-            // first version redrew only when buttons changed, so
-            // a pure move left the cursor in the new spot with
-            // the old coordinates underneath it.
+    cursor_show(lx, ly);
+    for (;;) {
+        int sc, done = 0;
+        while ((sc = keyboard_raw_get()) >= 0)
+            if (sc != 0xE0 && !(sc & 0x80)) done = 1;  // any key press
+        if (done || current->killed) break;
+        mouse_get(&x, &y, &b);
+        if (x != lx || y != ly || b != lb) {
+            cursor_hide(lx, ly);
             gfx_rect(10, 170, 200, 16, 1, 1);
-            coords_text(coords, x, y, b);
+            snprintf(coords, sizeof(coords), "X=%3d Y=%3d %c%c%c", x, y, (b & 1) ? 'L' : '-', (b & 4) ? 'M' : '-', (b & 2) ? 'R' : '-');
             gfx_text(10, 170, coords, 15);
-            if (left_edge) gfx_rect(x, y, 4, 4, 14, 1);
+            if ((b & 1) && !(lb & 1)) gfx_rect(x, y, 4, 4, 14, 1);
             cursor_show(x, y);
-            last_x = x; last_y = y; last_b = b;
+            lx = x; ly = y; lb = b;
         }
-        int sc;
-        while ((sc = keyboard_poll()) >= 0) {
-            if (ext) {
-                ext = 0;
-                if (!(sc & 0x80)) exit_demo = 1;
-            } else if (sc == 0xE0) {
-                ext = 1;
-            } else if (!(sc & 0x80)) {
-                exit_demo = 1; // a make code: a real key press
-            }
-            // Release codes are ignored: they are the key coming
-            // back up, not a new press.
-        }
-        uint32_t now = timer_get_ticks();
-        if (now == last_tick) {
-            __asm__ volatile ("hlt");
-        } else {
-            last_tick = now;
-        }
+        task_sleep_ticks(1);
     }
-    // Drain whatever is left in the queue (the exit key's release
-    // code, a held shift) so nothing leaks into the shell line
-    // after the demo returns.
-    while (keyboard_poll() >= 0) { }
-    cursor_hide();
-    gfx_graphics_end();
+    gfx_release(current->id);
 }

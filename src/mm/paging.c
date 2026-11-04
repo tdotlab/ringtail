@@ -1,273 +1,191 @@
-// v0.7.0: paging and physical page frames. Two ideas that sound
-// alike and are not the same. A frame is a physical 4 KB block of
-// RAM. A page is a virtual 4 KB block an address refers to. Paging
-// is the table that says which virtual page points at which
-// physical frame, or at nothing. Without it, every address a
-// program uses IS a physical address, and every program shares
-// one address space. With it, every program can use the same
-// virtual address (0x08000000 here) and land on different
-// physical frames, and the kernel's pages can be marked
-// supervisor-only so a ring 3 program that touches them faults
-// instead of reading kernel memory. That is the memory wall ring
-// 3 alone could not provide.
-// Layout, classic two-level x86 paging, no PAE. A page directory
-// has 1024 entries, each pointing at a page table, each table has
-// 1024 entries, each entry points at a 4 KB frame. One directory
-// entry covers 4 MB (1024 pages). The kernel identity-maps the
-// first 16 MB: virtual address N points at physical address N,
-// for N below 16 MB. That covers the kernel image, the heap, the
-// VGA memory, and every frame the allocator hands out, because
-// the frame pool is capped at 16 MB. Identity mapping is what
-// makes turning paging on survivable: the very next instruction
-// after the switch is fetched through the new tables, and since
-// its virtual address equals its physical address, it is still
-// there. It is also what lets kernel code use a physical address
-// as a pointer to read or write a page directory or table: those
-// structures live below 16 MB, so their physical address works
-// as a virtual address under any page directory in this design,
-// because every directory copies the kernel's identity entries.
-// User pages live at 0x08000000 and up, in one page table per
-// task (directory index 32). Flags used here: present (1),
-// read/write (2), user (4). Kernel pages are 0x03 (present,
-// read/write, supervisor): ring 3 access to them faults.
-// User pages are 0x07 (present, read/write, user). There is no
-// execute-disable bit in classic paging, so "executable" is not
-// a separate permission here; a present user page can be executed.
-// Frame allocation is a free list threaded through the frames
-// themselves: the first word of a free frame holds the next free
-// frame's address, so no extra memory is needed to track them.
-// The pool starts just above the heap (aligned up to 4 KB) and
-// ends at the smaller of RAM top and 16 MB, so no frame ever
-// overlaps the kernel, the heap, or unmapped memory above the
-// identity range. Frames are never handed out above 16 MB in
-// this slice, even on a machine with more RAM, because the loader
-// copies program bytes to frames through their identity-mapped
-// address, and that only works below 16 MB.
+// Paging: the kernel's address space, per-task user address spaces,
+// stack growth, and checked access to user memory.
+//
+// Layout of every address space:
+//   0 - 4 KB      not mapped, so null pointers fault
+//   4 KB - 1 GB   kernel: identity-mapped RAM, supervisor only,
+//                 kernel code and read-only data write-protected
+//   1 GB - 3 GB   user: program image, then a 1 MB stack region
+//                 just below 3 GB that grows on demand
+//   3 GB - 4 GB   not mapped
+// Kernel entries are the same in every page directory (copied from
+// the kernel directory, and never changed after boot), so the kernel
+// keeps running across address-space switches.
+#include "kernel.h"
+#include "arch.h"
+#include "mm.h"
+#include "task.h"
+#include "ringtail/abi.h"
 
-#include <stdint.h>
+#define PDE_INDEX(va) ((va) >> 22)
+#define PTE_INDEX(va) (((va) >> 12) & 0x3FF)
+#define FRAME(e) ((e) & ~0xFFFu)
+#define KERNEL_PDES (int)(USER_BASE >> 22)  // 256
+#define USER_PDE_END (int)(USER_TOP >> 22)  // 768
 
-#define PAGE_SIZE 4096
-#define PD_USER_INDEX 32
-#define USER_BASE 0x08000000u
+static uint32_t kpd[1024] __attribute__((aligned(4096)));
+static uint32_t kpt0[1024] __attribute__((aligned(4096)));
 
-static uint32_t frame_free_head = 0;
-static uint32_t kernel_pd_pa = 0;
+uint32_t kernel_pd(void) { return (uint32_t)kpd; }
 
-uint32_t paging_kernel_pd(void) {
-    return kernel_pd_pa;
-}
-
-uint32_t frame_alloc(void) {
-    if (!frame_free_head) return 0;
-    uint32_t pa = frame_free_head;
-    frame_free_head = *(uint32_t*)pa;
-    return pa;
-}
-
-void frame_free(uint32_t pa) {
-    *(uint32_t*)pa = frame_free_head;
-    frame_free_head = pa;
-}
-
-static void frame_init(uint32_t heap_end, uint32_t ram_top) {
-    uint32_t start = (heap_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    uint32_t end = ram_top < 0x01000000u ? ram_top : 0x01000000u;
-    end &= ~(PAGE_SIZE - 1);
-    frame_free_head = 0;
-    if (end <= start) return;
-    // Link frames in increasing order, head at the lowest frame,
-    // so sequential allocations come out consecutive (which the
-    // loader does not rely on, but which keeps dumps readable).
-    for (uint32_t pa = start; pa + PAGE_SIZE <= end; pa += PAGE_SIZE) {
-        uint32_t next = pa + PAGE_SIZE;
-        *(uint32_t*)pa = (next + PAGE_SIZE <= end) ? next : 0;
+void paging_init(uint32_t ram_top) {
+    uint32_t a, b, c, d;
+    cpuid(1, &a, &b, &c, &d);
+    if (!(d & (1u << 3))) panic("CPU has no 4 MB pages (PSE); RingTail needs a Pentium or later");
+    int pge = (d & (1u << 13)) != 0;
+    uint32_t global = pge ? PTE_GLOBAL : 0;
+    cpuid(0, &a, &b, &c, &d);
+    int smep = 0;
+    if (a >= 7) {
+        cpuid(7, &a, &b, &c, &d);
+        smep = (b & (1u << 7)) != 0;
     }
-    frame_free_head = start;
-}
 
-static void zero_frame(uint32_t pa) {
-    uint32_t* p = (uint32_t*)pa;
-    for (int i = 0; i < 1024; i++) p[i] = 0;
-}
+    if ((uint32_t)_ro_end > 0x400000) panic("kernel image does not fit in the first 4 MB");
+    if (ram_top > RAM_IDENTITY_LIMIT) ram_top = RAM_IDENTITY_LIMIT;
 
-static void paging_enable(void) {
-    __asm__ volatile("mov %0, %%cr3" :: "r"(kernel_pd_pa));
-    uint32_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= 0x80000000u;
-    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
-    // Flush the pipeline: the next fetch must go through paging.
-    __asm__ volatile("jmp 1f\n1:");
-}
-
-void paging_init(uint32_t heap_end, uint32_t ram_top) {
-    frame_init(heap_end, ram_top);
-    kernel_pd_pa = frame_alloc();
-    if (!kernel_pd_pa) {
-        // No frames at all: cannot build page tables. Halt with a
-        // plain message on the VGA screen via print, which still
-        // works because paging is not on yet.
-        extern void print(const char* s);
-        print("No free frames for paging - halting.\n");
-        while (1) __asm__ volatile("hlt");
+    // First 4 MB with 4 KB pages: page 0 unmapped, kernel text and
+    // rodata read-only.
+    for (uint32_t i = 1; i < 1024; i++) {
+        uint32_t addr = i * PAGE_SIZE;
+        uint32_t flags = PTE_PRESENT | global;
+        if (addr < (uint32_t)_ro_start || addr >= (uint32_t)_ro_end) flags |= PTE_WRITE;
+        kpt0[i] = addr | flags;
     }
-    zero_frame(kernel_pd_pa);
-    uint32_t* pd = (uint32_t*)kernel_pd_pa;
-    // Identity-map 0-16 MB with 4 page tables, supervisor-only.
-    for (int i = 0; i < 4; i++) {
+    kpd[0] = (uint32_t)kpt0 | PTE_PRESENT | PTE_WRITE;
+    // The rest of RAM with 4 MB pages.
+    uint32_t big = (ram_top + 0x3FFFFF) >> 22;
+    for (uint32_t i = 1; i < big && i < (uint32_t)KERNEL_PDES; i++)
+        kpd[i] = (i << 22) | PTE_PRESENT | PTE_WRITE | PTE_PS | global;
+
+    uint32_t cr4 = read_cr4() | (1u << 4);  // PSE
+    if (pge) cr4 |= 1u << 7;
+    if (smep) cr4 |= 1u << 20;              // kernel may never execute user pages
+    write_cr4(cr4);
+    write_cr3((uint32_t)kpd);
+    // PG on, and WP: the kernel honours read-only pages too, so a
+    // stray kernel write to its own code faults instead of patching it.
+    write_cr0(read_cr0() | 0x80000000u | (1u << 16));
+}
+
+uint32_t as_create(void) {
+    uint32_t* pd = (uint32_t*)frame_alloc();
+    if (!pd) return 0;
+    for (int i = 0; i < KERNEL_PDES; i++) pd[i] = kpd[i];
+    return (uint32_t)pd;
+}
+
+void as_destroy(uint32_t pdp) {
+    uint32_t* pd = (uint32_t*)pdp;
+    for (int i = KERNEL_PDES; i < USER_PDE_END; i++) {
+        if (!(pd[i] & PTE_PRESENT)) continue;
+        uint32_t* pt = (uint32_t*)FRAME(pd[i]);
+        for (int j = 0; j < 1024; j++)
+            if (pt[j] & PTE_PRESENT) frame_free(FRAME(pt[j]));
+        frame_free((uint32_t)pt);
+    }
+    frame_free(pdp);
+}
+
+static uint32_t* pte_for(uint32_t pdp, uint32_t va, int create) {
+    uint32_t* pd = (uint32_t*)pdp;
+    uint32_t* pde = &pd[PDE_INDEX(va)];
+    if (!(*pde & PTE_PRESENT)) {
+        if (!create) return 0;
         uint32_t pt = frame_alloc();
-        if (!pt) {
-            extern void print(const char* s);
-            print("Out of frames for kernel page tables - halting.\n");
-            while (1) __asm__ volatile("hlt");
-        }
-        zero_frame(pt);
-        uint32_t* table = (uint32_t*)pt;
-        for (int j = 0; j < 1024; j++) {
-            uint32_t va = (uint32_t)(i * 1024 + j) * PAGE_SIZE;
-            table[j] = va | 0x03; // present, read/write, supervisor
-        }
-        pd[i] = pt | 0x03;
+        if (!pt) return 0;
+        *pde = pt | PTE_PRESENT | PTE_WRITE | PTE_USER;
     }
-    paging_enable();
+    return &((uint32_t*)FRAME(*pde))[PTE_INDEX(va)];
 }
 
-// Create a page directory for a user task: a fresh frame, kernel
-// identity entries copied in, user entries left empty for the
-// loader to fill. Returns the directory's physical address, or 0
-// on out of frames.
-uint32_t paging_create_user_pd(void) {
-    uint32_t pd_pa = frame_alloc();
-    if (!pd_pa) return 0;
-    zero_frame(pd_pa);
-    uint32_t* pd = (uint32_t*)pd_pa;
-    uint32_t* kpd = (uint32_t*)kernel_pd_pa;
-    for (int i = 0; i < 4; i++) pd[i] = kpd[i];
-    return pd_pa;
+uint32_t as_map(uint32_t pd, uint32_t va, int writable) {
+    if (va < USER_BASE || va >= USER_TOP || (va & (PAGE_SIZE - 1))) return 0;
+    uint32_t* pte = pte_for(pd, va, 1);
+    if (!pte) return 0;
+    if (*pte & PTE_PRESENT) {
+        if (writable && !(*pte & PTE_WRITE)) {
+            *pte |= PTE_WRITE;
+            if (read_cr3() == pd) invlpg(va);
+        }
+        return FRAME(*pte);
+    }
+    uint32_t f = frame_alloc();
+    if (!f) return 0;
+    *pte = f | PTE_PRESENT | PTE_USER | (writable ? PTE_WRITE : 0);
+    return f;
 }
 
-// Map one user page: va must be in the user range (directory
-// index 32), pa must be a frame. Allocates the user page table
-// on first use. Returns 0 on success, -1 on out of frames.
-int paging_map_user(uint32_t pd_pa, uint32_t va, uint32_t pa) {
-    uint32_t* pd = (uint32_t*)pd_pa;
-    uint32_t pde = pd[PD_USER_INDEX];
-    uint32_t pt_pa;
-    if (!(pde & 1)) {
-        pt_pa = frame_alloc();
-        if (!pt_pa) return -1;
-        zero_frame(pt_pa);
-        pd[PD_USER_INDEX] = pt_pa | 0x07; // present, RW, user
-    } else {
-        pt_pa = pde & ~0xFFFu;
+uint32_t as_lookup(uint32_t pd, uint32_t va, int* writable) {
+    if (va < USER_BASE || va >= USER_TOP) return 0;
+    uint32_t* pte = pte_for(pd, va, 0);
+    if (!pte || !(*pte & PTE_PRESENT)) return 0;
+    if (writable) *writable = (*pte & PTE_WRITE) != 0;
+    return FRAME(*pte);
+}
+
+uint32_t as_pages(uint32_t pdp) {
+    uint32_t* pd = (uint32_t*)pdp;
+    uint32_t n = 0;
+    for (int i = KERNEL_PDES; i < USER_PDE_END; i++) {
+        if (!(pd[i] & PTE_PRESENT)) continue;
+        uint32_t* pt = (uint32_t*)FRAME(pd[i]);
+        for (int j = 0; j < 1024; j++) n += (pt[j] & PTE_PRESENT) != 0;
     }
-    uint32_t* pt = (uint32_t*)pt_pa;
-    uint32_t index = (va >> 12) & 0x3FF;
-    pt[index] = (pa & ~0xFFFu) | 0x07; // present, RW, user
+    return n;
+}
+
+static int in_stack_region(uint32_t addr) {
+    return addr >= USER_STACK_LOW && addr < USER_STACK_TOP;
+}
+
+int user_fault_fixup(uint32_t addr, uint32_t err) {
+    if (err & 1) return 0;  // the page was present: a protection violation
+    if (!in_stack_region(addr)) return 0;
+    return as_map(current->cr3, ALIGN_DOWN(addr, PAGE_SIZE), 1) != 0;
+}
+
+// Validate one page of the current address space for access, growing
+// the stack if the page lies in the stack region and is not mapped.
+static int page_ok(uint32_t va, int write) {
+    int w = 0;
+    if (as_lookup(current->cr3, va, &w)) return !write || w;
+    if (in_stack_region(va)) return as_map(current->cr3, ALIGN_DOWN(va, PAGE_SIZE), 1) != 0;
     return 0;
 }
 
-// Free a user task's paging structures and every user frame they
-// map. Walks the single user page table (directory index 32) and
-// frees each present frame, then the table, then the directory.
-// Kernel identity entries are shared, not owned, so they are left
-// alone: freeing them would pull the kernel's own mappings out
-// from under every other task.
-void paging_destroy_user_pd(uint32_t pd_pa) {
-    if (!pd_pa || pd_pa == kernel_pd_pa) return;
-    uint32_t* pd = (uint32_t*)pd_pa;
-    uint32_t pde = pd[PD_USER_INDEX];
-    if (pde & 1) {
-        uint32_t pt_pa = pde & ~0xFFFu;
-        uint32_t* pt = (uint32_t*)pt_pa;
-        for (int i = 0; i < 1024; i++) {
-            if (pt[i] & 1) frame_free(pt[i] & ~0xFFFu);
+int user_range_ok(uint32_t uaddr, uint32_t len, int write) {
+    if (len == 0) return 0;
+    uint32_t end = uaddr + len;
+    if (uaddr < USER_BASE || end < uaddr || end > USER_TOP) return -EFAULT;
+    for (uint32_t p = ALIGN_DOWN(uaddr, PAGE_SIZE); p < end; p += PAGE_SIZE) {
+        if (!page_ok(p, write)) return -EFAULT;
+        if (p + PAGE_SIZE < p) break;
+    }
+    return 0;
+}
+
+int copy_from_user(void* dst, const void* usrc, size_t len) {
+    if (user_range_ok((uint32_t)usrc, len, 0)) return -EFAULT;
+    memcpy(dst, usrc, len);
+    return 0;
+}
+
+int copy_to_user(void* udst, const void* src, size_t len) {
+    if (user_range_ok((uint32_t)udst, len, 1)) return -EFAULT;
+    memcpy(udst, src, len);
+    return 0;
+}
+
+int strncpy_from_user(char* dst, const char* usrc, size_t max) {
+    uint32_t a = (uint32_t)usrc;
+    for (size_t i = 0; i < max; i++, a++) {
+        if (i == 0 || (a & (PAGE_SIZE - 1)) == 0) {
+            if (user_range_ok(a, 1, 0)) return -EFAULT;
         }
-        frame_free(pt_pa);
+        dst[i] = *(const char*)a;
+        if (!dst[i]) return (int)i;
     }
-    frame_free(pd_pa);
-}
-
-// Page fault diagnostics: the stub in isr.asm passes the CPU's
-// error code and the faulting address (CR2). v0.7.1: this is
-// now a recovery point, not just a diagnostic. If the faulting
-// task is a user program, the handler breaks the print lock (the
-// fault may have happened while the program held it through a
-// syscall, and a dead owner would deadlock every later print),
-// prints the fault, and kills the task via task_exit, which
-// switches away and never returns: the task's page directory,
-// frames, and stacks are freed by the main loop's cleanup, and
-// the shell and every other task keep running. If the faulting
-// task is a kernel task, there is no safe recovery: a kernel
-// fault is an OS bug, and killing the shell would leave no
-// prompt at all, so the handler prints and halts, as before.
-// Note the decision is by TASK, not by privilege level at fault
-// time: a syscall with a bad user pointer faults in ring 0
-// (the kernel is reading the pointer), but it is still the user
-// program's fault, so it is still killed, not halted. That turns
-// the shallow syscall pointer validation from an OS-killer into
-// a program-killer, which is the right tradeoff for this scope.
-// The error code bits, for the reader: bit 0 = page was present
-// (1) or not (0), bit 1 = write (1) or read (0), bit 2 = fault
-// from user mode (1) or kernel (0). So "code 5, addr 0" means a
-// user read of a present supervisor page: the memory wall doing
-// its job, now with a survivable ending.
-extern void print(const char* s);
-extern void print_char(char c);
-extern void vga_lock_break(void);
-extern int task_current_is_user(void);
-extern void task_exit(void);
-extern void faultlog_add(const char* msg);
-
-// Buffer append helpers, v0.10.3. Same reason as in idt.c:
-// build one diagnostic string, log it, then print it, so
-// the log and the screen agree exactly. Bounded to 63
-// characters plus null, truncating rather than overflowing.
-static void buf_append_str(char* buf, int* idx, const char* s) {
-    while (*s && *idx < 63) buf[(*idx)++] = *s++;
-}
-static void buf_append_dec(char* buf, int* idx, uint32_t n) {
-    char tmp[12];
-    int i = 0;
-    if (n == 0) { if (*idx < 63) buf[(*idx)++] = '0'; return; }
-    while (n > 0) { tmp[i++] = (char)('0' + (n % 10)); n /= 10; }
-    while (i > 0 && *idx < 63) buf[(*idx)++] = tmp[--i];
-}
-static void buf_append_hex32(char* buf, int* idx, uint32_t n) {
-    const char* digits = "0123456789ABCDEF";
-    buf_append_str(buf, idx, "0x");
-    for (int i = 7; i >= 0; i--) {
-        if (*idx < 63) buf[(*idx)++] = digits[(n >> (i * 4)) & 0xF];
-    }
-}
-
-void page_fault_handler(uint32_t err, uint32_t addr) {
-    // Interrupts are off in the trap (interrupt gate), so no
-    // other task can print concurrently during this diagnostic:
-    // printing without the print lock here is safe, and breaking
-    // the lock first is what makes later prints safe again.
-    // v0.10.3: log the diagnostic before printing it, so a
-    // graphics-mode fault is still readable from `faults`
-    // after the text restore wipes the screen version. The
-    // log call comes before task_exit, which never returns.
-    vga_lock_break();
-    int is_user = task_current_is_user();
-    char buf[64];
-    int idx = 0;
-    buf_append_str(buf, &idx, "PAGE FAULT addr=");
-    buf_append_hex32(buf, &idx, addr);
-    buf_append_str(buf, &idx, " code=");
-    buf_append_dec(buf, &idx, err);
-    if (is_user) buf_append_str(buf, &idx, " - task killed.");
-    else buf_append_str(buf, &idx, " - system halted.");
-    buf[idx] = 0;
-    faultlog_add(buf);
-    print("\n");
-    print(buf);
-    print("\n");
-    if (is_user) {
-        task_exit(); // never returns: switches away from the dead task
-        while (1) __asm__ volatile("hlt"); // backstop, unreachable
-    }
-    while (1) __asm__ volatile("hlt");
+    if (max) dst[max - 1] = 0;
+    return -ENAMETOOLONG;
 }

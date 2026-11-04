@@ -1,95 +1,65 @@
-// filedemo: the first program that uses the disk, not just the
-// screen. It opens demo.txt (creating it if it is not there),
-// writes a line through the write syscall, closes, reopens,
-// reads the line back through the read syscall, and prints what
-// it read, so the output proves the round trip instead of just
-// claiming it. It deliberately leaves demo.txt on disk: after
-// the program exits, the shell can cat demo.txt and see the
-// program's writing, which is the cross-boundary proof that a
-// program and the shell share one filesystem. It also checks
-// two error paths, because a demo that only shows the happy
-// path does not prove validation: reading a closed descriptor
-// must fail, and opening a 32-character name must fail, and the
-// program prints whether each check behaved as expected.
-// Same packaging as the other programs: separate binary, linked
-// at 0x08000000, entry at offset 0, ends in sys_exit.
-#include "syscall_stub.h"
+// Files through system calls: create, write, read back, append,
+// error paths, descriptor limits, and a write that spans clusters.
+#include "ulib.h"
 
-static void utoa(int n, char* out) {
-    char tmp[12];
-    int i = 0;
-    if (n == 0) { out[0] = '0'; out[1] = 0; return; }
-    while (n > 0) { tmp[i++] = '0' + (n % 10); n /= 10; }
-    int j = 0;
-    while (i > 0) out[j++] = tmp[--i];
-    out[j] = 0;
-}
+static char big[10000], back[10000];
 
-static void print_num(int n) {
-    char buf[12];
-    utoa(n, buf);
-    sys_print(buf, prog_strlen(buf));
-}
-
-__attribute__((section(".text._start"))) void _start(void) {
-    int fd = sys_open("demo.txt");
-    if (fd < 0) {
-        const char* msg = "open failed\n";
-        sys_print(msg, prog_strlen(msg));
-        sys_exit();
-    }
-    const char* hdr = "fd=";
-    sys_print(hdr, prog_strlen(hdr));
-    print_num(fd);
-    sys_print("\n", 1);
-
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
     const char* text = "Hello from a program!\n";
-    int written = sys_write(fd, text, prog_strlen(text));
-    const char* whdr = "wrote ";
-    sys_print(whdr, prog_strlen(whdr));
-    print_num(written);
-    sys_print(" bytes\n", 7);
+    uint32_t len = strlen(text);
+    char buf[64];
+
+    int fd = sys_open("DEMO.TXT", O_RDWR | O_CREAT | O_TRUNC);
+    check(fd >= 2, "create DEMO.TXT");
+    check(sys_write(fd, text, len) == (int)len, "write 22 bytes");
+    check(sys_close(fd) == 0, "close");
+
+    fd = sys_open("demo.txt", O_RDONLY);
+    check(fd >= 2, "reopen read-only (names are case-insensitive)");
+    int n = sys_read(fd, buf, sizeof buf);
+    check(n == (int)len && memcmp(buf, text, len) == 0, "read back the same bytes");
+    check(sys_read(fd, buf, sizeof buf) == 0, "then end of file");
+    check(sys_write(fd, "x", 1) == -EBADF, "write to a read-only descriptor gives EBADF");
+    sys_close(fd);
+    check(sys_read(fd, buf, 4) == -EBADF, "read from a closed descriptor gives EBADF");
+
+    fd = sys_open("DEMO.TXT", O_WRONLY | O_APPEND);
+    check(sys_write(fd, "more\n", 5) == 5, "append 5 bytes");
+    check(sys_read(fd, buf, 4) == -EBADF, "read from a write-only descriptor gives EBADF");
+    sys_close(fd);
+    fd = sys_open("DEMO.TXT", O_RDONLY);
+    n = sys_read(fd, buf, sizeof buf);
+    check(n == (int)len + 5 && memcmp(buf + len, "more\n", 5) == 0, "appended data is at the end");
     sys_close(fd);
 
-    fd = sys_open("demo.txt");
-    if (fd < 0) {
-        const char* msg = "reopen failed\n";
-        sys_print(msg, prog_strlen(msg));
-        sys_exit();
+    check(sys_open("NOFILE.TXT", O_RDONLY) == -ENOENT, "open of a missing file gives ENOENT");
+    check(sys_open("12345678901234567890123456789012", O_RDWR | O_CREAT) == -EINVAL,
+          "a name that does not fit 8.3 gives EINVAL");
+    check(sys_open("BAD*.TXT", O_RDWR | O_CREAT) == -EINVAL, "a forbidden character gives EINVAL");
+    check(sys_open("DEMO.TXT", O_RDONLY | O_TRUNC) == -EINVAL, "truncating read-only gives EINVAL");
+
+    int opened = 0, last = 0;
+    int held[32];
+    for (int i = 0; i < 32; i++) {
+        last = sys_open("DEMO.TXT", O_RDONLY);
+        if (last < 0) break;
+        held[opened++] = last;
     }
-    char buf[128];
-    int readn = sys_read(fd, buf, sizeof(buf) - 1);
-    if (readn < 0) {
-        const char* msg = "read failed\n";
-        sys_print(msg, prog_strlen(msg));
-        sys_exit();
-    }
-    buf[readn] = 0;
-    const char* rhdr = "read back: ";
-    sys_print(rhdr, prog_strlen(rhdr));
-    sys_print(buf, readn);
+    check(last == -EMFILE && opened == 14, "the 15th open gives EMFILE (16 slots, 2 are stdio)");
+    for (int i = 0; i < opened; i++) sys_close(held[i]);
+
+    for (uint32_t i = 0; i < sizeof big; i++) big[i] = (char)(i * 7 + i / 251);
+    fd = sys_open("BIG.DAT", O_RDWR | O_CREAT | O_TRUNC);
+    check(sys_write(fd, big, sizeof big) == (int)sizeof big, "write 10000 bytes");
+    check(sys_seek(fd, 0, SEEK_SET) == 0, "seek back to the start");
+    check(sys_read(fd, back, sizeof back) == (int)sizeof back && memcmp(big, back, sizeof big) == 0,
+          "read all 10000 back intact");
+    check(sys_seek(fd, 5000, SEEK_SET) == 5000 && sys_read(fd, back, 100) == 100 &&
+          memcmp(back, big + 5000, 100) == 0, "read 100 from the middle");
     sys_close(fd);
-
-    // Error path 1: reading a closed descriptor must fail.
-    int bad = sys_read(fd, buf, 10);
-    if (bad < 0) {
-        const char* msg = "closed fd read correctly failed\n";
-        sys_print(msg, prog_strlen(msg));
-    } else {
-        const char* msg = "ERROR: closed fd read succeeded\n";
-        sys_print(msg, prog_strlen(msg));
-    }
-
-    // Error path 2: a 32-character name must fail (too long for 8.3).
-    int longfd = sys_open("12345678901234567890123456789012");
-    if (longfd < 0) {
-        const char* msg = "long name correctly rejected\n";
-        sys_print(msg, prog_strlen(msg));
-    } else {
-        const char* msg = "ERROR: long name accepted\n";
-        sys_print(msg, prog_strlen(msg));
-        sys_close(longfd);
-    }
-
-    sys_exit();
+    check(sys_delete("BIG.DAT") == 0, "delete BIG.DAT");
+    check(sys_delete("DEMO.TXT") == 0, "delete DEMO.TXT");
+    check(sys_open("DEMO.TXT", O_RDONLY) == -ENOENT, "it is gone");
+    return check_summary("filedemo");
 }

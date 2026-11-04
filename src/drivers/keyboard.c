@@ -1,165 +1,121 @@
-// The interrupt handler no longer runs the shell. It only
-// reads the scancode, enqueues it, and sends EOI. The kernel main
-// loop dequeues scancodes and calls keyboard_process_scancode, so
-// file operations, allocations, and terminal output all happen in
-// normal kernel context, not interrupt context. This is the
-// foundation a scheduler needs: before this change, the shell ran
-// inside the keyboard ISR, and sleep needed an sti/hlt/cli dance
-// plus a key-drop guard to avoid re-entering the shell.
-//
-// Queue discipline: key_head is written only by the ISR, key_tail
-// only by the main loop, so no lock is needed. Head and tail are
-// 32-bit counters masked to 256 entries; their difference, in
-// unsigned arithmetic, is the queue depth. A full queue drops new
-// keys rather than overwriting queued ones. A main loop that
-// drains the queue and then halts cannot deadlock on a lost
-// wakeup: the PIT ticks every 10 ms and wakes it regardless.
+// PS/2 keyboard, scancode set 1. The interrupt handler translates
+// scancodes to characters (shift, caps lock, ctrl, the E0-prefixed
+// keys) and hands them to the terminal. While a program owns the
+// graphics display it gets the raw scancodes instead, through a
+// separate queue, because games and GUIs want key-up events too.
+#include "kernel.h"
+#include "arch.h"
+#include "interrupt.h"
+#include "drivers.h"
+#include "tty.h"
+#include "task.h"
 
-#include <stdint.h>
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static char scancode_to_char[128] = {
-    0,  27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b',
-    '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n', 0,
-    'a','s','d','f','g','h','j','k','l',';','\'','`', 0,
-    '\\','z','x','c','v','b','n','m',',','.','/', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+static const char normal_map[128] = {
+    0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0,
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0,
+    '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+    '*', 0, ' ',
+};
+static const char shift_map[128] = {
+    0, 0x1B, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
+    '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', 0,
+    'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', 0,
+    '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
+    '*', 0, ' ',
 };
 
-#define KEY_QUEUE_SIZE 256
+#define SC_LCTRL  0x1D
+#define SC_LSHIFT 0x2A
+#define SC_RSHIFT 0x36
+#define SC_CAPS   0x3A
+#define SC_UP     0x48
+#define SC_LEFT   0x4B
+#define SC_RIGHT  0x4D
+#define SC_DOWN   0x50
 
-static volatile uint8_t key_queue[KEY_QUEUE_SIZE];
-static volatile uint32_t key_head = 0; // ISR only
-static volatile uint32_t key_tail = 0; // main loop only
+#define RAW_SIZE 256
+static volatile uint8_t raw_queue[RAW_SIZE];
+static volatile uint32_t raw_head, raw_tail;
 
-extern void task_wake_input_waiters(void);
+static int ext, lshift, rshift, lctrl, rctrl, caps;
 
-// Called from keyboard_isr (isr.asm). Keep it short: read, enqueue,
-// acknowledge. Never call the shell from here. v0.10.3: a
-// successfully enqueued key wakes input waiters, so a task
-// blocked in WAIT wakes on the next timer tick or yield after
-// this interrupt. A dropped key (queue full) does not wake:
-// no new input was delivered, and waiters that should already
-// be awake were woken by the key that filled the queue.
-void keyboard_handler(void) {
-    uint8_t scancode = inb(0x60);
-    if ((key_head - key_tail) < KEY_QUEUE_SIZE) {
-        key_queue[key_head & (KEY_QUEUE_SIZE - 1)] = scancode;
-        key_head++;
-        task_wake_input_waiters();
+static void translate(uint8_t sc) {
+    if (sc == 0xE0) { ext = 1; return; }
+    int was_ext = ext;
+    ext = 0;
+    int release = sc & 0x80;
+    uint8_t code = sc & 0x7F;
+
+    if (code == SC_LCTRL) {
+        if (was_ext) rctrl = !release; else lctrl = !release;
+        return;
     }
-    // else: queue full, drop the key rather than overwriting one
-    outb(0x20, 0x20);
-}
-
-// Called from the kernel main loop. Returns -1 if the queue is
-// empty, otherwise the next scancode.
-int keyboard_poll(void) {
-    if (key_tail == key_head) return -1;
-    uint8_t scancode = key_queue[key_tail & (KEY_QUEUE_SIZE - 1)];
-    key_tail++;
-    return scancode;
-}
-
-// v0.10.3: peek, not dequeue. WAIT needs to know whether a key
-// is already queued before it decides to sleep, without
-// consuming that key: the caller will read it with
-// keyboard_poll (via KEY_GET) after WAIT returns. Returns 1
-// if the queue is non-empty, 0 if it is empty. Head is
-// ISR-only and tail is drainer-only, so a snapshot read is
-// safe, and WAIT reads it under cli, so an interrupt cannot
-// change head between the check and the block.
-int keyboard_pending(void) {
-    return key_head != key_tail;
-}
-
-extern void shell_putchar(char c);
-extern void shell_backspace(void);
-extern void shell_enter(void);
-extern void shell_history_prev(void);
-extern void shell_history_next(void);
-
-// Shifted symbol for a non-letter key (digits and punctuation).
-static char shift_char(char c) {
-    switch (c) {
-        case '1': return '!'; case '2': return '@'; case '3': return '#';
-        case '4': return '$'; case '5': return '%'; case '6': return '^';
-        case '7': return '&'; case '8': return '*'; case '9': return '(';
-        case '0': return ')'; case '-': return '_'; case '=': return '+';
-        case '[': return '{'; case ']': return '}'; case ';': return ':';
-        case '\'': return '"'; case '`': return '~'; case '\\': return '|';
-        case ',': return '<'; case '.': return '>'; case '/': return '?';
-        default: return c;
-    }
-}
-
-// Runs in the kernel main loop, not in interrupt context. This is
-// the v0.2.3 scancode state machine, unchanged in behavior: E0
-// extended keys, shift (left/right) and caps lock, tab ignored.
-void keyboard_process_scancode(uint8_t scancode) {
-    static int ext = 0;         // previous byte was 0xE0
-    static int shift_left = 0;  // left shift held
-    static int shift_right = 0; // right shift held
-    static int caps = 0;        // caps lock toggled
-
-    if (ext) {
-        // Extended key (arrows, etc.): second byte, or second byte
-        // with the high bit set for a release. Releases are ignored;
-        // left/right are ignored too, the shell has no mid-line
-        // cursor yet, so there is nothing sensible to do with them.
-        ext = 0;
-        if (!(scancode & 0x80)) {
-            if (scancode == 72) shell_history_prev();
-            else if (scancode == 80) shell_history_next();
+    if (code == SC_LSHIFT || code == SC_RSHIFT) {
+        // E0 2A / E0 AA are fake shifts some keyboards send around
+        // the navigation keys; they are not the user's shift.
+        if (!was_ext) {
+            if (code == SC_LSHIFT) lshift = !release; else rshift = !release;
         }
         return;
     }
-
-    if (scancode == 0xE0) {
-        ext = 1;
+    if (release) return;
+    if (code == SC_CAPS) { caps = !caps; return; }
+    switch (code) {
+    case SC_UP: tty_input(KEY_UP); return;
+    case SC_DOWN: tty_input(KEY_DOWN); return;
+    case SC_LEFT: tty_input(KEY_LEFT); return;
+    case SC_RIGHT: tty_input(KEY_RIGHT); return;
+    }
+    if (was_ext) {
+        if (code == 0x1C) tty_input('\n');      // keypad Enter
+        else if (code == 0x35) tty_input('/');  // keypad slash
         return;
     }
-
-    if (scancode & 0x80) {
-        // Key release: only shift state changes.
-        uint8_t make = scancode & 0x7F;
-        if (make == 42) shift_left = 0;
-        else if (make == 54) shift_right = 0;
-    } else if (scancode == 42) {
-        shift_left = 1;
-    } else if (scancode == 54) {
-        shift_right = 1;
-    } else if (scancode == 58) {
-        caps = !caps; // caps lock toggles on press, not on release
-    } else if (scancode == 72) {
-        shell_history_prev(); // keypad up
-    } else if (scancode == 80) {
-        shell_history_next(); // keypad down
-    } else {
-        char c = scancode_to_char[scancode];
-        if (c == '\n') {
-            shell_enter();
-        } else if (c == '\b') {
-            shell_backspace();
-        } else if (c == '\t') {
-            // Ignored: no tab completion yet, and printing a tab
-            // wrote a raw VGA glyph instead of moving the cursor.
-        } else if (c != 0) {
-            int shift = shift_left || shift_right;
-            if (c >= 'a' && c <= 'z') {
-                if (shift ^ caps) c = (char)(c - 'a' + 'A');
-            } else if (shift) {
-                c = shift_char(c);
-            }
-            shell_putchar(c);
-        }
+    int shift = lshift || rshift;
+    char c = shift ? shift_map[code] : normal_map[code];
+    if (!c) return;
+    if (c >= 'a' && c <= 'z' && caps && !shift) c = (char)(c - 'a' + 'A');
+    else if (c >= 'A' && c <= 'Z' && caps && shift) c = (char)(c - 'A' + 'a');
+    if (lctrl || rctrl) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) c = (char)(c & 0x1F);
+        else return;
     }
+    tty_input((uint8_t)c);
+}
+
+static void keyboard_irq(void) {
+    uint8_t sc = inb(0x60);
+    if (gfx_owner() >= 0) {
+        if (raw_head - raw_tail < RAW_SIZE) {
+            raw_queue[raw_head % RAW_SIZE] = sc;
+            raw_head++;
+        }
+        task_wakeup(&input_chan);
+    }
+    translate(sc);
+}
+
+void keyboard_init(void) {
+    while (inb(0x64) & 0x01) (void)inb(0x60);  // drop anything stale
+    irq_register(IRQ_KEYBOARD, keyboard_irq);
+}
+
+int keyboard_raw_get(void) {
+    uint32_t f = irq_save();
+    int r = -1;
+    if (raw_tail != raw_head) {
+        r = raw_queue[raw_tail % RAW_SIZE];
+        raw_tail++;
+    }
+    irq_restore(f);
+    return r;
+}
+
+int keyboard_raw_pending(void) { return raw_head != raw_tail; }
+
+void keyboard_raw_flush(void) {
+    uint32_t f = irq_save();
+    raw_tail = raw_head;
+    irq_restore(f);
 }

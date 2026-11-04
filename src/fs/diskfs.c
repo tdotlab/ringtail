@@ -1,801 +1,564 @@
-// v0.10.0: disk filesystem, now FAT16, the standard layout.
-// A filesystem is just how an OS organizes files on a disk:
-// where each file starts, how big it is, which pieces belong
-// to it, and what is free. RTFS, the previous filesystem, was
-// a homemade flat layout: a fixed directory, a bitmap, and
-// each file in one unbroken run of sectors. It worked, and it
-// was small enough to hold in mind, but no other computer
-// could read it. FAT is the standard alternative, used by DOS,
-// old Windows, USB sticks, and SD cards, and its name is
-// literal: File Allocation Table.
-// How FAT works, in plain terms. The disk is split into equal
-// chunks called clusters (here, one sector each in our own
-// images, though the kernel accepts any power-of-two cluster
-// size a real tool might choose). Near the start of the disk
-// sits a table, one entry per cluster, saying what that
-// cluster holds: 0 means free, a cluster number means "the
-// next piece of this file is that cluster", and a special
-// end value means "this is the last piece". A file is a chain
-// followed through that table, so its pieces do not have to
-// sit next to each other: deleting a file in the middle
-// leaves holes, and a new file can fill those holes, which
-// RTFS could not do (it needed one unbroken run, and failed
-// when none fit, even with free space scattered around).
-// Layout, in order. Sector 0 is the boot sector with a BPB,
-// a BIOS Parameter Block: a small table saying how big a
-// sector is, how many sectors per cluster, how many reserved
-// sectors, how many copies of the FAT, how many root
-// directory entries, how many sectors the disk has in total,
-// and how big one FAT is. The kernel reads that table at
-// init and works out everything else from it, instead of
-// hardcoding RTFS-style constants, so it can read disks made
-// by real tools, not just disks made by its own packing tool.
-// After the reserved sectors come the FAT copies (two, kept
-// in sync, the standard redundancy), then the root directory
-// (a fixed table, 512 entries in our images, 32 bytes each),
-// then the data area, where cluster 2 is the first data
-// cluster (clusters 0 and 1 are reserved, by convention).
-// Names are the DOS 8.3 quirk: at most 8 characters, then a
-// dot, then at most 3 for the extension, stored uppercase,
-// padded with spaces, with no dot stored at all (the dot is
-// implied between byte 8 and byte 9). "demo.txt" is stored
-// as "DEMO    TXT". The kernel converts user names to that
-// form on every operation, so typing lowercase still finds
-// the file, and converts back for listing, so ls shows
-// "DEMO.TXT". Names that do not fit 8.3, or use characters
-// FAT forbids, are rejected, which is a visible change from
-// RTFS (which allowed 31 characters, any case).
-// What this version does not do, on purpose. No long file
-// names (the extra entries real tools put before a short
-// entry are skipped, not understood, so a file made elsewhere
-// with a long name is reached by its short name, like
-// LONGFI~1.TXT, and deleting it leaves its long-name entries
-// orphaned in the directory, harmless but wasted slots).
-// No subdirectories: only the root directory is used, like
-// RTFS, so ls, cat, and run all work on root files only.
-// No timestamps: directory date and time fields are left
-// zero, because there is no clock yet to fill them honestly.
-// No journaling: like RTFS, a crash mid-write can leave the
-// FAT and directory disagreeing, and there is no log to
-// replay. FAT16 only: the cluster count decides the type,
-// per the spec, and counts below 4085 (FAT12) or at or above
-// 65525 (FAT32) are rejected, with a clear message, instead
-// of being misread. The 64 KB whole-file cap from the loader
-// stays: FAT itself has no such cap, but read_all still
-// refuses files over 64 KB, so programs stay tiny for now.
-// The public API is unchanged from RTFS, on purpose: the
-// same diskfs_* names, the same return codes, the same
-// whole-file overwrite semantics (allocate a new chain,
-// write it, then free the old chain, so a failed write
-// leaves the old file intact). That is what makes this a
-// contained swap: the ATA driver, the loader, the syscalls,
-// and the shell all call the same functions, and only this
-// file, the packing tool, and the version strings change.
-// The FAT and the root directory live in RAM after init
-// (loaded from disk once) and are written back to disk on
-// every mutation, like RTFS did with its directory and
-// bitmap. Data sectors are never cached: they are read from
-// and written to disk on each operation. All public
-// functions run under interrupt save/restore, so a timer
-// switch cannot catch a FAT or directory update half done.
-// The sector buffer is a single heap allocation reused by
-// every operation, which is safe under that lock.
+// FAT16 filesystem on the primary ATA disk, root directory only.
+//
+// Layout (all derived from the BPB in sector 0, so images made by
+// other tools work): reserved sectors, the FAT copies, the fixed
+// root directory, then the data area where cluster 2 is the first
+// data cluster. Names are DOS 8.3, stored uppercase.
+//
+// The FAT and root directory are held in memory. Mutations mark the
+// sectors they touch dirty, and commit() writes those back (every
+// FAT copy, then the directory) and flushes the disk cache. File
+// data is written before the metadata that points at it, so a crash
+// can leak clusters but not expose another file's data.
+//
+// Not supported: long file names (their entries are skipped),
+// subdirectories, timestamps, FAT12 and FAT32.
+//
+// Concurrency: one mutex around every public call. Interrupts stay
+// on, so the disk wait does not freeze the machine.
+#include "fs.h"
+#include "lib.h"
+#include "mm.h"
+#include "drivers.h"
+#include "ringtail/abi.h"
 
-#include <stdint.h>
+#ifdef RINGTAIL_KERNEL
+#include "sync.h"
+static mutex_t fs_lock = MUTEX_INIT;
+#define LOCK()   mutex_lock(&fs_lock)
+#define UNLOCK() mutex_unlock(&fs_lock)
+#else
+#define LOCK()   ((void)0)
+#define UNLOCK() ((void)0)
+#endif
 
-#define SECTOR_SIZE 512
-#define FAT_EOC_MIN 0xFFF8
-#define FAT_BAD 0xFFF7
-#define ATTR_READ_ONLY 0x01
-#define ATTR_HIDDEN 0x02
-#define ATTR_SYSTEM 0x04
+#define SECTOR 512u
+#define FAT_EOC 0xFFFFu
+#define FAT_EOC_MIN 0xFFF8u
 #define ATTR_VOLUME 0x08
 #define ATTR_DIRECTORY 0x10
 #define ATTR_ARCHIVE 0x20
 #define ATTR_LFN 0x0F
-
-// BPB offsets in sector 0.
-#define BPB_BYTES_PER_SECTOR 11
-#define BPB_SECTORS_PER_CLUSTER 13
-#define BPB_RESERVED 14
-#define BPB_NUM_FATS 16
-#define BPB_ROOT_ENTRIES 17
-#define BPB_TOTAL16 19
-#define BPB_MEDIA 21
-#define BPB_FAT_SIZE16 22
-#define BPB_TOTAL32 32
-// Directory entry offsets (32 bytes).
-#define DIR_NAME 0
 #define DIR_ATTR 11
 #define DIR_FIRST_HIGH 20
 #define DIR_FIRST_LOW 26
 #define DIR_SIZE 28
+#define MAX_FATS 4
 
-extern int ata_read_sector(uint32_t lba, uint8_t* buf);
-extern int ata_write_sector(uint32_t lba, const uint8_t* buf);
-extern void* kmalloc(uint32_t size);
-extern int kfree(void* ptr);
-extern void print(const char* s);
-extern void print_char(char c);
+static int fs_ok;
+static uint32_t spc;            // sectors per cluster
+static uint32_t cbytes;         // bytes per cluster
+static uint32_t num_fats, fat_sectors, fat_start;
+static uint32_t root_entries, root_start, root_sectors;
+static uint32_t data_start, cluster_count;
+static uint32_t free_hint = 2;
 
-static int fs_ok = 0;
-static uint32_t sectors_per_cluster = 0;
-static uint32_t cluster_bytes = 0;
-static uint32_t reserved_sectors = 0;
-static uint32_t num_fats = 0;
-static uint32_t root_entries = 0;
-static uint32_t total_sectors = 0;
-static uint32_t fat_size_sectors = 0;
-static uint32_t fat_start = 0;
-static uint32_t root_start = 0;
-static uint32_t root_sectors = 0;
-static uint32_t data_start = 0;
-static uint32_t cluster_count = 0;
-static uint8_t* fat_buf = 0;
-static uint8_t* root_buf = 0;
-static uint8_t* sector_buf = 0;
+static uint16_t* fat;           // fat_sectors * 256 entries
+static uint8_t* root;           // root_sectors * 512 bytes
+static uint8_t* fat_dirty;      // one flag per FAT sector
+static uint8_t* root_dirty;     // one flag per root sector
+static uint16_t* refs;          // open count per root entry
+static uint8_t* secbuf;         // scratch sector, used under the lock
 
-static int my_strlen(const char* s) {
-    int n = 0;
-    while (s[n]) n++;
-    return n;
+static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t rd32(const uint8_t* p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+static void wr16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void wr32(uint8_t* p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
+
+// ---- Names ----
+
+static int bad_char(char c) {
+    if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7F) return 1;
+    return strchr(" \"*+,/:;<=>?[\\]|.", c) != 0;
 }
 
-static void print_num(uint32_t n) {
-    char buf[12];
-    int i = 0;
-    if (n == 0) { print_char('0'); return; }
-    while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
-    while (i > 0) print_char(buf[--i]);
-}
-
-#ifdef RINGTAIL_KERNEL
-static uint32_t irq_save(void) {
-    uint32_t flags;
-    __asm__ volatile("pushf; pop %0" : "=r"(flags));
-    __asm__ volatile("cli");
-    return flags;
-}
-static void irq_restore(uint32_t flags) {
-    if (flags & 0x200) __asm__ volatile("sti");
-}
-#else
-static uint32_t irq_save(void) { return 0x200; }
-static void irq_restore(uint32_t flags) { (void)flags; }
-#endif
-
-static uint16_t get_u16(const uint8_t* p, uint32_t off) {
-    return (uint16_t)p[off] | ((uint16_t)p[off + 1] << 8);
-}
-
-static uint32_t get_u32(const uint8_t* p, uint32_t off) {
-    return (uint32_t)p[off] | ((uint32_t)p[off + 1] << 8) |
-           ((uint32_t)p[off + 2] << 16) | ((uint32_t)p[off + 3] << 24);
-}
-
-static void put_u16(uint8_t* p, uint32_t off, uint16_t v) {
-    p[off] = v & 0xFF;
-    p[off + 1] = (v >> 8) & 0xFF;
-}
-
-static void put_u32(uint8_t* p, uint32_t off, uint32_t v) {
-    p[off] = v & 0xFF;
-    p[off + 1] = (v >> 8) & 0xFF;
-    p[off + 2] = (v >> 16) & 0xFF;
-    p[off + 3] = (v >> 24) & 0xFF;
-}
-
-static int is_power_of_two(uint32_t n) {
-    return n != 0 && (n & (n - 1)) == 0;
-}
-
-// Convert a user name to the 11-byte FAT raw form (8 + 3,
-// uppercase, space-padded, no dot). Returns 0 on success,
-// -1 if the name does not fit 8.3 or uses a forbidden
-// character. Lowercase is uppercased, so lookup is
-// case-insensitive; the raw form is what directory entries
-// are compared against.
+// User name to the 11-byte raw form. 0 on success, -1 if it does not
+// fit 8.3 or uses a character FAT forbids. Lowercase is folded.
 static int name_to_raw(const char* name, uint8_t raw[11]) {
-    if (!name || name[0] == 0) return -1;
-    const char* dot = 0;
-    int dots = 0;
-    for (int i = 0; name[i]; i++) {
-        if (name[i] == '.') { dots++; dot = name + i; }
-    }
-    if (dots > 1) return -1;
-    int base_len = dot ? (int)(dot - name) : my_strlen(name);
-    int ext_len = dot ? my_strlen(dot + 1) : 0;
-    if (base_len < 1 || base_len > 8 || ext_len > 3) return -1;
-    for (int i = 0; i < 11; i++) raw[i] = ' ';
-    for (int i = 0; i < base_len; i++) {
+    if (!name) return -1;
+    const char* dot = strchr(name, '.');
+    size_t len = strlen(name);
+    size_t base = dot ? (size_t)(dot - name) : len;
+    size_t ext = dot ? len - base - 1 : 0;
+    if (base < 1 || base > 8 || ext > 3) return -1;
+    if (dot && ext == 0) return -1;  // "NAME." is not a name
+    memset(raw, ' ', 11);
+    for (size_t i = 0; i < base; i++) {
         char c = name[i];
-        if (c < 0x20 || c == 0x7F) return -1;
-        if (c == ' ' || c == '"' || c == '*' || c == '+' || c == ',' ||
-            c == '/' || c == ':' || c == ';' || c == '<' || c == '=' ||
-            c == '>' || c == '?' || c == '[' || c == '\\' || c == ']' ||
-            c == '|') return -1;
-        if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
-        raw[i] = (uint8_t)c;
+        if (bad_char(c)) return -1;
+        raw[i] = (uint8_t)((c >= 'a' && c <= 'z') ? c - 32 : c);
     }
-    for (int i = 0; i < ext_len; i++) {
+    for (size_t i = 0; i < ext; i++) {
         char c = dot[1 + i];
-        if (c < 0x20 || c == 0x7F) return -1;
-        if (c == ' ' || c == '"' || c == '*' || c == '+' || c == ',' ||
-            c == '/' || c == ':' || c == ';' || c == '<' || c == '=' ||
-            c == '>' || c == '?' || c == '[' || c == '\\' || c == ']' ||
-            c == '|') return -1;
-        if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
-        raw[8 + i] = (uint8_t)c;
+        if (bad_char(c)) return -1;
+        raw[8 + i] = (uint8_t)((c >= 'a' && c <= 'z') ? c - 32 : c);
     }
     return 0;
 }
 
-// Convert a raw 11-byte name back to display form
-// ("DEMO    TXT" -> "DEMO.TXT", "WELCOME     " -> "WELCOME").
-// out must hold 13 bytes (8 + 1 + 3 + null).
-static void raw_to_display(const uint8_t raw[11], char out[13]) {
-    int bi = 8;
-    while (bi > 0 && raw[bi - 1] == ' ') bi--;
-    int ei = 3;
-    while (ei > 0 && raw[8 + ei - 1] == ' ') ei--;
-    int o = 0;
-    for (int i = 0; i < bi; i++) out[o++] = (char)raw[i];
-    if (ei > 0) {
+static void raw_to_display(const uint8_t raw[11], char out[FS_NAME_MAX]) {
+    int b = 8, e = 3, o = 0;
+    while (b > 0 && raw[b - 1] == ' ') b--;
+    while (e > 0 && raw[8 + e - 1] == ' ') e--;
+    for (int i = 0; i < b; i++) out[o++] = (char)raw[i];
+    if (e > 0) {
         out[o++] = '.';
-        for (int i = 0; i < ei; i++) out[o++] = (char)raw[8 + i];
+        for (int i = 0; i < e; i++) out[o++] = (char)raw[8 + i];
     }
     out[o] = 0;
 }
 
-static int raw_equal(const uint8_t* a, const uint8_t* b) {
-    for (int i = 0; i < 11; i++) if (a[i] != b[i]) return 0;
-    return 1;
+int diskfs_name_ok(const char* name) {
+    uint8_t raw[11];
+    return name_to_raw(name, raw) == 0;
 }
 
-static uint8_t* entry_at(uint32_t i) {
-    return root_buf + i * 32;
+// ---- Directory ----
+
+static uint8_t* entry(uint32_t i) { return root + i * 32; }
+static uint32_t entry_first(const uint8_t* e) { return rd16(e + DIR_FIRST_LOW); }
+static uint32_t entry_size(const uint8_t* e) { return rd32(e + DIR_SIZE); }
+
+static void entry_dirty(const uint8_t* e) {
+    if (e >= root && e < root + root_entries * 32)
+        root_dirty[(uint32_t)(e - root) / SECTOR] = 1;
+}
+static void set_first(uint8_t* e, uint32_t c) { wr16(e + DIR_FIRST_LOW, (uint16_t)c); entry_dirty(e); }
+static void set_size(uint8_t* e, uint32_t s) { wr32(e + DIR_SIZE, s); entry_dirty(e); }
+
+static int is_file(const uint8_t* e) {
+    if (e[0] == 0x00 || e[0] == 0xE5) return 0;
+    if (e[DIR_ATTR] == ATTR_LFN) return 0;
+    if (e[DIR_ATTR] & (ATTR_DIRECTORY | ATTR_VOLUME)) return 0;
+    return rd16(e + DIR_FIRST_HIGH) == 0;  // FAT32 leftovers are not ours
 }
 
-static uint16_t fat_get(uint32_t cluster) {
-    return get_u16(fat_buf, cluster * 2);
+static int find_raw(const uint8_t raw[11]) {
+    for (uint32_t i = 0; i < root_entries; i++) {
+        uint8_t* e = entry(i);
+        if (e[0] == 0x00) break;  // end of directory
+        if (is_file(e) && memcmp(e, raw, 11) == 0) return (int)i;
+    }
+    return -1;
 }
 
-static void fat_set(uint32_t cluster, uint16_t v) {
-    put_u16(fat_buf, cluster * 2, v);
+// Any live entry with this name, including directories and labels.
+static int name_taken(const uint8_t raw[11]) {
+    for (uint32_t i = 0; i < root_entries; i++) {
+        uint8_t* e = entry(i);
+        if (e[0] == 0x00) break;
+        if (e[0] == 0xE5 || e[DIR_ATTR] == ATTR_LFN) continue;
+        if (memcmp(e, raw, 11) == 0) return 1;
+    }
+    return 0;
 }
 
-static int fat_is_eoc(uint16_t v) {
-    return v >= FAT_EOC_MIN;
-}
+// ---- FAT ----
 
-static uint32_t cluster_lba(uint32_t cluster) {
-    return data_start + (cluster - 2) * sectors_per_cluster;
+static int valid_cluster(uint32_t c) { return c >= 2 && c < cluster_count + 2; }
+static uint32_t fat_get(uint32_t c) { return fat[c]; }
+static void fat_set(uint32_t c, uint32_t v) {
+    fat[c] = (uint16_t)v;
+    fat_dirty[(c * 2) / SECTOR] = 1;
 }
+static uint32_t cluster_lba(uint32_t c) { return data_start + (c - 2) * spc; }
 
-static int write_back_fat(void) {
-    for (uint32_t f = 0; f < num_fats; f++) {
-        for (uint32_t s = 0; s < fat_size_sectors; s++) {
-            for (int i = 0; i < SECTOR_SIZE; i++) sector_buf[i] = fat_buf[s * SECTOR_SIZE + i];
-            if (ata_write_sector(fat_start + f * fat_size_sectors + s, sector_buf) != 0) return -1;
+static uint32_t alloc_cluster(void) {
+    for (uint32_t n = 0; n < cluster_count; n++) {
+        uint32_t c = 2 + (free_hint - 2 + n) % cluster_count;
+        if (fat_get(c) == 0) {
+            fat_set(c, FAT_EOC);
+            free_hint = c + 1 < cluster_count + 2 ? c + 1 : 2;
+            return c;
         }
     }
     return 0;
 }
 
-static int write_back_root(void) {
+// Bounded, so a looped chain on a corrupt disk cannot hang us.
+static void free_chain(uint32_t c) {
+    for (uint32_t steps = 0; valid_cluster(c) && steps < cluster_count; steps++) {
+        uint32_t next = fat_get(c);
+        fat_set(c, 0);
+        if (c < free_hint) free_hint = c;
+        if (next >= FAT_EOC_MIN) break;
+        c = next;
+    }
+}
+
+static int commit(void) {
+    int err = 0;
+    for (uint32_t s = 0; s < fat_sectors; s++) {
+        if (!fat_dirty[s]) continue;
+        for (uint32_t f = 0; f < num_fats; f++)
+            if (ata_write(fat_start + f * fat_sectors + s, 1, (uint8_t*)fat + s * SECTOR) != 0) err = -EIO;
+        fat_dirty[s] = 0;
+    }
     for (uint32_t s = 0; s < root_sectors; s++) {
-        for (int i = 0; i < SECTOR_SIZE; i++) sector_buf[i] = root_buf[s * SECTOR_SIZE + i];
-        if (ata_write_sector(root_start + s, sector_buf) != 0) return -1;
+        if (!root_dirty[s]) continue;
+        if (ata_write(root_start + s, 1, root + s * SECTOR) != 0) err = -EIO;
+        root_dirty[s] = 0;
     }
-    return 0;
+    if (ata_flush() != 0) err = -EIO;
+    return err;
 }
 
-// Index of the directory entry for a regular file with this
-// raw name, or -1. Skips deleted entries, long-name entries,
-// directories, and volume labels, and stops at the first
-// never-used entry, per the FAT end-of-directory rule.
-static int find_file_raw(const uint8_t raw[11]) {
-    for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t* e = entry_at(i);
-        if (e[0] == 0x00) break;
-        if (e[0] == 0xE5) continue;
-        if (e[DIR_ATTR] == ATTR_LFN) continue;
-        if (e[DIR_ATTR] & ATTR_DIRECTORY) continue;
-        if (e[DIR_ATTR] & ATTR_VOLUME) continue;
-        if (get_u16(e, DIR_FIRST_HIGH) != 0) continue;
-        if (raw_equal(e, raw)) return (int)i;
-    }
-    return -1;
-}
+// Chain walker: cur is the cluster at index idx, or 0 past the end.
+typedef struct { uint32_t idx, cur, prev; } walk_t;
 
-// True if any live directory entry (file, directory, or
-// volume label, but not a long-name entry) already uses this
-// raw name. Used by create to reject a file colliding with
-// a directory of the same name, which find_file_raw alone
-// would miss.
-static int name_in_use_raw(const uint8_t raw[11]) {
-    for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t* e = entry_at(i);
-        if (e[0] == 0x00) break;
-        if (e[0] == 0xE5) continue;
-        if (e[DIR_ATTR] == ATTR_LFN) continue;
-        if (raw_equal(e, raw)) return 1;
-    }
-    return 0;
-}
-
-static int free_slot(void) {
-    for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t* e = entry_at(i);
-        if (e[0] == 0x00 || e[0] == 0xE5) return (int)i;
-    }
-    return -1;
-}
-
-// Allocate a chain of n clusters, linked in RAM, last marked
-// end-of-chain. On failure, any partially allocated chain is
-// freed again in RAM, so the caller can return without having
-// changed anything on disk (the FAT has not been written
-// back yet). Returns 0 on success with *first set, -1 on
-// failure. n == 0 means an empty file: *first = 0.
-static int alloc_chain(uint32_t n, uint32_t* first_out) {
-    if (n == 0) { *first_out = 0; return 0; }
-    uint32_t first = 0, prev = 0;
-    for (uint32_t k = 0; k < n; k++) {
-        uint32_t found = 0;
-        for (uint32_t c = 2; c < cluster_count + 2; c++) {
-            if (fat_get(c) == 0) { found = c; break; }
+// Move to cluster index ci (never backwards). With extend, missing
+// clusters are allocated and linked. Returns the cluster, 0 at the
+// end of the chain without extend, -ENOSPC or -EIO.
+static int32_t walk_to(walk_t* w, uint8_t* e, uint32_t ci, int extend) {
+    for (;;) {
+        if (w->cur == 0) {
+            if (!extend) return 0;
+            uint32_t c = alloc_cluster();
+            if (!c) return -ENOSPC;
+            if (w->prev) fat_set(w->prev, c);
+            else set_first(e, c);
+            w->cur = c;
         }
-        if (!found) {
-            if (first) {
-                uint32_t cur = first;
-                while (cur >= 2 && cur < cluster_count + 2) {
-                    uint16_t nxt = fat_get(cur);
-                    fat_set(cur, 0);
-                    if (fat_is_eoc(nxt)) break;
-                    cur = nxt;
-                }
+        if (w->idx == ci) return (int32_t)w->cur;
+        uint32_t next = fat_get(w->cur);
+        w->prev = w->cur;
+        w->idx++;
+        if (next >= FAT_EOC_MIN) w->cur = 0;
+        else if (!valid_cluster(next)) return -EIO;
+        else w->cur = next;
+    }
+}
+
+// Write len bytes at off into the file described by entry e (which
+// may be a scratch entry outside the directory). src NULL writes
+// zeros. A gap between the old end and off is zero-filled. Returns
+// the bytes of src written, or -errno if none were.
+static int write_range(uint8_t* e, const uint8_t* src, uint32_t len, uint32_t off) {
+    if (len == 0) return 0;
+    if (off + len < off) return -EFBIG;
+    uint32_t size = entry_size(e);
+    uint32_t end = off + len;
+    uint32_t p = off < size ? off : size;
+    int err = 0;
+    walk_t w = { 0, entry_first(e), 0 };
+
+    while (p < end) {
+        int32_t c = walk_to(&w, e, p / cbytes, 1);
+        if (c < 0) { err = c; break; }
+        uint32_t in_cl = p % cbytes;
+        uint32_t s0 = in_cl % SECTOR;
+        uint32_t n = MIN(SECTOR - s0, end - p);
+        uint32_t lba = cluster_lba((uint32_t)c) + in_cl / SECTOR;
+        if (n != SECTOR) {
+            if (p - s0 < size) {
+                if (ata_read(lba, 1, secbuf) != 0) { err = -EIO; break; }
+            } else {
+                memset(secbuf, 0, SECTOR);
             }
-            return -1;
         }
-        fat_set(found, 0xFFFF);
-        if (prev) fat_set(prev, (uint16_t)found);
-        else first = found;
-        prev = found;
+        // Bytes before off are the zero-filled gap.
+        uint32_t zeros = p < off ? MIN(off - p, n) : 0;
+        memset(secbuf + s0, 0, zeros);
+        if (src) memcpy(secbuf + s0 + zeros, src + (p + zeros - off), n - zeros);
+        else memset(secbuf + s0 + zeros, 0, n - zeros);
+        if (ata_write(lba, 1, secbuf) != 0) { err = -EIO; break; }
+        p += n;
     }
-    *first_out = first;
-    return 0;
+    if (p > size) set_size(e, p);
+    if (p > off) return (int)(p - off);
+    return err;
 }
 
-// Free a chain in RAM, stopping at end-of-chain or at a
-// corrupt link, with a step bound so a looped chain cannot
-// hang the operation.
-static void free_chain(uint32_t first) {
-    if (first < 2 || first >= cluster_count + 2) return;
-    uint32_t cur = first;
-    for (uint32_t steps = 0; steps <= cluster_count + 1; steps++) {
-        if (cur < 2 || cur >= cluster_count + 2) return;
-        uint16_t nxt = fat_get(cur);
-        fat_set(cur, 0);
-        if (fat_is_eoc(nxt)) return;
-        cur = nxt;
-    }
+// ---- Public API ----
+
+int diskfs_ready(void) { return fs_ok; }
+
+static void release_buffers(void) {
+    kfree(fat); kfree(root); kfree(fat_dirty); kfree(root_dirty); kfree(refs); kfree(secbuf);
+    fat = 0; root = 0; fat_dirty = 0; root_dirty = 0; refs = 0; secbuf = 0;
 }
 
-// The cluster at position index in a chain (0 = first), or
-// 0 if the chain ends early or is corrupt.
-static uint32_t cluster_at(uint32_t first, uint32_t index) {
-    uint32_t cur = first;
-    for (uint32_t i = 0; i < index; i++) {
-        if (cur < 2 || cur >= cluster_count + 2) return 0;
-        uint16_t nxt = fat_get(cur);
-        if (fat_is_eoc(nxt)) return 0;
-        cur = nxt;
-    }
-    if (cur < 2 || cur >= cluster_count + 2) return 0;
-    return cur;
-}
-
-void diskfs_init(void) {
-    // A second init (the host test does this for persistence)
-    // frees the old buffers first, instead of leaking them
-    // the way RTFS did.
-    if (sector_buf) { kfree(sector_buf); sector_buf = 0; }
-    if (fat_buf) { kfree(fat_buf); fat_buf = 0; }
-    if (root_buf) { kfree(root_buf); root_buf = 0; }
+int diskfs_init(void) {
+    LOCK();
     fs_ok = 0;
-    sector_buf = (uint8_t*)kmalloc(SECTOR_SIZE);
-    if (!sector_buf) { print("Disk: out of memory, files unavailable\n"); return; }
-    if (ata_read_sector(0, sector_buf) != 0) {
-        print("Disk: not found, files unavailable\n");
-        return;
-    }
-    // Parse the BPB. Everything else is derived from it, so
-    // a disk made by a real tool works, not just our own.
-    uint32_t bps = get_u16(sector_buf, BPB_BYTES_PER_SECTOR);
-    uint32_t spc = sector_buf[BPB_SECTORS_PER_CLUSTER];
-    uint32_t res = get_u16(sector_buf, BPB_RESERVED);
-    uint32_t nfats = sector_buf[BPB_NUM_FATS];
-    uint32_t rent = get_u16(sector_buf, BPB_ROOT_ENTRIES);
-    uint32_t tot16 = get_u16(sector_buf, BPB_TOTAL16);
-    uint32_t fsz = get_u16(sector_buf, BPB_FAT_SIZE16);
-    uint32_t tot32 = get_u32(sector_buf, BPB_TOTAL32);
-    uint32_t tot = tot16 != 0 ? tot16 : tot32;
-    int sig_ok = sector_buf[510] == 0x55 && sector_buf[511] == 0xAA;
-    if (bps != SECTOR_SIZE || !is_power_of_two(spc) || spc == 0 || spc > 128 ||
-        res == 0 || nfats == 0 || rent == 0 || tot == 0 || fsz == 0 || !sig_ok) {
-        print("Disk: no FAT filesystem, files unavailable\n");
-        return;
-    }
-    uint32_t rsec = (rent * 32 + SECTOR_SIZE - 1) / SECTOR_SIZE;
-    uint32_t fstart = res;
-    uint32_t rstart = fstart + nfats * fsz;
-    uint32_t dstart = rstart + rsec;
-    if (dstart >= tot) {
-        print("Disk: no FAT filesystem, files unavailable\n");
-        return;
-    }
-    uint32_t dsec = tot - dstart;
-    uint32_t ccount = dsec / spc;
-    // The cluster count decides the FAT type, per the spec.
-    // FAT16 is 4085..65524 clusters; anything else is FAT12
-    // or FAT32, which this version does not read.
-    if (ccount < 4085 || ccount >= 65525) {
-        print("Disk: not a FAT16 filesystem, files unavailable\n");
-        return;
-    }
-    sectors_per_cluster = spc;
-    cluster_bytes = spc * SECTOR_SIZE;
-    reserved_sectors = res;
-    num_fats = nfats;
-    root_entries = rent;
-    total_sectors = tot;
-    fat_size_sectors = fsz;
-    fat_start = fstart;
-    root_start = rstart;
-    root_sectors = rsec;
-    data_start = dstart;
-    cluster_count = ccount;
-    fat_buf = (uint8_t*)kmalloc(fsz * SECTOR_SIZE);
-    root_buf = (uint8_t*)kmalloc(rsec * SECTOR_SIZE);
-    if (!fat_buf || !root_buf) {
-        print("Disk: out of memory, files unavailable\n");
-        return;
-    }
-    for (uint32_t s = 0; s < fsz; s++) {
-        if (ata_read_sector(fat_start + s, sector_buf) != 0) {
-            print("Disk: read error, files unavailable\n");
-            return;
-        }
-        for (int i = 0; i < SECTOR_SIZE; i++) fat_buf[s * SECTOR_SIZE + i] = sector_buf[i];
-    }
-    for (uint32_t s = 0; s < rsec; s++) {
-        if (ata_read_sector(root_start + s, sector_buf) != 0) {
-            print("Disk: read error, files unavailable\n");
-            return;
-        }
-        for (int i = 0; i < SECTOR_SIZE; i++) root_buf[s * SECTOR_SIZE + i] = sector_buf[i];
-    }
+    release_buffers();
+    int err = 0;
+    uint8_t* bs = kmalloc(SECTOR);
+    if (!bs) { err = -ENOMEM; goto out; }
+    if (!ata_present() || ata_read(0, 1, bs) != 0) { err = -EIO; goto out; }
+
+    uint32_t bps = rd16(bs + 11);
+    uint32_t s = bs[13];
+    uint32_t res = rd16(bs + 14);
+    uint32_t nf = bs[16];
+    uint32_t rent = rd16(bs + 17);
+    uint32_t tot = rd16(bs + 19) ? rd16(bs + 19) : rd32(bs + 32);
+    uint32_t fsz = rd16(bs + 22);
+    err = -EINVAL;
+    if (bs[510] != 0x55 || bs[511] != 0xAA) goto out;
+    if (bps != SECTOR || s == 0 || (s & (s - 1)) || s > 128) goto out;
+    if (res == 0 || nf == 0 || nf > MAX_FATS || rent == 0 || fsz == 0) goto out;
+    if (tot > ata_sectors()) goto out;
+    uint32_t rsec = (rent * 32 + SECTOR - 1) / SECTOR;
+    uint32_t dstart = res + nf * fsz + rsec;
+    if (dstart >= tot) goto out;
+    uint32_t clusters = (tot - dstart) / s;
+    if (clusters < 4085 || clusters >= 65525) goto out;  // FAT16 only
+    if (fsz * (SECTOR / 2) < clusters + 2) goto out;     // FAT too small
+
+    spc = s; cbytes = s * SECTOR; num_fats = nf; fat_sectors = fsz; fat_start = res;
+    root_entries = rent; root_start = res + nf * fsz; root_sectors = rsec;
+    data_start = dstart; cluster_count = clusters; free_hint = 2;
+
+    err = -ENOMEM;
+    fat = kmalloc(fsz * SECTOR);
+    root = kmalloc(rsec * SECTOR);
+    fat_dirty = kzalloc(fsz);
+    root_dirty = kzalloc(rsec);
+    refs = kzalloc(rent * sizeof(uint16_t));
+    secbuf = kmalloc(SECTOR);
+    if (!fat || !root || !fat_dirty || !root_dirty || !refs || !secbuf) goto out;
+    err = -EIO;
+    if (ata_read(fat_start, fsz, fat) != 0) goto out;
+    if (ata_read(root_start, rsec, root) != 0) goto out;
+    err = 0;
     fs_ok = 1;
-    int count = 0;
+out:
+    kfree(bs);
+    if (err) release_buffers();
+    UNLOCK();
+    return err;
+}
+
+int diskfs_lookup(const char* name) {
+    uint8_t raw[11];
+    if (name_to_raw(name, raw) != 0) return -EINVAL;
+    LOCK();
+    int r = fs_ok ? find_raw(raw) : -EIO;
+    if (r == -1) r = -ENOENT;
+    UNLOCK();
+    return r;
+}
+
+static int create_locked(const uint8_t raw[11]) {
+    if (name_taken(raw)) return -EEXIST;
     for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t* e = entry_at(i);
-        if (e[0] == 0x00) break;
-        if (e[0] == 0xE5) continue;
-        if (e[DIR_ATTR] == ATTR_LFN) continue;
-        if (e[DIR_ATTR] & ATTR_DIRECTORY) continue;
-        if (e[DIR_ATTR] & ATTR_VOLUME) continue;
-        count++;
+        uint8_t* e = entry(i);
+        if (e[0] != 0x00 && e[0] != 0xE5) continue;
+        memset(e, 0, 32);
+        memcpy(e, raw, 11);
+        e[DIR_ATTR] = ATTR_ARCHIVE;
+        entry_dirty(e);
+        refs[i] = 0;
+        int err = commit();
+        return err ? err : (int)i;
     }
-    print("Disk: FAT16, ");
-    print_num(count);
-    print(" files\n");
+    return -ENOSPC;
 }
 
 int diskfs_create(const char* name) {
-    if (!fs_ok) return -4;
-    uint32_t flags = irq_save();
-    int result = 0;
     uint8_t raw[11];
-    if (name_to_raw(name, raw) != 0) result = -2;
-    else if (name_in_use_raw(raw)) result = -1;
-    else {
-        int slot = free_slot();
-        if (slot < 0) result = -3;
-        else {
-            uint8_t* e = entry_at((uint32_t)slot);
-            for (int i = 0; i < 32; i++) e[i] = 0;
-            for (int i = 0; i < 11; i++) e[i] = raw[i];
-            e[DIR_ATTR] = ATTR_ARCHIVE;
-            put_u16(e, DIR_FIRST_LOW, 0);
-            put_u32(e, DIR_SIZE, 0);
-            if (write_back_root() != 0) {
-                e[0] = 0x00;
-                result = -3;
-            }
-        }
-    }
-    irq_restore(flags);
-    return result;
+    if (name_to_raw(name, raw) != 0) return -EINVAL;
+    LOCK();
+    int r = fs_ok ? create_locked(raw) : -EIO;
+    UNLOCK();
+    return r;
 }
 
-// Length-based whole-file write, the real implementation.
-// Same semantics as RTFS: this overwrites the whole file.
-// The syscall path builds the new full content (old bytes
-// plus the written slice) and calls this, so offset writes
-// work through it without this function needing an offset.
-// Allocate a new chain first, write it, then free the old
-// chain: a failed write leaves the old file intact on disk,
-// because the FAT and directory have not been written back
-// yet when the failure is detected.
-int diskfs_write_bytes(const char* name, const uint8_t* content, uint32_t len) {
-    if (!fs_ok) return -4;
-    uint32_t flags = irq_save();
-    int result = 0;
+int diskfs_unlink(const char* name) {
     uint8_t raw[11];
-    int idx = -1;
-    int auto_created = 0;
-    if (name_to_raw(name, raw) != 0) result = -2;
+    if (name_to_raw(name, raw) != 0) return -EINVAL;
+    LOCK();
+    int r;
+    int i = fs_ok ? find_raw(raw) : -2;
+    if (i == -2) r = -EIO;
+    else if (i < 0) r = -ENOENT;
+    else if (refs[i]) r = -EBUSY;
     else {
-        idx = find_file_raw(raw);
-        if (idx < 0) {
-            if (name_in_use_raw(raw)) result = -1;
-            else {
-                int slot = free_slot();
-                if (slot < 0) result = -3;
-                else {
-                    uint8_t* e = entry_at((uint32_t)slot);
-                    for (int i = 0; i < 32; i++) e[i] = 0;
-                    for (int i = 0; i < 11; i++) e[i] = raw[i];
-                    e[DIR_ATTR] = ATTR_ARCHIVE;
-                    idx = slot;
-                    auto_created = 1;
-                }
-            }
-        }
+        uint8_t* e = entry((uint32_t)i);
+        free_chain(entry_first(e));
+        e[0] = 0xE5;
+        entry_dirty(e);
+        r = commit();
     }
-    if (result == 0) {
-        uint32_t needed = (len + cluster_bytes - 1) / cluster_bytes;
-        uint32_t new_first = 0;
-        if (alloc_chain(needed, &new_first) != 0) {
-            if (auto_created) entry_at((uint32_t)idx)[0] = 0x00;
-            result = -2;
+    UNLOCK();
+    return r;
+}
+
+static int node_ok(int node) {
+    return fs_ok && node >= 0 && (uint32_t)node < root_entries && is_file(entry((uint32_t)node));
+}
+
+uint32_t diskfs_size(int node) {
+    LOCK();
+    uint32_t s = node_ok(node) ? entry_size(entry((uint32_t)node)) : 0;
+    UNLOCK();
+    return s;
+}
+
+int diskfs_pread(int node, void* buf, uint32_t len, uint32_t off) {
+    LOCK();
+    if (!node_ok(node)) { UNLOCK(); return -EBADF; }
+    uint8_t* e = entry((uint32_t)node);
+    uint32_t size = entry_size(e);
+    if (off >= size) { UNLOCK(); return 0; }
+    if (len > size - off) len = size - off;
+    uint8_t* out = buf;
+    uint32_t done = 0;
+    int err = 0;
+    walk_t w = { 0, entry_first(e), 0 };
+    while (done < len) {
+        uint32_t p = off + done;
+        int32_t c = walk_to(&w, e, p / cbytes, 0);
+        if (c <= 0) { err = -EIO; break; }  // chain shorter than the size says
+        uint32_t in_cl = p % cbytes;
+        uint32_t s0 = in_cl % SECTOR;
+        uint32_t n = MIN(SECTOR - s0, len - done);
+        uint32_t lba = cluster_lba((uint32_t)c) + in_cl / SECTOR;
+        if (n == SECTOR) {
+            if (ata_read(lba, 1, out + done) != 0) { err = -EIO; break; }
         } else {
-            int werr = 0;
-            uint32_t cur = new_first;
-            for (uint32_t ci = 0; ci < needed && !werr; ci++) {
-                for (uint32_t sec = 0; sec < sectors_per_cluster && !werr; sec++) {
-                    for (int i = 0; i < SECTOR_SIZE; i++) {
-                        uint32_t off = ci * cluster_bytes + sec * SECTOR_SIZE + (uint32_t)i;
-                        sector_buf[i] = off < len ? (uint8_t)content[off] : 0;
-                    }
-                    if (ata_write_sector(cluster_lba(cur) + sec, sector_buf) != 0) werr = 1;
-                }
-                if (!werr && ci + 1 < needed) {
-                    uint16_t nxt = fat_get(cur);
-                    if (fat_is_eoc(nxt)) werr = 1;
-                    else cur = nxt;
-                }
-            }
-            if (werr) {
-                free_chain(new_first);
-                if (auto_created) entry_at((uint32_t)idx)[0] = 0x00;
-                result = -2;
-            } else {
-                uint8_t* e = entry_at((uint32_t)idx);
-                uint32_t old_first = get_u16(e, DIR_FIRST_LOW);
-                if (old_first != 0) free_chain(old_first);
-                put_u16(e, DIR_FIRST_HIGH, 0);
-                put_u16(e, DIR_FIRST_LOW, (uint16_t)new_first);
-                put_u32(e, DIR_SIZE, len);
-                if (write_back_fat() != 0 || write_back_root() != 0) result = -2;
-            }
+            if (ata_read(lba, 1, secbuf) != 0) { err = -EIO; break; }
+            memcpy(out + done, secbuf + s0, n);
         }
+        done += n;
     }
-    irq_restore(flags);
-    return result;
+    UNLOCK();
+    return done ? (int)done : err;
 }
 
-int diskfs_write(const char* name, const char* content) {
-    return diskfs_write_bytes(name, (const uint8_t*)content, (uint32_t)my_strlen(content));
-}
-
-int diskfs_read(const char* name, char* out, uint32_t max) {
-    if (!fs_ok) return -4;
-    if (max == 0) return -1;
-    uint32_t flags = irq_save();
-    int result = -1;
-    uint8_t raw[11];
-    if (name_to_raw(name, raw) != 0) result = -1;
+int diskfs_pwrite(int node, const void* buf, uint32_t len, uint32_t off) {
+    LOCK();
+    int r;
+    if (!node_ok(node)) r = -EBADF;
     else {
-        int idx = find_file_raw(raw);
-        if (idx < 0) result = -1;
-        else {
-            uint8_t* e = entry_at((uint32_t)idx);
-            uint32_t size = get_u32(e, DIR_SIZE);
-            uint32_t first = get_u16(e, DIR_FIRST_LOW);
-            if (size == 0) {
-                out[0] = 0;
-                result = 0;
-            } else {
-                uint32_t to_copy = size;
-                if (to_copy >= max) to_copy = max - 1;
-                uint32_t copied = 0;
-                int rerr = 0;
-                while (copied < to_copy && !rerr) {
-                    uint32_t ci = copied / cluster_bytes;
-                    uint32_t sec = (copied / SECTOR_SIZE) % sectors_per_cluster;
-                    uint32_t cl = cluster_at(first, ci);
-                    if (cl == 0) { rerr = 1; break; }
-                    if (ata_read_sector(cluster_lba(cl) + sec, sector_buf) != 0) { rerr = 1; break; }
-                    uint32_t off = copied % SECTOR_SIZE;
-                    while (off < SECTOR_SIZE && copied < to_copy) out[copied++] = (char)sector_buf[off++];
-                }
-                if (rerr) result = -1;
-                else {
-                    out[copied] = 0;
-                    result = (int)copied;
-                }
-            }
-        }
+        r = write_range(entry((uint32_t)node), buf, len, off);
+        int err = commit();
+        if (err && r >= 0) r = err;
     }
-    irq_restore(flags);
-    return result;
+    UNLOCK();
+    return r;
 }
 
-int diskfs_delete(const char* name) {
-    if (!fs_ok) return -4;
-    uint32_t flags = irq_save();
-    int result = -1;
+static int truncate_locked(uint8_t* e, uint32_t len) {
+    uint32_t size = entry_size(e);
+    if (len > size) {
+        int r = write_range(e, 0, len - size, size);
+        if (r < 0) return r;
+        return entry_size(e) == len ? 0 : -ENOSPC;
+    }
+    if (len == size) return 0;
+    uint32_t keep = (len + cbytes - 1) / cbytes;
+    uint32_t first = entry_first(e);
+    if (keep == 0) {
+        free_chain(first);
+        set_first(e, 0);
+    } else {
+        walk_t w = { 0, first, 0 };
+        int32_t last = walk_to(&w, e, keep - 1, 0);
+        if (last <= 0) return -EIO;
+        uint32_t next = fat_get((uint32_t)last);
+        fat_set((uint32_t)last, FAT_EOC);
+        if (next < FAT_EOC_MIN) free_chain(next);
+    }
+    set_size(e, len);
+    return 0;
+}
+
+int diskfs_truncate(int node, uint32_t len) {
+    LOCK();
+    int r;
+    if (!node_ok(node)) r = -EBADF;
+    else {
+        r = truncate_locked(entry((uint32_t)node), len);
+        int err = commit();
+        if (!r) r = err;
+    }
+    UNLOCK();
+    return r;
+}
+
+int diskfs_write_file(const char* name, const void* buf, uint32_t len) {
     uint8_t raw[11];
-    if (name_to_raw(name, raw) == 0) {
-        int idx = find_file_raw(raw);
-        if (idx >= 0) {
-            uint8_t* e = entry_at((uint32_t)idx);
-            uint32_t first = get_u16(e, DIR_FIRST_LOW);
-            if (first != 0) free_chain(first);
-            e[0] = 0xE5;
-            if (write_back_fat() != 0 || write_back_root() != 0) result = -1;
-            else result = 0;
-        }
+    if (name_to_raw(name, raw) != 0) return -EINVAL;
+    LOCK();
+    int r = 0;
+    if (!fs_ok) { r = -EIO; goto out; }
+    int i = find_raw(raw), created = 0;
+    if (i < 0) {
+        i = create_locked(raw);
+        if (i < 0) { r = i; goto out; }
+        created = 1;
     }
-    irq_restore(flags);
-    return result;
+    // Build the new chain on a scratch entry, then switch over.
+    uint8_t tmp[32];
+    memset(tmp, 0, sizeof tmp);
+    int w = write_range(tmp, buf, len, 0);
+    if (w < 0 || (uint32_t)w != len) {
+        free_chain(entry_first(tmp));
+        if (created) {  // leave no empty file behind
+            entry((uint32_t)i)[0] = 0xE5;
+            entry_dirty(entry((uint32_t)i));
+        }
+        commit();
+        r = w < 0 ? w : -ENOSPC;
+        goto out;
+    }
+    uint8_t* e = entry((uint32_t)i);
+    uint32_t old = entry_first(e);
+    set_first(e, entry_first(tmp));
+    set_size(e, len);
+    free_chain(old);
+    r = commit();
+out:
+    UNLOCK();
+    return r;
 }
 
-void diskfs_list(void) {
-    if (!fs_ok) { print("no disk\n"); return; }
-    uint32_t flags = irq_save();
-    int any = 0;
-    for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t* e = entry_at(i);
+int diskfs_readdir(int* cursor, char name[FS_NAME_MAX], uint32_t* size) {
+    LOCK();
+    int r = -ENOENT;
+    for (uint32_t i = (uint32_t)*cursor; fs_ok && *cursor >= 0 && i < root_entries; i++) {
+        uint8_t* e = entry(i);
         if (e[0] == 0x00) break;
-        if (e[0] == 0xE5) continue;
-        if (e[DIR_ATTR] == ATTR_LFN) continue;
-        if (e[DIR_ATTR] & ATTR_DIRECTORY) continue;
-        if (e[DIR_ATTR] & ATTR_VOLUME) continue;
-        if (get_u16(e, DIR_FIRST_HIGH) != 0) continue;
-        char disp[13];
-        raw_to_display(e, disp);
-        any = 1;
-        print(disp);
-        print(" (");
-        print_num(get_u32(e, DIR_SIZE));
-        print(" bytes)\n");
+        if (!is_file(e)) continue;
+        raw_to_display(e, name);
+        if (size) *size = entry_size(e);
+        *cursor = (int)i + 1;
+        r = 0;
+        break;
     }
-    if (!any) print("empty\n");
-    irq_restore(flags);
+    UNLOCK();
+    return r;
 }
 
-// The Nth regular file's display name, for the LIST syscall.
-// Index counts regular files only, in root directory order,
-// skipping deleted, long-name, directory, and volume entries,
-// and entries with a nonzero first-cluster-high (not valid
-// FAT16), exactly as diskfs_list does, so LIST and ls agree.
-// Returns 0 on success with name_out set (the caller must
-// provide at least 13 bytes: 12 for the longest 8.3 name
-// plus the null terminator), or -1 if index is out of range
-// (negative, or past the last file), name_out is null, or
-// there is no disk. No disk I/O beyond the root directory
-// already in RAM, so this is cheap to call in a loop.
-int diskfs_list_at(int index, char* name_out) {
-    if (!name_out) return -1;
-    if (!fs_ok) return -1;
-    if (index < 0) return -1;
-    uint32_t flags = irq_save();
-    int result = -1;
-    int seen = -1;
-    for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t* e = entry_at(i);
-        if (e[0] == 0x00) break;
-        if (e[0] == 0xE5) continue;
-        if (e[DIR_ATTR] == ATTR_LFN) continue;
-        if (e[DIR_ATTR] & ATTR_DIRECTORY) continue;
-        if (e[DIR_ATTR] & ATTR_VOLUME) continue;
-        if (get_u16(e, DIR_FIRST_HIGH) != 0) continue;
-        seen++;
-        if (seen == index) {
-            raw_to_display(e, name_out);
-            result = 0;
-            break;
-        }
-    }
-    irq_restore(flags);
-    return result;
+void diskfs_ref(int node) {
+    LOCK();
+    if (node_ok(node)) refs[node]++;
+    UNLOCK();
 }
 
-int diskfs_exists(const char* name) {
-    if (!fs_ok) return 0;
-    uint32_t flags = irq_save();
-    uint8_t raw[11];
-    int result = 0;
-    if (name_to_raw(name, raw) == 0) result = find_file_raw(raw) >= 0;
-    irq_restore(flags);
-    return result;
+void diskfs_unref(int node) {
+    LOCK();
+    if (fs_ok && node >= 0 && (uint32_t)node < root_entries && refs[node]) refs[node]--;
+    UNLOCK();
 }
 
-// File size, for seek from the end. Returns 0 on success with
-// *size_out set, -1 if the file does not exist or the name is
-// invalid, -4 if there is no disk. Unlike read_all, this has
-// no 64 KB cap: it only reads the directory entry, which is
-// already in RAM, so it works for larger files too, and it
-// does no disk I/O at all, which is what makes seek from the
-// end cheap. That is why seek from the end uses this instead
-// of reading the whole file just to learn its size.
-int diskfs_size(const char* name, uint32_t* size_out) {
-    if (!fs_ok) return -4;
-    uint32_t flags = irq_save();
-    int result = -1;
-    uint8_t raw[11];
-    if (name_to_raw(name, raw) == 0) {
-        int idx = find_file_raw(raw);
-        if (idx >= 0) {
-            *size_out = get_u32(entry_at((uint32_t)idx), DIR_SIZE);
-            result = 0;
-        }
-    }
-    irq_restore(flags);
-    return result;
+int diskfs_refs(int node) {
+    LOCK();
+    int r = node_ok(node) ? refs[node] : 0;
+    UNLOCK();
+    return r;
 }
 
-// Loader support: read a whole file into a heap buffer.
-// Same cap and contract as RTFS: 64 KB max, caller frees
-// with kfree, 0 on failure.
-uint8_t* diskfs_read_all(const char* name, uint32_t* size_out) {
-    if (!fs_ok) return 0;
-    uint32_t flags = irq_save();
-    uint8_t* buf = 0;
-    uint8_t raw[11];
-    if (name_to_raw(name, raw) == 0) {
-        int idx = find_file_raw(raw);
-        if (idx >= 0) {
-            uint8_t* e = entry_at((uint32_t)idx);
-            uint32_t size = get_u32(e, DIR_SIZE);
-            uint32_t first = get_u16(e, DIR_FIRST_LOW);
-            if (size <= 65536) {
-                buf = (uint8_t*)kmalloc(size > 0 ? size : 1);
-                if (buf) {
-                    uint32_t copied = 0;
-                    int rerr = 0;
-                    while (copied < size && !rerr) {
-                        uint32_t ci = copied / cluster_bytes;
-                        uint32_t sec = (copied / SECTOR_SIZE) % sectors_per_cluster;
-                        uint32_t cl = cluster_at(first, ci);
-                        if (cl == 0) { rerr = 1; break; }
-                        if (ata_read_sector(cluster_lba(cl) + sec, sector_buf) != 0) { rerr = 1; break; }
-                        uint32_t off = copied % SECTOR_SIZE;
-                        while (off < SECTOR_SIZE && copied < size) buf[copied++] = sector_buf[off++];
-                    }
-                    if (rerr) {
-                        kfree(buf);
-                        buf = 0;
-                    } else {
-                        *size_out = size;
-                    }
-                }
-            }
-        }
-    }
-    irq_restore(flags);
-    return buf;
+void diskfs_stats(uint32_t* clusters, uint32_t* free_clusters, uint32_t* cluster_bytes) {
+    LOCK();
+    uint32_t f = 0;
+    if (fs_ok)
+        for (uint32_t c = 2; c < cluster_count + 2; c++)
+            if (fat_get(c) == 0) f++;
+    if (clusters) *clusters = fs_ok ? cluster_count : 0;
+    if (free_clusters) *free_clusters = f;
+    if (cluster_bytes) *cluster_bytes = fs_ok ? cbytes : 0;
+    UNLOCK();
 }

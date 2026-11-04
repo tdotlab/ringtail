@@ -1,0 +1,8 @@
+Welcome to RingTail.
+
+Try:  ls               the files on this disk
+      run hello        a program from the disk
+      run count 10     then press Ctrl+C to stop it
+      run gui          a small desktop (Esc leaves)
+      tasks            what is running
+      help             everything else

@@ -1744,3 +1744,57 @@ only when a file needs it, VGA text split out of
 kernel.c, real headers, UNDERSTANDING.md into a
 repo docs folder, mock update past v0.9.0, now
 five versions behind, unrequested).
+
+---
+
+v0.11.0 "Hardened" - audit and deep refactor
+
+Every subsystem was reworked after a full audit. The old code mostly
+worked on the happy path, but nearly every boundary was unchecked.
+
+Kernel structure: real headers in src/include, with ringtail/abi.h as
+the one user/kernel contract. All vectors go through a single
+interrupt_dispatch. The GDT and TSS were rebuilt. Syscalls run with
+interrupts enabled and return -errno. Kills are deferred to a safe
+point. There is an idle task, and the shell is an ordinary kernel task
+instead of running inside the keyboard path.
+
+Memory: the first 1 GB is identity-mapped for the kernel, supervisor
+only, with text and rodata read-only. Programs get 1-3 GB. ELF segments
+are mapped with their own permissions, and the stack grows on demand to
+1 MB with a guard gap. The frame allocator and the heap are both sized
+from the memory map. Every user pointer goes through checked copy
+routines.
+
+Programs: real ELF loading with full header and segment validation,
+argc/argv on the initial stack, and a small C runtime (crt0, ulib). The
+x87 state is saved per task. Exit statuses are recorded (-1 killed,
+-2 faulted), and join is killable. The tty belongs to a foreground job,
+so Ctrl+C kills it, and `&` runs a job in the background.
+
+Filesystem: diskfs.c was rewritten. The BPB is validated, and the FAT
+and root directory are cached with dirty tracking. Data is written
+before metadata, and write_file is copy-on-write. Open files are
+ref-counted (unlink returns -EBUSY), and there is a mutex instead of
+interrupts disabled. A file descriptor layer (file.c) handles O_CREAT,
+O_TRUNC and O_APPEND and 64-bit-safe seek.
+
+Shell: rewritten. It has a command table, a line editor with history,
+Ctrl+C and Ctrl+L, and run with args and `&`. The free command only
+accepts the shell's own allocations, and kill refuses to kill the shell.
+
+GUI: double-buffered (one blit per frame), with the font fetched from
+the kernel and a paged launcher. Launching a program drops to text mode,
+waits for it, then returns.
+
+Build and tests: one Makefile building into build/. The host tests were
+rewritten for the new APIs (97 checks, a fault-injecting RAM disk, and
+fsck.fat on the result). A new QEMU integration suite (51 checks) drives
+the real ISO over serial: every program, crash isolation, Ctrl+C,
+reboot persistence, poweroff, and fsck.fat plus mtools on the disk.
+
+Bug the new tests caught on the way: diskfs_write_file left an empty
+file behind when creating a new file failed with ENOSPC. Fixed.
+
+Known limits: root directory only, 8.3 names, no SSE in programs, no
+pipes or signals, no SMP, VGA text and mode 13h only.

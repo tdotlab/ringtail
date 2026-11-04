@@ -1,405 +1,382 @@
-// RingTail host tests - heap and disk filesystem (FAT16)
+// Host tests for the kernel heap (heap.c) and the FAT16 filesystem
+// (diskfs.c), built 32-bit so pointer sizes match the target.
 //
-// Runs the real kernel heap.c and diskfs.c on the host, in 32-bit
-// mode, so the pointer-width assumptions in the kernel code hold
-// exactly as they do on the target. Build and run with:
-//   make run
-// in this directory (needs gcc -m32, i.e. gcc-multilib on Ubuntu).
+// diskfs.c talks to the disk through ata_read/ata_write/ata_flush;
+// here those copy to and from a RAM image, with a switch that makes
+// writes fail after a set count so error paths can be exercised.
+// After the run the image is saved to test_disk.img, and the
+// Makefile hands it to fsck.fat to prove the result is a valid FAT
+// volume by another implementation's standards.
 //
-// Not covered here, on purpose: timer.c, keyboard.c, and ata.c
-// use x86 port I/O, which faults in user mode, and paging.c
-// touches CR0/CR3, which also faults, so they are QEMU-only.
-// The kernel main loop and shell are also QEMU-only.
-//
-// The heap under test is a dedicated static array: heap_init
-// starts the heap at _kernel_end, page-aligned, and the array is
-// 8 KB larger than the heap, so alignment slack cannot spill
-// into other globals.
-//
-// The disk under test is a mock: an 8192-sector array in RAM,
-// with the FAT16 layout diskfs.c expects (boot sector with a
-// BPB, two 32-sector FAT copies, a 512-entry root directory,
-// data from sector 97, 8095 clusters of 1 sector each). The
-// size is deliberate: a smaller mock disk would have fewer
-// than 4085 clusters and would be FAT12, which diskfs.c
-// correctly rejects, so the mock must be big enough to be
-// FAT16. diskfs.c calls ata_read_sector and ata_write_sector,
-// and this file provides those as stubs that copy to and from
-// the mock array. That proves the filesystem logic (BPB
-// parsing, 8.3 names, cluster chains, fragmentation, write-back,
-// persistence across re-init) without real hardware. The ATA
-// driver itself is QEMU-only, by the port I/O rule above.
-
+// Hardware drivers, paging and the scheduler need a real (emulated)
+// machine and are covered by qemu_test.py instead.
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include "mm.h"
+#include "fs.h"
+#include "ringtail/abi.h"
 
-// Heap storage: heap.c declares extern char _kernel_end[] and
-// builds a 4 MB heap starting at its page-aligned address.
-char _kernel_end[4 * 1024 * 1024 + 8192];
+static int passed, failed;
+#define CHECK(cond, what) do { \
+    if (cond) passed++; \
+    else { failed++; printf("  FAIL  %s (line %d)\n", what, __LINE__); } \
+} while (0)
 
-// Mock disk: 8192 sectors of 512 bytes (4 MB).
-#define MOCK_SECTORS 8192
-#define MOCK_FAT_SECTORS 32
-#define MOCK_FAT_START 1
-#define MOCK_ROOT_START 65
-#define MOCK_DATA_START 97
-static uint8_t mock_disk[MOCK_SECTORS * 512];
+// ---- Mock disk ----
 
-int ata_read_sector(uint32_t lba, uint8_t* buf) {
-    if (lba >= MOCK_SECTORS) return -1;
-    memcpy(buf, mock_disk + lba * 512, 512);
+#define MAX_SECTORS 32768u  // 16 MB
+static uint8_t disk[MAX_SECTORS * 512];
+static uint32_t disk_sectors;
+static int writes_left = -1;  // -1: never fail
+static uint32_t flushes;
+
+int ata_present(void) { return disk_sectors != 0; }
+uint32_t ata_sectors(void) { return disk_sectors; }
+int ata_flush(void) { flushes++; return 0; }
+
+int ata_read(uint32_t lba, uint32_t count, void* buf) {
+    if (lba + count > disk_sectors) return -EIO;
+    memcpy(buf, disk + lba * 512, count * 512);
     return 0;
 }
 
-int ata_write_sector(uint32_t lba, const uint8_t* buf) {
-    if (lba >= MOCK_SECTORS) return -1;
-    memcpy(mock_disk + lba * 512, buf, 512);
+int ata_write(uint32_t lba, uint32_t count, const void* buf) {
+    if (lba + count > disk_sectors) return -EIO;
+    if (writes_left == 0) return -EIO;
+    if (writes_left > 0) writes_left--;
+    memcpy(disk + lba * 512, buf, count * 512);
     return 0;
 }
 
-static void mock_put16(uint8_t* p, uint32_t off, uint16_t v) {
-    p[off] = v & 0xFF;
-    p[off + 1] = (v >> 8) & 0xFF;
-}
+static void put16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void put32(uint8_t* p, uint32_t v) { put16(p, (uint16_t)v); put16(p + 2, (uint16_t)(v >> 16)); }
 
-static void mock_disk_format(void) {
-    memset(mock_disk, 0, sizeof(mock_disk));
-    uint8_t* b = mock_disk;
+// Format a FAT16 volume the way mkfs.fat would: one reserved sector,
+// two FATs, a 512-entry root, the FAT sized to cover every cluster.
+static void format(uint32_t sectors, uint32_t spc) {
+    disk_sectors = sectors;
+    memset(disk, 0, sectors * 512);
+    uint32_t rsec = 32, fsz = 1;
+    for (;;) {
+        uint32_t clusters = (sectors - 1 - 2 * fsz - rsec) / spc;
+        if (fsz * 256 >= clusters + 2) break;
+        fsz++;
+    }
+    uint8_t* b = disk;
     b[0] = 0xEB; b[1] = 0x3C; b[2] = 0x90;
     memcpy(b + 3, "RINGTAIL", 8);
-    mock_put16(b, 11, 512);
-    b[13] = 1;
-    mock_put16(b, 14, 1);
+    put16(b + 11, 512);
+    b[13] = (uint8_t)spc;
+    put16(b + 14, 1);
     b[16] = 2;
-    mock_put16(b, 17, 512);
-    mock_put16(b, 19, MOCK_SECTORS);
+    put16(b + 17, 512);
+    if (sectors < 65536) put16(b + 19, (uint16_t)sectors); else put32(b + 32, sectors);
     b[21] = 0xF8;
-    mock_put16(b, 22, MOCK_FAT_SECTORS);
-    mock_put16(b, 24, 63);
-    mock_put16(b, 26, 255);
+    put16(b + 22, (uint16_t)fsz);
+    put16(b + 24, 63);
+    put16(b + 26, 16);
     b[36] = 0x80;
     b[38] = 0x29;
+    put32(b + 39, 0x12345678);
     memcpy(b + 43, "RINGTAIL   ", 11);
     memcpy(b + 54, "FAT16   ", 8);
     b[510] = 0x55; b[511] = 0xAA;
-    // FAT copies: entry 0 media, entry 1 end-of-chain, rest free.
-    for (int f = 0; f < 2; f++) {
-        uint8_t* fat = mock_disk + (MOCK_FAT_START + f * MOCK_FAT_SECTORS) * 512;
-        mock_put16(fat, 0, 0xFFF8);
-        mock_put16(fat, 2, 0xFFFF);
+    for (uint32_t f = 0; f < 2; f++) {
+        uint8_t* fat = disk + (1 + f * fsz) * 512;
+        put16(fat, 0xFFF8);
+        put16(fat + 2, 0xFFFF);
     }
-    // Volume label entry first, matching the BPB label, as
-    // mkdisk.py does. The kernel must skip it everywhere.
-    uint8_t* vol = mock_disk + MOCK_ROOT_START * 512;
+    // A volume label entry, which every directory walk must skip.
+    uint8_t* vol = disk + (1 + 2 * fsz) * 512;
     memcpy(vol, "RINGTAIL   ", 11);
     vol[11] = 0x08;
 }
 
-// A FAT12-shaped mock (512 sectors, 461 data clusters) for
-// the rejection test at the end: diskfs.c must refuse it
-// instead of misreading it as FAT16.
-static void mock_disk_format_fat12(void) {
-    memset(mock_disk, 0, sizeof(mock_disk));
-    uint8_t* b = mock_disk;
-    b[0] = 0xEB; b[1] = 0x3C; b[2] = 0x90;
-    memcpy(b + 3, "RINGTAIL", 8);
-    mock_put16(b, 11, 512);
-    b[13] = 1;
-    mock_put16(b, 14, 1);
-    b[16] = 2;
-    mock_put16(b, 17, 512);
-    mock_put16(b, 19, 512);
-    b[21] = 0xF8;
-    mock_put16(b, 22, 9);
-    b[510] = 0x55; b[511] = 0xAA;
+// ---- Heap ----
+
+static uint8_t heap_area[1024 * 1024 + 64];
+
+static void test_heap(void) {
+    heap_init(heap_area + 3, sizeof heap_area - 3);  // deliberately misaligned
+    heap_stats_t s0, s;
+    heap_get_stats(&s0);
+    CHECK(s0.start % 16 == 0, "heap start is aligned");
+    CHECK(s0.used == 0 && s0.free_blocks == 1, "fresh heap is one free block");
+
+    void* a = kmalloc(100);
+    void* b = kmalloc(200);
+    void* c = kmalloc(300);
+    CHECK(a && b && c, "three allocations succeed");
+    CHECK(((uintptr_t)a | (uintptr_t)b | (uintptr_t)c) % 16 == 0, "allocations are 16-byte aligned");
+    CHECK((uint8_t*)a + 100 <= (uint8_t*)b && (uint8_t*)b + 200 <= (uint8_t*)c, "allocations do not overlap");
+    memset(a, 0xAA, 100); memset(b, 0xBB, 200); memset(c, 0xCC, 300);
+    CHECK(((uint8_t*)a)[99] == 0xAA && ((uint8_t*)b)[0] == 0xBB, "neighbours keep their contents");
+
+    CHECK(kmalloc(0) == 0, "zero-byte allocation fails");
+    CHECK(kmalloc(sizeof heap_area) == 0, "allocation bigger than the heap fails");
+    CHECK(kfree(0) == -1, "free of NULL is refused");
+    CHECK(kfree((uint8_t*)b + 16) == -1, "free of an interior pointer is refused");
+    CHECK(kfree(heap_area) == -1, "free of a non-heap pointer is refused");
+
+    CHECK(kfree(b) == 0, "free succeeds");
+    CHECK(kfree(b) == -2, "double free is detected");
+    void* b2 = kmalloc(150);
+    CHECK(b2 == b, "first fit reuses the freed hole");
+    kfree(b2);
+    kfree(a);
+    kfree(c);
+    heap_get_stats(&s);
+    CHECK(s.used == 0 && s.free_blocks == 1 && s.largest_free == s0.largest_free,
+          "freeing everything coalesces back to one block");
+
+    uint8_t* z = kmalloc(64);
+    memset(z, 0x5A, 64);
+    kfree(z);
+    uint8_t* z2 = kzalloc(64);
+    int zero = 1;
+    for (int i = 0; i < 64; i++) zero &= z2[i] == 0;
+    CHECK(z2 == z && zero, "kzalloc returns zeroed memory");
+    kfree(z2);
+
+    // Fill the heap with small blocks, free every other one, then
+    // the rest, and check it all merges again.
+    void* p[4096];
+    int n = 0;
+    while (n < 4096 && (p[n] = kmalloc(200))) n++;
+    CHECK(n > 1000, "heap holds many small blocks");
+    for (int i = 0; i < n; i += 2) kfree(p[i]);
+    heap_get_stats(&s);
+    CHECK(s.free_blocks >= (uint32_t)n / 2, "freed holes stay separate while their neighbours live");
+    for (int i = 1; i < n; i += 2) kfree(p[i]);
+    heap_get_stats(&s);
+    CHECK(s.used == 0 && s.free_blocks == 1, "and merge once the neighbours go");
 }
 
-// Stubs for the kernel print functions diskfs_list uses.
-void print(const char* s) { fputs(s, stdout); }
-void print_char(char c) { putchar(c); }
+// ---- Filesystem ----
 
-extern void heap_init(void);
-extern void* kmalloc(uint32_t size);
-extern int kfree(void* ptr);
-extern uint32_t heap_get_used(void);
-extern uint32_t heap_get_free(void);
-extern uint32_t heap_get_free_blocks(void);
-extern void diskfs_init(void);
-extern int diskfs_create(const char* name);
-extern int diskfs_write(const char* name, const char* content);
-extern int diskfs_read(const char* name, char* out, uint32_t max);
-extern int diskfs_delete(const char* name);
-extern void diskfs_list(void);
-extern int diskfs_exists(const char* name);
-extern int diskfs_size(const char* name, uint32_t* size_out);
-extern int diskfs_list_at(int index, char* name_out);
+static int read_all(const char* name, char* buf, uint32_t max) {
+    int node = diskfs_lookup(name);
+    if (node < 0) return node;
+    return diskfs_pread(node, buf, max, 0);
+}
 
-static int failures = 0;
-#define CHECK(cond, msg) do { \
-    if (cond) { printf("PASS: %s\n", msg); } \
-    else { printf("FAIL: %s\n", msg); failures++; } \
-} while (0)
+static void test_names(void) {
+    CHECK(diskfs_name_ok("HELLO.TXT"), "plain 8.3 name is fine");
+    CHECK(diskfs_name_ok("readme"), "lowercase without an extension is fine");
+    CHECK(!diskfs_name_ok(""), "empty name is rejected");
+    CHECK(!diskfs_name_ok("TOOLONGNAME.TXT"), "nine-character base is rejected");
+    CHECK(!diskfs_name_ok("A.TEXT"), "four-character extension is rejected");
+    CHECK(!diskfs_name_ok("A.B.C"), "two dots are rejected");
+    CHECK(!diskfs_name_ok("NAME."), "trailing dot is rejected");
+    CHECK(!diskfs_name_ok(".TXT"), "empty base is rejected");
+    CHECK(!diskfs_name_ok("A B"), "space is rejected");
+    CHECK(!diskfs_name_ok("A*B") && !diskfs_name_ok("A/B") && !diskfs_name_ok("A:B"),
+          "reserved characters are rejected");
+    CHECK(!diskfs_name_ok("A\x01") && !diskfs_name_ok("A\x7F") && !diskfs_name_ok("A\xE5"),
+          "control and high bytes are rejected");
+}
 
-// Follow a file's FAT chain in the mock disk, for the
-// fragmentation test. name is a user name (e.g. "frag.txt");
-// it is converted to raw 8.3 here, the same way diskfs.c
-// does. Returns chain length, or -1 if not found.
-static int mock_chain(const char* name, uint32_t* chain, int max) {
-    char base[9], ext[4];
-    const char* dot = strchr(name, '.');
-    int bl = dot ? (int)(dot - name) : (int)strlen(name);
-    int el = dot ? (int)strlen(dot + 1) : 0;
-    if (bl < 1 || bl > 8 || el > 3) return -1;
-    memset(base, ' ', 8); base[8] = 0;
-    memset(ext, ' ', 3); ext[3] = 0;
-    for (int i = 0; i < bl; i++) {
-        char c = name[i];
-        if (c >= 'a' && c <= 'z') c -= 32;
-        base[i] = c;
+static void test_basic(void) {
+    char buf[8192];
+    format(16384, 1);
+    CHECK(diskfs_init() == 0, "fresh FAT16 volume mounts");
+    uint32_t clusters, free0, cb;
+    diskfs_stats(&clusters, &free0, &cb);
+    CHECK(clusters >= 4085 && free0 == clusters && cb == 512, "stats show an empty disk");
+
+    int cursor = 0;
+    CHECK(diskfs_readdir(&cursor, buf, 0) == -ENOENT, "the volume label is not listed as a file");
+    CHECK(diskfs_lookup("HELLO.TXT") == -ENOENT, "missing file is not found");
+    CHECK(diskfs_lookup("BAD NAME") == -EINVAL, "lookup of an invalid name is -EINVAL");
+
+    int node = diskfs_create("hello.txt");
+    CHECK(node >= 0, "create succeeds");
+    CHECK(diskfs_create("HELLO.TXT") == -EEXIST, "create is case-insensitive and refuses duplicates");
+    CHECK(diskfs_lookup("Hello.Txt") == node, "lookup is case-insensitive");
+    CHECK(diskfs_size(node) == 0, "new file is empty");
+    CHECK(diskfs_pread(node, buf, sizeof buf, 0) == 0, "reading an empty file gives 0 bytes");
+
+    CHECK(diskfs_pwrite(node, "hello", 5, 0) == 5, "write 5 bytes");
+    CHECK(diskfs_size(node) == 5, "size is 5");
+    memset(buf, 0, sizeof buf);
+    CHECK(diskfs_pread(node, buf, sizeof buf, 0) == 5 && memcmp(buf, "hello", 5) == 0, "read them back");
+    CHECK(diskfs_pread(node, buf, 3, 2) == 3 && memcmp(buf, "llo", 3) == 0, "read at an offset");
+    CHECK(diskfs_pread(node, buf, 10, 5) == 0 && diskfs_pread(node, buf, 10, 99) == 0, "read at or past the end gives 0");
+
+    // A write that starts past the end must zero the gap, across a
+    // cluster boundary.
+    CHECK(diskfs_pwrite(node, "X", 1, 1500) == 1, "write past the end");
+    CHECK(diskfs_size(node) == 1501, "size grows to cover it");
+    CHECK(diskfs_pread(node, buf, sizeof buf, 0) == 1501, "whole file reads");
+    int gap_zero = 1;
+    for (int i = 5; i < 1500; i++) gap_zero &= buf[i] == 0;
+    CHECK(gap_zero && buf[1500] == 'X', "the gap reads as zeros");
+
+    // Multi-cluster data with a pattern, overwritten in the middle.
+    static char big[6000];
+    for (int i = 0; i < 6000; i++) big[i] = (char)('a' + i % 26);
+    CHECK(diskfs_pwrite(node, big, 6000, 0) == 6000, "6000-byte write over 12 clusters");
+    CHECK(diskfs_pwrite(node, "MIDDLE", 6, 2047) == 6, "overwrite straddling a cluster boundary");
+    memcpy(big + 2047, "MIDDLE", 6);
+    memset(buf, 0, sizeof buf);
+    CHECK(diskfs_pread(node, buf, sizeof buf, 0) == 6000 && memcmp(buf, big, 6000) == 0, "pattern survives intact");
+
+    CHECK(diskfs_truncate(node, 700) == 0 && diskfs_size(node) == 700, "truncate shrinks");
+    uint32_t f;
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0 - 2, "truncate releases the clusters past the end");
+    CHECK(diskfs_truncate(node, 0) == 0 && diskfs_size(node) == 0, "truncate to zero");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0, "an empty file owns no clusters");
+
+    CHECK(diskfs_write_file("notes.txt", "first", 5) == 0, "write_file creates a file");
+    CHECK(diskfs_write_file("notes.txt", "second version", 14) == 0, "write_file replaces it");
+    memset(buf, 0, sizeof buf);
+    CHECK(read_all("NOTES.TXT", buf, sizeof buf) == 14 && strcmp(buf, "second version") == 0, "the new contents are there");
+    CHECK(diskfs_write_file("notes.txt", "", 0) == 0 && read_all("NOTES.TXT", buf, sizeof buf) == 0,
+          "write_file with no data empties the file");
+
+    // Open files cannot be deleted.
+    int n2 = diskfs_lookup("NOTES.TXT");
+    diskfs_ref(n2);
+    CHECK(diskfs_refs(n2) == 1, "ref counts");
+    CHECK(diskfs_unlink("NOTES.TXT") == -EBUSY, "unlink of an open file is -EBUSY");
+    diskfs_unref(n2);
+    CHECK(diskfs_unlink("NOTES.TXT") == 0, "unlink once closed");
+    CHECK(diskfs_lookup("NOTES.TXT") == -ENOENT, "it is gone");
+    CHECK(diskfs_unlink("NOTES.TXT") == -ENOENT, "second unlink is -ENOENT");
+
+    // Directory listing.
+    diskfs_write_file("A.TXT", "a", 1);
+    diskfs_write_file("B.TXT", "bb", 2);
+    int count = 0, saw_b = 0;
+    char name[FS_NAME_MAX];
+    uint32_t size;
+    cursor = 0;
+    while (diskfs_readdir(&cursor, name, &size) == 0) {
+        count++;
+        if (strcmp(name, "B.TXT") == 0 && size == 2) saw_b = 1;
     }
-    for (int i = 0; i < el; i++) {
-        char c = dot[1 + i];
-        if (c >= 'a' && c <= 'z') c -= 32;
-        ext[i] = c;
+    CHECK(count == 3 && saw_b, "readdir lists every file with its size");
+
+    // Everything must survive a remount from the disk image.
+    diskfs_pwrite(node, big, 6000, 0);
+    CHECK(diskfs_init() == 0, "remount");
+    memset(buf, 0, sizeof buf);
+    CHECK(read_all("HELLO.TXT", buf, sizeof buf) == 6000 && memcmp(buf, big, 6000) == 0, "data survives a remount");
+    CHECK(read_all("B.TXT", buf, sizeof buf) == 2 && memcmp(buf, "bb", 2) == 0, "small file survives too");
+    CHECK(memcmp(disk + 512, disk + 512 + 512 * ((uint32_t)disk[22] | disk[23] << 8),
+                 512 * ((uint32_t)disk[22] | disk[23] << 8)) == 0, "both FAT copies match");
+}
+
+static void test_full_disk(void) {
+    format(16384, 1);
+    diskfs_init();
+    uint32_t clusters, free0, f, cb;
+    diskfs_stats(&clusters, &free0, &cb);
+    diskfs_write_file("KEEP.TXT", "keep me", 7);
+    diskfs_stats(&clusters, &free0, &cb);
+
+    static uint8_t huge[9 * 1024 * 1024];
+    memset(huge, 'Z', sizeof huge);
+    CHECK(diskfs_write_file("HUGE.BIN", huge, sizeof huge) == -ENOSPC, "write bigger than the disk is -ENOSPC");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0, "a failed write_file gives back every cluster it took");
+    CHECK(diskfs_lookup("HUGE.BIN") == -ENOENT, "and leaves no half-made file");
+
+    int node = diskfs_create("FILL.BIN");
+    int r = diskfs_pwrite(node, huge, sizeof huge, 0);
+    CHECK(r > 0 && (uint32_t)r < sizeof huge, "pwrite to a full disk writes what fits");
+    CHECK(diskfs_size(node) == (uint32_t)r, "and the size says how much");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == 0, "the disk is now full");
+    CHECK(diskfs_pwrite(node, "more", 4, (uint32_t)r) == -ENOSPC, "further growth is -ENOSPC");
+    CHECK(diskfs_create("EMPTY.TXT") >= 0, "empty files still fit on a full disk");
+    CHECK(diskfs_unlink("FILL.BIN") == 0, "deleting the filler");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0, "frees all of it");
+    char buf[16] = {0};
+    CHECK(read_all("KEEP.TXT", buf, sizeof buf) == 7 && strcmp(buf, "keep me") == 0, "the other file is untouched");
+}
+
+static void test_io_errors(void) {
+    char buf[64];
+    format(16384, 1);
+    diskfs_init();
+    diskfs_write_file("SAFE.TXT", "original", 8);
+
+    // Fail the very first write: the new data never lands, so the
+    // directory must still point at the old data.
+    writes_left = 0;
+    CHECK(diskfs_write_file("SAFE.TXT", "replacement", 11) == -EIO, "disk error is reported");
+    writes_left = -1;
+    CHECK(diskfs_init() == 0, "remount after the error");
+    memset(buf, 0, sizeof buf);
+    CHECK(read_all("SAFE.TXT", buf, sizeof buf) == 8 && strcmp(buf, "original") == 0,
+          "a failed replace leaves the old contents");
+
+    // Root directory capacity: 512 entries, one is the label.
+    int made = 0;
+    for (int i = 0; i < 600; i++) {
+        char name[16];
+        snprintf(name, sizeof name, "F%d.TXT", i);
+        if (diskfs_create(name) >= 0) made++;
     }
-    uint8_t raw[11];
-    memcpy(raw, base, 8);
-    memcpy(raw + 8, ext, 3);
-    uint8_t* root = mock_disk + MOCK_ROOT_START * 512;
-    uint8_t* fat = mock_disk + MOCK_FAT_START * 512;
-    for (int i = 0; i < 512; i++) {
-        uint8_t* e = root + i * 32;
-        if (e[0] == 0x00) break;
-        if (e[0] == 0xE5) continue;
-        if (e[11] == 0x0F) continue;
-        if (memcmp(e, raw, 11) != 0) continue;
-        uint32_t cur = e[26] | (e[27] << 8);
-        int n = 0;
-        while (cur >= 2 && n < max) {
-            chain[n++] = cur;
-            uint16_t nxt = fat[cur * 2] | (fat[cur * 2 + 1] << 8);
-            if (nxt >= 0xFFF8) break;
-            cur = nxt;
-        }
-        return n;
-    }
-    return -1;
+    CHECK(made == 512 - 2, "the root directory fills at its entry count");
+    CHECK(diskfs_create("ONEMORE.TXT") == -ENOSPC, "and then create is -ENOSPC");
+}
+
+static void test_big_clusters(void) {
+    char buf[20000];
+    format(32768, 4);
+    CHECK(diskfs_init() == 0, "volume with 2 KB clusters mounts");
+    uint32_t clusters, f, cb;
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(cb == 2048, "cluster size is 2 KB");
+    static char data[10000];
+    for (int i = 0; i < 10000; i++) data[i] = (char)(i * 7);
+    CHECK(diskfs_write_file("DATA.BIN", data, sizeof data) == 0, "10000 bytes over 5 clusters");
+    CHECK(diskfs_init() == 0 && read_all("DATA.BIN", buf, sizeof buf) == 10000 && memcmp(buf, data, 10000) == 0,
+          "reads back after a remount");
+    diskfs_write_file("KEEP.TXT", "kept\n", 5);
+}
+
+static void test_bad_volumes(void) {
+    format(16384, 1);
+    disk[510] = 0;
+    CHECK(diskfs_init() == -EINVAL, "missing boot signature is refused");
+    format(16384, 1);
+    disk[13] = 3;
+    CHECK(diskfs_init() == -EINVAL, "cluster size that is not a power of two is refused");
+    format(16384, 1);
+    put16(disk + 19, 20000);
+    CHECK(diskfs_init() == -EINVAL, "volume bigger than the disk is refused");
+    format(16384, 1);
+    put16(disk + 22, 2);
+    CHECK(diskfs_init() == -EINVAL, "FAT too small for the clusters is refused");
+    format(4096, 1);  // 4000-odd clusters: FAT12 by definition
+    CHECK(diskfs_init() == -EINVAL, "FAT12-sized volume is refused");
+    CHECK(!diskfs_ready(), "and nothing is mounted");
+    disk_sectors = 0;
+    CHECK(diskfs_init() == -EIO, "no disk at all is -EIO");
 }
 
 int main(void) {
-    heap_init();
-    CHECK(heap_get_used() == 0, "heap starts empty");
-    CHECK(heap_get_free_blocks() == 1, "heap starts as one free block");
-    CHECK(heap_get_free() == 4 * 1024 * 1024 - 16, "initial free size is heap minus header");
+    test_heap();
+    heap_init(heap_area, sizeof heap_area);
+    test_names();
+    test_basic();
+    test_full_disk();
+    test_io_errors();
+    test_bad_volumes();
+    test_big_clusters();  // last: its image is what fsck checks
 
-    // Basic alloc/free and coalescing.
-    void* p = kmalloc(64);
-    CHECK(p != NULL, "malloc 64 succeeds");
-    CHECK(((uintptr_t)p % 8) == 0, "malloc returns 8-byte aligned pointer");
-    CHECK(heap_get_used() > 0, "heap used grows after malloc");
-    CHECK(kfree(p) == 0, "free of a live block succeeds");
-    CHECK(heap_get_used() == 0, "heap used returns to 0 after free");
-    CHECK(heap_get_free_blocks() == 1, "free coalesces back to one block");
-
-    // Zero and overflow rejections (the v0.3.0 allocator fix).
-    CHECK(kmalloc(0) == NULL, "malloc 0 returns NULL");
-    CHECK(kmalloc(0xFFFFFFFFu) == NULL, "malloc 4294967295 returns NULL, not a wrapped block");
-    CHECK(kmalloc(4294967288u) == NULL, "malloc near 2^32 returns NULL");
-    CHECK(kmalloc(4 * 1024 * 1024) == NULL, "malloc whole heap size returns NULL");
-    CHECK(kmalloc(4 * 1024 * 1024 - 16 + 1) == NULL, "malloc one byte over max usable returns NULL");
-    void* whole = kmalloc(4 * 1024 * 1024 - 16);
-    CHECK(whole != NULL, "malloc max usable size succeeds");
-    CHECK(kfree(whole) == 0, "free of max block succeeds");
-    CHECK(heap_get_used() == 0, "heap empty after max block free");
-
-    // Invalid and double frees must not corrupt the heap.
-    void* q = kmalloc(32);
-    CHECK(kfree(NULL) == -1, "free NULL is rejected");
-    CHECK(kfree((void*)123) == -1, "free of a bogus address is rejected");
-    CHECK(kfree((char*)q + 1) == -1, "free of a mid-block pointer is rejected");
-    CHECK(kfree(q) == 0, "free of a live block still succeeds after bad frees");
-    CHECK(kfree(q) == -2, "double free is reported");
-    void* r = kmalloc(32);
-    CHECK(r != NULL, "heap still works after bad and double frees");
-    CHECK(kfree(r) == 0, "cleanup free succeeds");
-    CHECK(heap_get_used() == 0, "heap empty after bad-free tests");
-
-    // Coalescing across three blocks, freed out of order.
-    void* a = kmalloc(64);
-    void* b = kmalloc(64);
-    void* c = kmalloc(64);
-    CHECK(a && b && c, "three allocations succeed");
-    CHECK(kfree(b) == 0 && kfree(a) == 0 && kfree(c) == 0, "three frees succeed");
-    CHECK(heap_get_free_blocks() == 1, "out-of-order frees coalesce to one block");
-    CHECK(heap_get_used() == 0, "heap empty after coalescing test");
-
-    // Reuse after free.
-    void* s1 = kmalloc(64);
-    CHECK(kfree(s1) == 0, "free for reuse test succeeds");
-    void* s2 = kmalloc(64);
-    CHECK(s2 != NULL, "allocation after free reuses the heap");
-    CHECK(kfree(s2) == 0, "reuse cleanup succeeds");
-
-    // DISKFS (FAT16): format the mock disk, init, then the same
-    // create/write/read/rewrite/delete shape the RTFS tests used.
-    mock_disk_format();
-    diskfs_init();
-    CHECK(diskfs_exists("hello.txt") == 0, "diskfs file does not exist before create");
-    CHECK(diskfs_create("hello.txt") == 0, "diskfs create succeeds");
-    CHECK(diskfs_exists("hello.txt") == 1, "diskfs file exists after create");
-    CHECK(diskfs_create("hello.txt") == -1, "diskfs duplicate create fails");
-    CHECK(diskfs_create("12345678901234567890123456789012") == -2, "diskfs 32-char name is too long for 8.3");
-    CHECK(diskfs_write("hello.txt", "hello") == 0, "diskfs write succeeds");
-    char out[2048];
-    CHECK(diskfs_read("hello.txt", out, sizeof(out)) == 5, "diskfs read returns 5 bytes");
-    CHECK(strcmp(out, "hello") == 0, "diskfs read returns hello");
-    CHECK(diskfs_write("hello.txt", "hello world") == 0, "diskfs rewrite succeeds");
-    CHECK(diskfs_read("hello.txt", out, sizeof(out)) == 11, "diskfs rewrite read returns 11 bytes");
-    CHECK(strcmp(out, "hello world") == 0, "diskfs rewrite returns new content");
-    CHECK(diskfs_write("new.txt", "auto") == 0, "diskfs write to a missing file creates it");
-    CHECK(diskfs_read("new.txt", out, sizeof(out)) == 4, "diskfs auto-created file reads back");
-    CHECK(diskfs_create("empty.txt") == 0, "diskfs create empty file succeeds");
-    CHECK(diskfs_read("empty.txt", out, sizeof(out)) == 0 && out[0] == 0, "diskfs read of empty file returns empty string");
-    CHECK(diskfs_read("missing.txt", out, sizeof(out)) == -1, "diskfs read of missing file fails");
-    CHECK(diskfs_read("hello.txt", out, 0) == -1, "diskfs read with max 0 fails instead of underflowing");
-    CHECK(diskfs_delete("hello.txt") == 0, "diskfs delete succeeds");
-    CHECK(diskfs_delete("hello.txt") == -1, "diskfs delete of missing file fails");
-    diskfs_list(); // must not crash; output goes to stdout via stubs
-    printf("PASS: diskfs_list runs without crashing\n");
-
-    // 8.3 naming: too-long base, multiple dots, forbidden
-    // characters, and case-insensitive lookup.
-    CHECK(diskfs_create("a.txt") == 0, "diskfs 8.3 short name creates");
-    CHECK(diskfs_create("TOOLONGNAME.txt") == -2, "diskfs 12-char base is too long for 8.3");
-    CHECK(diskfs_create("a.b.c") == -2, "diskfs multiple dots rejected");
-    CHECK(diskfs_create("bad/name") == -2, "diskfs slash in name rejected");
-    CHECK(diskfs_create("lower.txt") == 0, "diskfs lowercase name creates");
-    CHECK(diskfs_write("lower.txt", "low") == 0, "diskfs lowercase write succeeds");
-    CHECK(diskfs_exists("LOWER.TXT") == 1, "diskfs uppercase lookup finds lowercase file");
-    CHECK(diskfs_read("LOWER.TXT", out, sizeof(out)) == 3 && strcmp(out, "low") == 0, "diskfs uppercase read returns lowercase file content");
-    CHECK(diskfs_delete("a.txt") == 0 && diskfs_delete("lower.txt") == 0, "diskfs 8.3 cleanup deletes succeed");
-
-    // Multi-cluster file: 1200 bytes spans 3 clusters, proving
-    // chain allocation and sector-by-sector read/write.
-    static char big[1201];
-    for (int i = 0; i < 1200; i++) big[i] = 'A' + (i % 26);
-    big[1200] = 0;
-    CHECK(diskfs_write("big.txt", big) == 0, "diskfs multi-cluster write succeeds");
-    CHECK(diskfs_read("big.txt", out, sizeof(out)) == 1200, "diskfs multi-cluster read returns 1200 bytes");
-    CHECK(strcmp(out, big) == 0, "diskfs multi-cluster content matches");
-    CHECK(diskfs_delete("big.txt") == 0, "diskfs multi-cluster delete succeeds");
-    CHECK(diskfs_write("big2.txt", big) == 0, "diskfs write after delete reuses freed clusters");
-    CHECK(diskfs_read("big2.txt", out, sizeof(out)) == 1200, "diskfs reused-cluster file reads back");
-
-    // Persistence across re-init: the mock disk still holds the
-    // files, so a fresh diskfs_init must find them again. This
-    // is the host-side version of the QEMU reboot test.
-    diskfs_init();
-    CHECK(diskfs_exists("new.txt") == 1, "diskfs file survives re-init");
-    CHECK(diskfs_read("new.txt", out, sizeof(out)) == 4, "diskfs re-init read returns old content");
-    CHECK(strcmp(out, "auto") == 0, "diskfs re-init content matches");
-    CHECK(diskfs_exists("big2.txt") == 1, "diskfs multi-cluster file survives re-init");
-
-    // File size, for seek from the end: directory entry only,
-    // no whole-file read, so it works for empty and small
-    // files alike, and (below) for larger-than-read_all files.
-    uint32_t sz = 0;
-    CHECK(diskfs_size("new.txt", &sz) == 0 && sz == 4, "diskfs size of new.txt is 4");
-    CHECK(diskfs_size("big2.txt", &sz) == 0 && sz == 1200, "diskfs size of big2.txt is 1200");
-    CHECK(diskfs_size("empty.txt", &sz) == 0 && sz == 0, "diskfs size of empty file is 0");
-    CHECK(diskfs_size("missing.txt", &sz) == -1, "diskfs size of missing file fails");
-
-    // Size beyond the read_all cap: a 100,000-byte file is
-    // larger than the 64 KB whole-file read cap, so a size
-    // lookup must still succeed even though a whole-file
-    // read would fail. This is why seek from the end uses
-    // size, not read_all.
-    static char huge[100001];
-    for (int i = 0; i < 100000; i++) huge[i] = 'x';
-    huge[100000] = 0;
-    CHECK(diskfs_write("huge.txt", huge) == 0, "diskfs 100KB write succeeds");
-    CHECK(diskfs_size("huge.txt", &sz) == 0 && sz == 100000, "diskfs size of 100KB file is 100000");
-    CHECK(diskfs_delete("huge.txt") == 0, "diskfs 100KB cleanup delete succeeds");
-
-    // Fragmentation, on a fresh disk so cluster numbers are
-    // deterministic: A=2,3,4; B=5,6,7; C=8,9,10. Delete B,
-    // then write D (2500 bytes, 5 clusters). First-fit reuse
-    // must give D the chain 5,6,7,11,12, jumping over C's
-    // clusters: a chain, not a contiguous run, which RTFS
-    // could not have produced.
-    mock_disk_format();
-    diskfs_init();
-    static char frag[2501];
-    for (int i = 0; i < 2500; i++) frag[i] = 'a' + (i % 26);
-    frag[2500] = 0;
-    CHECK(diskfs_write("fa.txt", big) == 0, "diskfs frag A write succeeds");
-    CHECK(diskfs_write("fb.txt", big) == 0, "diskfs frag B write succeeds");
-    CHECK(diskfs_write("fc.txt", big) == 0, "diskfs frag C write succeeds");
-    CHECK(diskfs_delete("fb.txt") == 0, "diskfs frag B delete succeeds");
-    CHECK(diskfs_write("frag.txt", frag) == 0, "diskfs fragmented write succeeds");
-    // Verify the full 2500-byte content with a larger buffer
-    // (the 2048-byte out buffer above would truncate it).
-    static char fragout[2600];
-    CHECK(diskfs_read("frag.txt", fragout, sizeof(fragout)) == 2500, "diskfs fragmented read returns 2500 bytes");
-    CHECK(strcmp(fragout, frag) == 0, "diskfs fragmented content matches");
-    uint32_t chain[8];
-    int nchain = mock_chain("frag.txt", chain, 8);
-    CHECK(nchain == 5 && chain[0] == 5 && chain[1] == 6 && chain[2] == 7 &&
-          chain[3] == 11 && chain[4] == 12,
-          "diskfs fragmented chain is 5,6,7,11,12, not contiguous");
-
-    // Disk-full: after the frag files (11 clusters used),
-    // 8084 clusters remain (4,139,008 bytes). A file one byte
-    // larger needs 8085 clusters and must fail, leaving the
-    // old files intact.
-    static char toobig[4139009 + 1];
-    for (int i = 0; i < 4139009; i++) toobig[i] = 'x';
-    toobig[4139009] = 0;
-    CHECK(diskfs_write("toobig.txt", toobig) == -2, "diskfs write larger than free space fails");
-    CHECK(diskfs_read("frag.txt", fragout, sizeof(fragout)) == 2500, "diskfs old file still readable after failed write");
-    CHECK(diskfs_delete("fa.txt") == 0 && diskfs_delete("fc.txt") == 0 &&
-          diskfs_delete("frag.txt") == 0,
-          "diskfs frag cleanup deletes succeed");
-    CHECK(diskfs_delete("new.txt") == -1, "diskfs frag disk has no leftover new.txt");
-
-    // LIST by index, on a fresh disk, so slot order is
-    // creation order and the expectations are exact.
-    // The volume entry at slot 0 must be skipped, so the
-    // first regular file is index 0, not the volume.
-    mock_disk_format();
-    diskfs_init();
-    CHECK(diskfs_list_at(0, out) == -1, "diskfs list_at on empty disk fails");
-    CHECK(diskfs_create("a.txt") == 0 && diskfs_create("b.txt") == 0 &&
-          diskfs_create("c.txt") == 0 && diskfs_create("prog") == 0,
-          "diskfs list setup creates succeed");
-    CHECK(diskfs_list_at(0, out) == 0 && strcmp(out, "A.TXT") == 0, "diskfs list_at 0 is A.TXT");
-    CHECK(diskfs_list_at(1, out) == 0 && strcmp(out, "B.TXT") == 0, "diskfs list_at 1 is B.TXT");
-    CHECK(diskfs_list_at(2, out) == 0 && strcmp(out, "C.TXT") == 0, "diskfs list_at 2 is C.TXT");
-    CHECK(diskfs_list_at(3, out) == 0 && strcmp(out, "PROG") == 0, "diskfs list_at 3 is PROG, no dot");
-    CHECK(diskfs_list_at(4, out) == -1, "diskfs list_at past last file fails");
-    CHECK(diskfs_list_at(-1, out) == -1, "diskfs list_at negative index fails");
-    CHECK(diskfs_delete("b.txt") == 0, "diskfs list setup delete succeeds");
-    CHECK(diskfs_list_at(0, out) == 0 && strcmp(out, "A.TXT") == 0, "diskfs list_at 0 still A.TXT after delete");
-    CHECK(diskfs_list_at(1, out) == 0 && strcmp(out, "C.TXT") == 0, "diskfs list_at 1 is C.TXT after delete, skipping deleted");
-    CHECK(diskfs_list_at(2, out) == 0 && strcmp(out, "PROG") == 0, "diskfs list_at 2 is PROG after delete");
-    CHECK(diskfs_list_at(3, out) == -1, "diskfs list_at past last file fails after delete");
-
-    // FAT12 rejection: a small-cluster disk must be refused,
-    // not misread as FAT16.
-    mock_disk_format_fat12();
-    diskfs_init();
-    CHECK(diskfs_exists("hello.txt") == 0, "diskfs FAT12 disk has no files");
-    CHECK(diskfs_create("hello.txt") == -4, "diskfs FAT12 create fails with no disk");
-    CHECK(diskfs_size("hello.txt", &sz) == -4, "diskfs FAT12 size fails with no disk");
-    CHECK(diskfs_list_at(0, out) == -1, "diskfs FAT12 list_at fails with no disk");
-    diskfs_list(); // must print "no disk", not crash
-    printf("PASS: diskfs_list on FAT12 disk runs without crashing\n");
-
-    if (failures == 0) {
-        printf("ALL TESTS PASSED\n");
-        return 0;
+    FILE* img = fopen("test_disk.img", "wb");
+    if (img) {
+        fwrite(disk, 512, disk_sectors, img);
+        fclose(img);
     }
-    printf("%d FAILURES\n", failures);
-    return 1;
+    printf("%d passed, %d failed\n", passed, failed);
+    return failed ? 1 : 0;
 }
