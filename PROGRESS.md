@@ -1271,3 +1271,476 @@ the memory map, VGA text split out of kernel.c, real
 headers, UNDERSTANDING.md into a repo docs folder,
 mock update past v0.9.0, now three versions behind,
 unrequested).
+
+v0.10.3 - Input wait + fault log. Patch, not a new
+subsystem: it completes the input story the GUI
+launcher started, by giving programs a way to sleep
+until input arrives, and by keeping fault diagnostics
+where a graphics restore cannot erase them. Built
+locally, QEMU-verified, NOT yet pushed (local
+canonical only; remote is still v0.10.2, commit
+3fe0d806; push only when T says).
+
+WAIT, syscall 21, after SPAWN, mirrored in
+syscall_stub.h as sys_wait(last_x, last_y,
+last_buttons). The caller passes the mouse state
+from its last MOUSE_STATE read. The kernel, with
+interrupts off, checks two things: is a key already
+queued, and has the mouse moved or changed buttons
+since the caller last saw it? If either is true, it
+returns at once, without sleeping, so input that
+arrived between a poll and the wait is not missed.
+Otherwise it marks the task WAIT_INPUT and yields,
+and the task stays asleep until a keyboard or mouse
+interrupt wakes it. The check and the block are one
+atomic step under cli, which is what avoids the
+classic lost-wakeup race: an interrupt cannot slip
+in between them. WAIT does not consume input: after
+it returns, the caller still reads the key with
+KEY_GET or the mouse with MOUSE_STATE, so in text
+mode a key that wakes a waiter stays queued for the
+shell, as the waitdemo key test shows (see below).
+Any task may wait, unlike KEY_GET, which is
+owner-only, because waiting consumes nothing and
+all waiters wake together on input. There is no
+timeout in this slice: a waiter with no input stays
+waiting until input arrives, or until it is killed
+with `kill`, which sets DEAD regardless of state.
+A WAIT timeout (combining sleep's wake tick with
+input wake) is a later piece, not in this version.
+
+Kernel pieces. task.c gains TASK_WAIT_INPUT (4),
+distinct from TASK_BLOCKED (2): BLOCKED means
+"wake me at a tick" (sleep), WAIT_INPUT means
+"wake me on input", and task_pick_next wakes
+BLOCKED by time but skips WAIT_INPUT entirely, so
+a waiting task never wakes by time, only by
+task_wake_input_waiters, called from the keyboard
+and mouse interrupt handlers. task_state_name
+returns "waiting" for it, so `tasks` shows a waiter
+as waiting, not sleeping or dead (code change; not
+screenshot-proven, because typing `tasks` itself
+wakes waiters, so a waiting task cannot be caught
+in a tasks screenshot). keyboard.c gains
+keyboard_pending (peek, not dequeue, for WAIT's
+pre-check) and wakes waiters on a successfully
+enqueued key only; a dropped key (queue full) does
+not wake, because no new input was delivered.
+mouse.c wakes waiters after a completed packet's
+position and buttons are fully updated, so a woken
+task reads the new state, not the old one; a
+dropped first byte (resync) does not wake, while
+an overflow packet still wakes, because buttons
+are updated even when an axis is ignored. Wake is
+wake-all, deliberate and simple: input is
+broadcast (a key stays queued for whoever reads
+it, mouse state is readable by anyone), so there
+is no single right waiter to pick, and a herd of
+two tasks is not a problem in a toy OS. Wake runs
+in interrupt context with interrupts already off,
+so it takes no lock and does no printing, heap,
+or I/O, only state-flag writes.
+
+Fault log. New file src/kernel/faultlog.c (Makefile
+OBJS gains faultlog.o), 8 entries, ring buffer,
+oldest overwritten first, each holding the
+diagnostic string exactly as printed (without the
+screen version's leading and trailing newlines),
+plus the tick and the faulting task's id. Eight
+entries at 64 bytes each live in BSS, no heap
+allocation, which matters because the log is
+written from fault handlers, where allocating
+would be unsafe. No lock is taken, and none is
+needed: log writes happen only in fault handlers,
+which run with interrupts off, so no task switch
+and no other log write can interleave with one.
+Both fault paths log: generic exceptions in idt.c
+and page faults in paging.c now build one
+diagnostic string, call faultlog_add, then print
+it, so log and screen agree exactly by
+construction. The old piece-by-piece print helpers
+(print_dec in idt.c, print_hex32 in paging.c)
+were replaced by bounded buffer-append helpers,
+so the build stays at 0 warnings. The shell gains
+a `faults` command (help + dispatch, now 26 shell
+commands), which calls faultlog_dump: "No faults
+logged." when empty, else one line per entry,
+oldest first, "tick <tick> task <id>: <diagnostic>".
+Limits, stated plainly: the log is RAM only, no
+persistence across reboots; a kernel fault still
+halts after logging, so its entry is in RAM but
+unreachable (the log is for user faults the OS
+survives); 8 entries means a ninth fault drops
+the oldest.
+
+GUI. The loop now waits at the end of each frame
+with the mouse state it just processed
+(sys_wait(prev.x, prev.y, prev.buttons)), instead
+of spinning, and the header comment says so.
+Guarded by !quit: Esc or Quit must exit at once,
+not wait for another input first. Program-icon
+launch still exits directly via sys_exit inside
+the loop, so it never reaches the wait. About
+version updated to v0.10.3. Kernel banner and
+shell version updated to "RingTail v0.10.3 -
+Input wait + fault log".
+
+Demos. waitdemo (272 bytes, _start 08000000):
+prints "Waiting for input...", reads MOUSE_STATE,
+waits with that state, prints "Woke up on input.",
+exits. gfxfault (320 bytes, _start 08000000,
+name exactly 8 characters for 8.3): GFX_BEGIN,
+then prints from unmapped 0x09000000 like badptr,
+so it faults in graphics mode; if it somehow does
+not fault, it ends graphics cleanly before
+exiting, rather than leaving the OS in graphics
+mode with no program drawing. Both are run via
+the shell, not via GUI icons: the full disk now
+has 11 programs, past the GUI's 9-icon cap, so
+waitdemo and gfxfault are not shown on the
+desktop (see below).
+
+Verification (screenshots
+~/workspace/ringtail/screenshots-v103/).
+Kernel 68,400 bytes, 0 warnings. File size is up
+from 59,836, but most of that jump is not code:
+rebuilding v0.10.2 from canonical today gives
+59,836 exactly, confirming the toolchain is
+unchanged, and section sizes show text +2,169
+bytes (43,169 to 45,338), BSS +608 (44,180 to
+44,788, the faultlog buffer), and the rest is
+4KB section-alignment padding (linker script
+BLOCK(4K)/ALIGN(4K)): .text crossed a page
+boundary, pushing .rodata by 4KB, and rodata-area
+growth pushed .data by another 4KB, so the file
+size metric is page-quantized, not smooth. Real
+code growth is about 2.2KB, plus 0.6KB BSS.
+Host tests unchanged, 106 CHECKs, ALL TESTS
+PASSED (WAIT and fault log are QEMU-only, like
+LIST, SPAWN, and SEEK before them). Program
+builds, all _start 08000000: hello 160, count
+372, fault 52, crash 164, badptr 192, filedemo
+1304, gui 4972, seekdemo 2876, listdemo 1344,
+waitdemo 272, gfxfault 320. Full disk (hello,
+count, fault, crash, badptr, filedemo, gui,
+seekdemo, listdemo, waitdemo, gfxfault,
+welcome.txt in that order): 12 files, 30
+clusters, fsck.fat clean. LIST order matches
+disk order, including WAITDEMO at 9 and GFXFAULT
+at 10, and the GUI shows the first 9 programs
+only, as designed.
+Wait, key wake: v103wait-1 shows "Waiting for
+input..." with no wake output after about 5
+seconds of no input, proving WAIT blocks rather
+than waking on time; v103wait-2 shows "Woke up
+on input." after a key, followed by "unknown:
+xversion", which is the documented WAIT-does-not-
+consume behavior, not a bug: the waking key stays
+queued, so the shell then types it before
+"version". Wait, mouse wake: v103waitm-2 shows
+"Woke up on input." after a mouse move, then a
+clean "version" -> "RingTail v0.10.3 - Input
+wait + fault log", because a mouse wake leaves
+no key queued for the shell. Fault log:
+v103fault-1 "No faults logged." on a fresh boot;
+v103fault-3 after run fault, "tick 527 task 1:
+PAGE FAULT addr=0x00000000 code=5 - task
+killed.", matching the screen diagnostic exactly
+plus tick and task id; v103fault-4 after run
+gfxfault shows only "Started gfxfault as task
+2" and a prompt, with NO fault diagnostic on
+screen, proving the graphics-restore loss the log
+exists to fix; v103fault-5 faults shows both
+entries in order, "tick 527 task 1: PAGE FAULT
+addr=0x00000000 code=5 - task killed." and "tick
+934 task 2: PAGE FAULT addr=0x09000000 code=0 -
+task killed." GUI regression with the wait loop:
+v103gui-1 desktop, 9 green icons in LIST order,
+top bar X=160 Y=100; v103gui-2 Welcome window
+after a click, X=35 Y=43, "Welcome to
+RingTail!", "Click me", "Clicked: 0";
+v103gui-3 Esc exit, version v0.10.3, shell alive,
+proving mouse-move, click, and Esc-key wakes all
+work through WAIT. Regression: v103reg-1 listdemo
+lists all 12 files, small/null-buffer checks
+pass, spawn-hello succeeds, spawn-missing fails;
+v103reg-2 seekdemo all checks pass; v103reg-4
+filedemo writes/reads back "Hello from a
+program!" and cat demo.txt matches. GRUB ISO:
+v103iso-2 waitdemo mouse wake + version,
+screenshot byte-identical to the direct-kernel
+run (same SHA-256). Canonical verified from a
+fresh copy before scratch deletion: kernel
+68,400 bytes, host tests pass, canonical
+waitdemo screenshot hash identical to scratch.
+Scratch dirs (scratch-wait, scratch-canonical-
+check) deleted after verification.
+
+Honest limits (stated to T): WAIT has no timeout
+yet; fault log holds 8 entries, RAM only, kernel-
+halt entries unreachable; tasks "waiting" state
+name is code-only, not screenshot-proven;
+GUI still shows at most the first 9 programs, no
+paging/scrolling, files with a dot are never
+launchable from the desktop, test programs are
+listed like any program, launching exits the
+desktop, 64 KB cap unchanged, GUI still full-
+redraws on any change (no damage regions), WAIT
+wakes all waiters, text-mode WAIT shares keys
+with the shell (a waking key stays queued).
+
+Next: push v0.10.3 (awaiting T's word, do not
+push unasked); then, as build candidates, a WAIT
+timeout, and the other open items (64 KB cap
+raise/streaming only when a file needs it, heap
+from the memory map, VGA text split out of
+kernel.c, real headers, UNDERSTANDING.md into a
+repo docs folder, mock update past v0.9.0, now
+four versions behind, unrequested).
+
+v0.10.4 - Heap from memory map (patch, not minor: the
+allocator is unchanged, only where the heap lives and
+how big it is moved from a constant to a map-derived
+value, with no new syscall or program, so this is
+incremental in the seek/launcher/wait sense, and the
+conservative choice under the version-climbing rule).
+
+The heap used to be a fixed 4 MB at a fixed spot
+after the kernel, which worked because QEMU's RAM
+layout is known and forgiving, but it assumed RAM
+instead of asking. Now boot asks GRUB for the
+memory map and places the heap in it. Boot.asm
+FLAGS went from 0x00 to 0x03: bit 1 (provide memory
+information) makes the map a request, not a lucky
+accident (GRUB in QEMU provided mem_upper anyway
+with FLAGS 0x00, which is why kernel_main could
+already use it, but the full map is only guaranteed
+when requested), bit 0 (align boot modules) is the
+conventional partner flag, harmless with no modules,
+and the checksum recomputes automatically from
+MAGIC + FLAGS.
+
+Heap.c: HEAP_SIZE is gone as a constant. A static
+heap_size variable, set by heap_init_at(start, size),
+is now the bound kmalloc checks and heap_get_total
+returns, so a larger heap actually allows larger
+allocations and a smaller heap rejects sooner, and a
+pre-init kmalloc still returns NULL safely
+(free_list is 0). heap_init_at is the general init
+(one free block, used 0). heap_init is kept for
+host tests, as heap_init_at(align_up(_kernel_end,
+4096), 4 MB), so the host heap and its CHECKs are
+unchanged in behavior. heap_init_from_map(mbi),
+guarded with RINGTAIL_KERNEL so the host link stays
+clean (it uses print and hlt, which host tests do
+not have), is what kernel boot now calls instead of
+heap_init. It reads the multiboot info struct:
+info[0] flags, info[11] mmap_length, info[12]
+mmap_addr. If mbi is 0 or flags bit 6 (mmap valid)
+is clear, it prints a diagnostic and halts, before
+paging, while VGA text still works, like
+paging_init's out-of-frames halt: a heap is
+essential, and booting without one, or with a
+silently wrong one, would be worse than stopping
+with a message. Entries are walked by size + 4,
+not a fixed stride, because the spec allows larger
+entries. Each entry gives base (8 bytes), length
+(8 bytes), type (4 bytes, 1 = usable RAM). Only
+type 1 is usable; reserved, ACPI, and bad are
+skipped, conservatively (ACPI reclaimable could be
+reused after ACPI init, but RingTail has no ACPI,
+so it stays reserved). Entries with a nonzero base
+or length high word are skipped, not misread: this
+is 32-bit with no PAE, and a 64-bit address cannot
+be intersected with the 16 MB identity range
+without 64-bit arithmetic. A base + length that
+wraps past 4 GB is rejected outright, so it cannot
+look like a tiny region. The heap goes in the
+LARGEST usable region overlapping the kernel:
+start is the later of the region start and
+page-aligned kernel_end, capped end is the earlier
+of the region end and 16 MB (the identity limit),
+then minus FRAME_RESERVE 1 MB, giving end. Largest
+wins, because usable RAM below 16 MB may be
+fragmented, and the heap should take the biggest
+usable piece, not the first. Smaller pieces and
+gaps are wasted in this slice; a full physical
+memory manager using every region is a later
+piece, and QEMU's map is contiguous above 1 MB,
+so nothing is wasted there. If the best region is
+smaller than MIN_HEAP_SIZE 1 MB (disk buffers
+about 82 KB, task stacks 4 KB each, ordinary
+allocations, with room to spare), it halts with
+"Not enough usable memory for heap".
+
+Frame reserve, found by thinking through small
+RAM before testing it, not by a test failure:
+the first version capped heap_end at 15 MB only,
+which leaves a small-RAM machine with only the
+gap between the usable region's end and RAM top
+for frames (128 KB in QEMU, zero on hardware
+whose usable region ends exactly at RAM top,
+which would make paging_init halt with no
+frames). The fix subtracts the reserve from the
+capped end in every case, so at least 1 MB of
+frames (256 frames; kernel tables need 5, a user
+task needs 2) is guaranteed on any machine that
+boots, and on a large-RAM machine the heap still
+ends at 15 MB, exactly as a cap would give. The
+fix was verified by a re-run whose heap screenshot
+is byte-identical to the pre-fix run (same SHA-256,
+see below), proving large-RAM behavior did not
+change, as designed.
+
+Boot info is single-use, with one exception.
+Kernel_main already read mem_upper before heap
+placement, heap_init_from_map reads the whole map
+before writing any heap, and nothing after heap
+init reads the info struct, the command line, or
+the modules again, so the heap writing over those
+addresses afterwards destroys nothing the OS still
+needs, except the shell's mmap_dump, which reads
+the map array again from the saved address (see
+its limit below). Kernel_main's old mem_upper
+check (halt if less than 5 MB above 1 MB) was
+removed, not moved: it was tied to the fixed 4 MB
+heap that no longer exists, and the map-based
+check in heap_init_from_map replaces it; a second,
+less accurate halt against a total would only
+duplicate it. Ram_top for frames is unchanged
+(from mem_upper, capped to 16 MB inside
+paging_init): frames still use a total, not the
+map, in this slice. QEMU's map is contiguous below
+16 MB, so the total and the map agree there, and
+the limitation only matters on fragmented real
+hardware, where a reserved hole below 16 MB could
+be handed out as a frame. That is documented, not
+fixed here, to keep this slice to the heap alone.
+RAM above 16 MB is still unused entirely (heap
+and frames are both capped there); using it needs
+kernel page tables beyond the identity range, a
+future piece, not this slice.
+
+Shell, now 27 commands (was 26): new `mmap`
+command, help line and dispatch branch after
+`faults`, extern mmap_dump in shell.c. Mmap_dump
+prints the saved map, one line per entry,
+"base=0x........ len=0x........ type=<n>
+usable/reserved", with high:low pairs when a base
+or length high word is nonzero, so a skipped
+above-4GB entry still shows honestly instead of
+silently printing its low word. The address and
+length are the ones saved at boot, not re-read
+from the info struct, because the heap may have
+overwritten the info struct itself by now. The
+map array is still read from its original GRUB
+address, which survives heap placement in QEMU
+(proven by the correct dump in testing), but a
+bootloader that placed the map array inside the
+chosen heap region would corrupt a later dump:
+placement itself is unaffected, because placement
+reads the whole map before writing any heap, but
+the dump would then print heap contents as if
+they were a map. Copying the map to a safe buffer
+at boot is a future hardening, not done here.
+Kernel banner, shell version, and GUI About
+window all say v0.10.4. No other GUI or syscall
+code changed; program sizes are identical to
+v0.10.3 (gui 4972, same version-string length),
+all _start 08000000, disk unchanged (12 files,
+30 clusters, fsck.fat clean).
+
+Verification, screenshots in screenshots-v104/:
+host tests 106 CHECKs, ALL TESTS PASSED, test
+file untouched. Kernel 68,580 bytes (was 68,400,
++180), 0 warnings. 64 MB (harness -m 64): mmap
+(v104mmap-1, zoom-verified, base + len = next
+base throughout, no gaps) shows 6 entries:
+base 0x00000000 len 0x0009FC00 type 1 usable,
+base 0x0009FC00 len 0x00000400 type 2 reserved,
+base 0x000F0000 len 0x00010000 type 2 reserved,
+base 0x00100000 len 0x03EE0000 type 1 usable
+(ends 0x03FE0000), base 0x03FE0000 len
+0x00020000 type 2 reserved (ends 0x04000000,
+64 MB), base 0xFFFC0000 len 0x00040000 type 2
+reserved (BIOS area, ends 4 GB). Heap
+(v104mmap-2): start 0x119000, total 14,577,664
+bytes, used 81,968, free 14,495,680, free blocks
+1, heap_end = start + total = 15,728,640 =
+15 MB exactly, and used + free + 16 (header) =
+total exactly. Malloc (v104mmap-3/5/6): 1,000,000
+bytes at 0x12d040, heap used 1,081,984
+(81,968 + 1,000,016), free 13,495,664; then
+8,000,000 bytes at 0x221290, used 9,082,000,
+free 5,495,648, arithmetic exact at every step,
+free blocks 1 throughout. The 8 MB allocation
+succeeding is the key proof the heap grew: with
+the old 4 MB heap it would have returned NULL
+(size over the heap bound). Re-run after the
+reserve fix: heap screenshot byte-identical to
+the pre-fix run (SHA-256 b982137c0954204e18769
+cf84caa74a9d728005f938cb6600a37b63421a9d
+35e39, v104mmap2-2 = v104mmap-2). 8 MB
+(RT_MEM=8 harness variant, /tmp only, not
+checked in): mmap usable [1 MB, 0x7E0000),
+heap start 0x119000, total 6,057,984, used
+81,968, free 5,976,000, free blocks 1, heap_end
+0x6E0000 (usable end 0x7E0000 minus 1 MB
+reserve), arithmetic exact, and run hello
+succeeds ("Started hello as task 1", "Hello from
+disk!"), proving the heap scales with RAM
+instead of being hardcoded, and frames still
+work with the smaller pool. GRUB ISO (v104iso-1/2):
+heap numbers identical to the direct-kernel run
+(start, total, used, free, free blocks all
+match), version v0.10.4, so the FLAGS change did
+not break ISO boot and GRUB provides the same
+map as QEMU -kernel. The ISO screenshot hash
+differs from the direct run only because the
+screen contents differ (ISO run had no mmap
+lines above the heap output, direct run did);
+numbers match, and hash comparison does not
+apply here, unlike v0.10.3 where the commands
+were identical. Regression (v104reg, v104gui):
+listdemo lists all 12 files, small/null-buffer
+checks pass, spawn-hello succeeds, spawn-missing
+fails; seekdemo all checks pass; filedemo writes
+and reads back "Hello from a program!" and cat
+demo.txt matches; run fault then faults shows
+"tick 1193 task 5: PAGE FAULT addr=0x00000000
+code=5 - task killed." (tick differs from
+v0.10.3's 527/934 because timing differs, not
+because the log changed); waitdemo mouse wake
+then clean version v0.10.4; GUI Welcome window
+after a click, X=35 Y=43, "Clicked: 0", Esc exit,
+version v0.10.4, shell alive. All pass with the
+new heap and the new frame pool ([15 MB, 16 MB)
+at 64 MB).
+
+Honest limits (stated to T): heap uses the
+largest usable region only, smaller pieces and
+gaps wasted; frames still use ram_top total, not
+the map; above-4GB map entries skipped (32-bit,
+no PAE); heap and frames both capped at 16 MB,
+RAM above 16 MB unused; mmap_dump reads the map
+from its original GRUB address, which survives
+in QEMU but would corrupt a later dump if a
+bootloader placed the map inside the heap region
+(placement unaffected); boot info overwritten
+after reading, by design, except the mmap_dump
+case above; 64 KB cap unchanged; GUI still shows
+at most the first 9 programs, no paging or
+scrolling, files with a dot never launchable
+from the desktop; WAIT still has no timeout.
+
+Next: push v0.10.3 + v0.10.4 together, as one
+batched push (awaiting T's word, do not push
+unasked; remote is still at v0.10.2, local has
+two versions unpushed, which T said is fine, not
+urgent); then, as build candidates,
+a WAIT timeout, frames from the memory map, and
+the other open items (64 KB cap raise/streaming
+only when a file needs it, VGA text split out of
+kernel.c, real headers, UNDERSTANDING.md into a
+repo docs folder, mock update past v0.9.0, now
+five versions behind, unrequested).

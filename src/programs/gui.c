@@ -34,9 +34,15 @@
 // z-order, cursor last), which is simple, correct, and fast
 // enough at 320x200, because a full redraw is a few hundred
 // syscalls and only happens when something actually changed.
-// The loop polls the mouse and keys: there is no blocking
-// input wait yet, so the GUI uses its time slices spinning,
-// which preemption makes harmless but wasteful, a known limit.
+// The loop waits for input: at the end of each frame it
+// calls WAIT with the mouse state it has already processed,
+// so it sleeps until a key or mouse change arrives, instead
+// of spinning through its time slices. WAIT returns at once
+// if input is already there, and it does not consume input,
+// so the loop top still drains the whole key queue and
+// reads the mouse as before. Quitting skips the wait: Esc
+// or Quit must exit at once, not wait for another input
+// first, which is why the wait call is guarded by !quit.
 // Colors are palette indices, the kernel demo's palette.
 #include "syscall_stub.h"
 
@@ -160,7 +166,7 @@ static void draw_window(int idx) {
         buf[i] = 0;
         draw_text(w->x + 10, w->y + 95, buf, 0);
     } else {
-        draw_text(w->x + 10, w->y + 30, "RingTail v0.10.2", 0);
+        draw_text(w->x + 10, w->y + 30, "RingTail v0.10.4", 0);
         draw_text(w->x + 10, w->y + 50, "Bare-metal x86 OS", 0);
         draw_text(w->x + 10, w->y + 70, "C + NASM, no libc", 0);
     }
@@ -348,6 +354,13 @@ __attribute__((section(".text._start"))) void _start(void) {
         }
         if (need_redraw) draw_all(&ms);
         prev = ms;
+        // Sleep until the next input, with the mouse state
+        // just processed: WAIT returns at once if a key is
+        // already queued or the mouse already moved, else
+        // it blocks until a key or mouse interrupt wakes
+        // it. Guarded by !quit, so Esc or Quit exits at
+        // once instead of waiting for another input first.
+        if (!quit) sys_wait(prev.x, prev.y, prev.buttons);
     }
     sys_gfx_end();
     sys_exit();

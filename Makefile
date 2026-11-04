@@ -7,7 +7,7 @@ ASFLAGS = -f elf32
 
 all: ringtail.iso
 
-OBJS = src/boot/boot.o src/kernel/isr.o src/kernel/kernel.o src/kernel/idt.o src/kernel/task.o src/kernel/task_asm.o src/kernel/syscall.o src/kernel/loader.o src/drivers/keyboard.o src/drivers/mouse.o src/drivers/vga_gfx.o src/shell/shell.o src/mm/heap.o src/mm/paging.o src/fs/diskfs.o src/drivers/ata.o src/drivers/timer.o
+OBJS = src/boot/boot.o src/kernel/isr.o src/kernel/kernel.o src/kernel/idt.o src/kernel/task.o src/kernel/task_asm.o src/kernel/syscall.o src/kernel/faultlog.o src/kernel/loader.o src/drivers/keyboard.o src/drivers/mouse.o src/drivers/vga_gfx.o src/shell/shell.o src/mm/heap.o src/mm/paging.o src/fs/diskfs.o src/drivers/ata.o src/drivers/timer.o
 
 src/boot/boot.o: src/boot/boot.asm
 	$(AS) $(ASFLAGS) src/boot/boot.asm -o src/boot/boot.o

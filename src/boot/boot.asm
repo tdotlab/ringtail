@@ -5,7 +5,18 @@
 ; ebx = multiboot info pointer.
 
 MAGIC equ 0x1BADB002
-FLAGS equ 0x00
+; v0.10.4: FLAGS was 0x00, and GRUB in QEMU provided
+; mem_upper anyway, which is why kernel_main could use
+; it without asking. The full memory map is only
+; guaranteed when requested, so now bit 1 (provide
+; memory information) is set, which is what makes
+; heap_init_from_map's mmap read a request, not a
+; lucky accident. Bit 0 (align boot modules on page
+; boundaries) is the conventional partner flag, harmless
+; with no modules loaded, and the checksum recomputes
+; automatically from MAGIC + FLAGS, so no manual
+; checksum update is needed.
+FLAGS equ 0x03
 CHECKSUM equ -(MAGIC + FLAGS)
 
 section .multiboot

@@ -61,6 +61,15 @@
 #define TASK_RUNNING 1
 #define TASK_BLOCKED 2
 #define TASK_DEAD    3
+// v0.10.3: waiting for input, not sleeping. BLOCKED means "wake
+// me at a tick" (task_sleep); WAIT_INPUT means "wake me on
+// input" (task_wait_input). They need different states because
+// task_pick_next wakes BLOCKED tasks by time, and a waiting
+// task must never wake by time, only by an input interrupt
+// calling task_wake_input_waiters. Keeping them apart is what
+// makes WAIT indefinite without a timeout: a waiting task
+// stays waiting until input arrives, or until it is killed.
+#define TASK_WAIT_INPUT 4
 
 #define TASK_STACK_SIZE 4096
 #define MAX_SLEEP_SECONDS (0x7FFFFFFFu / 100)
@@ -108,6 +117,10 @@ extern void print_color(const char* s, unsigned char color);
 extern void* kmalloc(uint32_t size);
 extern int kfree(void* ptr);
 extern uint32_t timer_get_ticks(void);
+extern int keyboard_pending(void);
+extern int mouse_get_x(void);
+extern int mouse_get_y(void);
+extern int mouse_get_buttons(void);
 extern void switch_to(task_t* old, task_t* new);
 extern void tss_set_esp0(uint32_t esp0);
 extern uint32_t paging_kernel_pd(void);
@@ -246,6 +259,12 @@ static task_t* task_pick_next(task_t* from) {
             if ((int32_t)(timer_get_ticks() - t->wake_tick) >= 0)
                 t->state = TASK_READY;
         }
+        // TASK_WAIT_INPUT is deliberately skipped here: it never
+        // becomes READY by time, only by task_wake_input_waiters
+        // (called from a keyboard or mouse interrupt), so a
+        // waiting task stays waiting until input arrives, or
+        // until it is killed (kill sets DEAD, which is skipped
+        // here too, and cleanup frees it).
         if (t->state == TASK_READY) return t;
         t = t->next ? t->next : task_list;
         if (t == start) break;
@@ -317,6 +336,64 @@ int task_sleep(uint32_t seconds) {
     current_task->wake_tick = timer_get_ticks() + seconds * 100;
     task_yield();
     return 0;
+}
+
+// Wait for input, v0.10.3. The caller passes the mouse state
+// it has already processed (last_x, last_y, last_buttons, from
+// its last MOUSE_STATE read). With interrupts off, this checks
+// two things: is a key already queued, and has the mouse moved
+// or changed buttons since the caller last saw it? If either
+// is true, it returns at once, without sleeping: the input
+// is already there, and the caller will read it with KEY_GET
+// or MOUSE_STATE as usual. Otherwise it marks the task
+// WAIT_INPUT and yields, and the task stays asleep until a
+// keyboard or mouse interrupt wakes it (see
+// task_wake_input_waiters). The check and the block are one
+// atomic step under cli: an interrupt cannot slip in between
+// them and be lost, which is the classic lost-wakeup race
+// this design exists to avoid. WAIT does not consume input:
+// it only wakes, and the caller still reads the key or mouse
+// state itself, so in text mode a key that wakes a waiter is
+// still in the queue for the shell, as before. There is no
+// timeout in this slice: a waiter with no input stays waiting
+// until input arrives, or until it is killed with `kill`,
+// which sets DEAD regardless of state. For user programs
+// only, like task_sleep: the shell never calls it, it has
+// its own input loop in the kernel main loop. Returns 0
+// always in this slice: any mouse state is a valid state
+// to compare, so there is nothing to fail on.
+int task_wait_input(int last_x, int last_y, int last_buttons) {
+    __asm__ volatile("cli");
+    if (keyboard_pending() ||
+        mouse_get_x() != last_x ||
+        mouse_get_y() != last_y ||
+        mouse_get_buttons() != last_buttons) {
+        __asm__ volatile("sti");
+        return 0;
+    }
+    current_task->state = TASK_WAIT_INPUT;
+    task_yield();
+    // task_yield's resume path already did sti, so interrupts
+    // are on again here, and this task is RUNNING again.
+    return 0;
+}
+
+// Wake every task waiting for input. Called only from keyboard
+// and mouse interrupt handlers, which already run with
+// interrupts off (interrupt gates), so no cli/sti here: the
+// state changes are single int writes, and the scheduler
+// picks the woken tasks up on the next yield or timer tick.
+// Waking all waiters, not just one, is deliberate and simple:
+// input is broadcast (a key is still in the queue for whoever
+// reads it, the mouse state is readable by anyone), so there
+// is no "right" single waiter to pick, and a thundering herd
+// of two tasks is not a problem in a toy OS.
+void task_wake_input_waiters(void) {
+    task_t* t = task_list;
+    while (t) {
+        if (t->state == TASK_WAIT_INPUT) t->state = TASK_READY;
+        t = t->next;
+    }
 }
 
 void task_exit(void) {
@@ -542,6 +619,7 @@ static const char* task_state_name(int state) {
     if (state == TASK_READY) return "ready";
     if (state == TASK_RUNNING) return "running";
     if (state == TASK_BLOCKED) return "sleeping";
+    if (state == TASK_WAIT_INPUT) return "waiting";
     return "dead";
 }
 

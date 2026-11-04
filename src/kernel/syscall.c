@@ -79,6 +79,7 @@
 #define SYS_SEEK 18
 #define SYS_LIST 19
 #define SYS_SPAWN 20
+#define SYS_WAIT 21
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -103,6 +104,7 @@ extern void gfx_line(int x0, int y0, int x1, int y1, uint8_t color);
 extern void gfx_text(int x, int y, const char* s, uint8_t color);
 extern void* kmalloc(uint32_t size);
 extern int kfree(void* ptr);
+extern int task_wait_input(int last_x, int last_y, int last_buttons);
 extern int task_fd_open(const char* name);
 extern int task_fd_close(int fd);
 extern int task_fd_lookup(int fd, char* name_out, uint32_t* offset_out);
@@ -426,6 +428,28 @@ uint32_t syscall_dispatch(uint32_t num, uint32_t a, uint32_t b, uint32_t c) {
         if (copy_user_name((const char*)a, name) != 0) return (uint32_t)-1;
         int id = loader_run(name);
         return (uint32_t)id;
+    }
+    if (num == SYS_WAIT) {
+        // Wait: a = last mouse x seen, b = last mouse y seen,
+        // c = last mouse buttons seen, all from the caller's
+        // last MOUSE_STATE read. Blocks the calling task
+        // until a key is queued or the mouse moves or
+        // changes buttons, then returns 0. If input is
+        // already there (a key queued, or the mouse already
+        // different from the passed state), it returns at
+        // once, without sleeping, so no input is missed
+        // between a poll and the wait. It does not consume
+        // input: the caller still reads the key with
+        // KEY_GET or the mouse with MOUSE_STATE after it
+        // returns. Any task may wait, unlike KEY_GET, which
+        // is owner-only, because waiting consumes nothing
+        // and all waiters wake together on input. There is
+        // no timeout in this slice: a waiter with no input
+        // stays waiting until input arrives, or until it
+        // is killed. See task_wait_input in task.c for the
+        // atomic check-and-block that makes this safe.
+        int r = task_wait_input((int)a, (int)b, (int)c);
+        return (uint32_t)r;
     }
     return (uint32_t)-1; // unknown syscall number
 }

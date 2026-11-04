@@ -145,10 +145,17 @@ int mouse_get_y(void) { return mouse_y_val; }
 int mouse_get_buttons(void) { return mouse_buttons_val; }
 uint32_t mouse_get_packets(void) { return mouse_packets; }
 
+extern void task_wake_input_waiters(void);
+
 // Called from mouse_isr (isr.asm). Keep it short: read, assemble,
 // update, acknowledge. Never print from here: print takes the
 // VGA lock, and an IRQ handler that blocks on a lock held by
 // the task it interrupted would deadlock the machine.
+// v0.10.3: a completed packet wakes input waiters, like a key
+// does. A dropped first byte (resync) does not wake: no packet
+// completed, so no new input was delivered. An overflow packet
+// still wakes: buttons are updated even when an axis is
+// ignored, so it can still be a click.
 void mouse_handler(void) {
     uint8_t st = inb(KBC_STATUS);
     if (st & 0x01) {
@@ -183,6 +190,13 @@ void mouse_handler(void) {
                         if (mouse_y_val < 0) mouse_y_val = 0;
                         if (mouse_y_val > 199) mouse_y_val = 199;
                     }
+                    // Wake after the state is fully updated, so
+                    // a woken task reads the new position and
+                    // buttons, not the old ones. No task can
+                    // run mid-handler anyway (interrupts are
+                    // off in the ISR), but the order is the
+                    // honest one: update first, then wake.
+                    task_wake_input_waiters();
                 }
             }
         }

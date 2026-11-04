@@ -3,7 +3,7 @@
 // the kernel's half is syscall.c, and the numbers must match it
 // exactly (PRINT 1, EXIT 2, SLEEP 3, OPEN 4, READ 5, WRITE 6,
 // CLOSE 7, DELETE 8, graphics and input 9-17, seek 18,
-// list 19, spawn 20). A program never calls a kernel function
+// list 19, spawn 20, wait 21). A program never calls a kernel function
 // directly; it only asks through this interrupt, with the
 // syscall number in eax and arguments in ebx, ecx, edx.
 // The wrapper is one inline asm statement: move the number and
@@ -32,6 +32,7 @@
 #define SYS_SEEK 18
 #define SYS_LIST 19
 #define SYS_SPAWN 20
+#define SYS_WAIT 21
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -135,6 +136,22 @@ static inline int sys_list(int index, char* buf, int buf_size) {
 
 static inline int sys_spawn(const char* name) {
     return do_syscall(SYS_SPAWN, (int)name, 0, 0);
+}
+
+// Wait, v0.10.3. Blocks until a key is queued or the mouse
+// moves or changes buttons, then returns 0. Pass the mouse
+// state from your last MOUSE_STATE read: if a key is already
+// queued, or the mouse is already different from those
+// values, WAIT returns at once, without sleeping, so input
+// that arrived between your last poll and this call is not
+// missed. WAIT does not consume input: after it returns,
+// read the key with KEY_GET or the mouse with MOUSE_STATE
+// as usual. Any program may wait (unlike KEY_GET, which is
+// owner-only), and all waiters wake together on input.
+// There is no timeout: with no input, a waiter stays
+// waiting until input arrives, or until it is killed.
+static inline int sys_wait(int last_x, int last_y, int last_buttons) {
+    return do_syscall(SYS_WAIT, last_x, last_y, last_buttons);
 }
 
 // Graphics and input syscalls, v0.9.0. The kernel provides

@@ -31,6 +31,8 @@ extern int diskfs_delete(const char* name);
 extern int diskfs_exists(const char* name);
 extern uint32_t timer_get_ticks(void);
 extern void task_list_tasks(void);
+extern void faultlog_dump(void);
+extern void mmap_dump(void);
 extern int task_spawn_counter(void);
 extern int task_spawn_busy(void);
 extern int task_kill(int id);
@@ -279,6 +281,8 @@ static void cmd_help(void) {
     print("  tick   - show raw timer ticks (100 per second)\n");
     print("  sleep <seconds> - wait\n");
     print("  tasks - list tasks\n");
+    print("  faults - show recent fault log\n");
+    print("  mmap - show multiboot memory map\n");
     print("  spawn counter - start a counting task\n");
     print("  spawn busy - start a task that never yields\n");
     print("  kill <id> - stop a task\n");
@@ -288,7 +292,7 @@ static void cmd_help(void) {
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.10.2 - GUI launcher\n");
+    print("RingTail v0.10.4 - Heap from memory map\n");
 }
 
 static void cmd_mouse(void) {
@@ -469,6 +473,10 @@ void shell_execute(void) {
         cmd_color(buf + 6);
     } else if (strcmp(buf, "tasks") == 0) {
         task_list_tasks();
+    } else if (strcmp(buf, "faults") == 0) {
+        faultlog_dump();
+    } else if (strcmp(buf, "mmap") == 0) {
+        mmap_dump();
     } else if (strcmp(buf, "spawn counter") == 0) {
         int id = task_spawn_counter();
         if (id < 0) {

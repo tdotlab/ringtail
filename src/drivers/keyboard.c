@@ -40,13 +40,21 @@ static volatile uint8_t key_queue[KEY_QUEUE_SIZE];
 static volatile uint32_t key_head = 0; // ISR only
 static volatile uint32_t key_tail = 0; // main loop only
 
+extern void task_wake_input_waiters(void);
+
 // Called from keyboard_isr (isr.asm). Keep it short: read, enqueue,
-// acknowledge. Never call the shell from here.
+// acknowledge. Never call the shell from here. v0.10.3: a
+// successfully enqueued key wakes input waiters, so a task
+// blocked in WAIT wakes on the next timer tick or yield after
+// this interrupt. A dropped key (queue full) does not wake:
+// no new input was delivered, and waiters that should already
+// be awake were woken by the key that filled the queue.
 void keyboard_handler(void) {
     uint8_t scancode = inb(0x60);
     if ((key_head - key_tail) < KEY_QUEUE_SIZE) {
         key_queue[key_head & (KEY_QUEUE_SIZE - 1)] = scancode;
         key_head++;
+        task_wake_input_waiters();
     }
     // else: queue full, drop the key rather than overwriting one
     outb(0x20, 0x20);
@@ -59,6 +67,18 @@ int keyboard_poll(void) {
     uint8_t scancode = key_queue[key_tail & (KEY_QUEUE_SIZE - 1)];
     key_tail++;
     return scancode;
+}
+
+// v0.10.3: peek, not dequeue. WAIT needs to know whether a key
+// is already queued before it decides to sleep, without
+// consuming that key: the caller will read it with
+// keyboard_poll (via KEY_GET) after WAIT returns. Returns 1
+// if the queue is non-empty, 0 if it is empty. Head is
+// ISR-only and tail is drainer-only, so a snapshot read is
+// safe, and WAIT reads it under cli, so an interrupt cannot
+// change head between the check and the block.
+int keyboard_pending(void) {
+    return key_head != key_tail;
 }
 
 extern void shell_putchar(char c);

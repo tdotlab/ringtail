@@ -256,7 +256,7 @@ void gdt_init(void) {
 }
 
 extern void idt_init(void);
-extern void heap_init(void);
+extern void heap_init_from_map(uint32_t mbi);
 extern uint32_t heap_get_start(void);
 extern uint32_t heap_get_free(void);
 extern uint32_t heap_get_end(void);
@@ -275,8 +275,15 @@ extern void gdt_init(void);
 
 // v0.2.3: kernel_main now takes the multiboot magic and info pointer
 // from boot.asm (cdecl: first two stack arguments), so it can verify
-// it was really loaded by a multiboot loader and that there is enough
-// RAM for the 4 MB heap, instead of assuming both.
+// it was really loaded by a multiboot loader, instead of assuming it.
+// v0.10.4: the old RAM check is gone with the old fixed heap. It
+// required 5 MB above 1 MB for a 4 MB heap that no longer exists;
+// the heap size is now map-derived, so the check lives where the
+// map is read, in heap_init_from_map, which halts if there is no
+// map, no usable region, or less than 1 MB for the heap. Checking
+// here as well, against mem_upper's total, would only add a second,
+// less accurate halt for the same failure, so it was removed,
+// not moved.
 void kernel_main(uint32_t magic, uint32_t mbi) {
     // enable cursor: set scanlines 0-15
     outb(0x3D4, 10);
@@ -289,32 +296,27 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
         print_color("Bad multiboot magic - halting.\n", 0x0C);
         while (1) __asm__ volatile("hlt");
     }
-    if (mbi != 0) {
-        uint32_t* info = (uint32_t*)mbi;
-        if (info[0] & 0x1) {
-            // info[2] is mem_upper: KB of RAM above 1 MB. The heap
-            // needs 4 MB, plus the kernel itself above 1 MB, so
-            // require at least 5 MB above 1 MB. If the flags bit is
-            // clear the size is unknown and we skip the check.
-            if (info[2] < 5120) {
-                print_color("Not enough RAM for 4 MB heap - halting.\n", 0x0C);
-                while (1) __asm__ volatile("hlt");
-            }
-        }
-    }
-    print_color("RingTail v0.10.2 - GUI launcher\n", COLOR_TITLE);
+    print_color("RingTail v0.10.4 - Heap from memory map\n", COLOR_TITLE);
     print_color("Graphical desktop: run gui\n", COLOR_DIM);
     print("--------------\n");
 
     // v0.7.0: RAM top for the frame allocator. Multiboot info[2]
     // is KB above 1 MB; without it, assume 16 MB, which is what
-    // the QEMU test machine has.
+    // the QEMU test machine has. v0.10.4: frames still use this
+    // total, capped to 16 MB inside paging_init, not the map:
+    // the frame allocator is the next piece to move to the
+    // map, and this slice does not change it. QEMU's map is
+    // contiguous below 16 MB, so the total and the map agree
+    // there, and the limitation only matters on fragmented
+    // real hardware, where a reserved hole below 16 MB could
+    // be handed out as a frame. That is documented, not fixed
+    // here, to keep this slice to the heap alone.
     uint32_t ram_top = 0x01000000u;
     if (mbi != 0) {
         uint32_t* info_top = (uint32_t*)mbi;
         if (info_top[0] & 0x1) ram_top = 0x100000u + info_top[2] * 1024u;
     }
-    heap_init();
+    heap_init_from_map(mbi);
     // Paging before tasks: task_init needs the kernel page
     // directory for the main task, and no task may run before
     // its address space exists.

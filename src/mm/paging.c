@@ -217,11 +217,28 @@ extern void print_char(char c);
 extern void vga_lock_break(void);
 extern int task_current_is_user(void);
 extern void task_exit(void);
+extern void faultlog_add(const char* msg);
 
-static void print_hex32(uint32_t n) {
+// Buffer append helpers, v0.10.3. Same reason as in idt.c:
+// build one diagnostic string, log it, then print it, so
+// the log and the screen agree exactly. Bounded to 63
+// characters plus null, truncating rather than overflowing.
+static void buf_append_str(char* buf, int* idx, const char* s) {
+    while (*s && *idx < 63) buf[(*idx)++] = *s++;
+}
+static void buf_append_dec(char* buf, int* idx, uint32_t n) {
+    char tmp[12];
+    int i = 0;
+    if (n == 0) { if (*idx < 63) buf[(*idx)++] = '0'; return; }
+    while (n > 0) { tmp[i++] = (char)('0' + (n % 10)); n /= 10; }
+    while (i > 0 && *idx < 63) buf[(*idx)++] = tmp[--i];
+}
+static void buf_append_hex32(char* buf, int* idx, uint32_t n) {
     const char* digits = "0123456789ABCDEF";
-    print("0x");
-    for (int i = 7; i >= 0; i--) print_char(digits[(n >> (i * 4)) & 0xF]);
+    buf_append_str(buf, idx, "0x");
+    for (int i = 7; i >= 0; i--) {
+        if (*idx < 63) buf[(*idx)++] = digits[(n >> (i * 4)) & 0xF];
+    }
 }
 
 void page_fault_handler(uint32_t err, uint32_t addr) {
@@ -229,23 +246,28 @@ void page_fault_handler(uint32_t err, uint32_t addr) {
     // other task can print concurrently during this diagnostic:
     // printing without the print lock here is safe, and breaking
     // the lock first is what makes later prints safe again.
+    // v0.10.3: log the diagnostic before printing it, so a
+    // graphics-mode fault is still readable from `faults`
+    // after the text restore wipes the screen version. The
+    // log call comes before task_exit, which never returns.
     vga_lock_break();
-    print("\nPAGE FAULT addr=");
-    print_hex32(addr);
-    print(" code=");
-    // Small decimal print, local to avoid depending on a helper.
-    char buf[12];
-    int i = 0;
-    if (err == 0) { print_char('0'); }
-    else {
-        while (err > 0) { buf[i++] = '0' + (err % 10); err /= 10; }
-        while (i > 0) print_char(buf[--i]);
-    }
-    if (task_current_is_user()) {
-        print(" - task killed.\n");
+    int is_user = task_current_is_user();
+    char buf[64];
+    int idx = 0;
+    buf_append_str(buf, &idx, "PAGE FAULT addr=");
+    buf_append_hex32(buf, &idx, addr);
+    buf_append_str(buf, &idx, " code=");
+    buf_append_dec(buf, &idx, err);
+    if (is_user) buf_append_str(buf, &idx, " - task killed.");
+    else buf_append_str(buf, &idx, " - system halted.");
+    buf[idx] = 0;
+    faultlog_add(buf);
+    print("\n");
+    print(buf);
+    print("\n");
+    if (is_user) {
         task_exit(); // never returns: switches away from the dead task
         while (1) __asm__ volatile("hlt"); // backstop, unreachable
     }
-    print(" - system halted.\n");
     while (1) __asm__ volatile("hlt");
 }

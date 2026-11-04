@@ -27,13 +27,24 @@ extern uint32_t exc_vector;
 extern void print(const char* s);
 extern void print_char(char c);
 extern void vga_lock_break(void);
+extern void faultlog_add(const char* msg);
 
-static void print_dec(uint32_t n) {
-    char buf[12];
+// Buffer append helpers, v0.10.3. The handler builds one
+// diagnostic string, logs it, then prints it, so the log
+// and the screen message are identical by construction.
+// Appends are bounded to the buffer size, truncating rather
+// than overflowing: the longest exception message is well
+// under 64 bytes, but the bound is what makes that safe
+// to claim, not just true today.
+static void buf_append_str(char* buf, int* idx, const char* s) {
+    while (*s && *idx < 63) buf[(*idx)++] = *s++;
+}
+static void buf_append_dec(char* buf, int* idx, uint32_t n) {
+    char tmp[12];
     int i = 0;
-    if (n == 0) { print_char('0'); return; }
-    while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
-    while (i > 0) { print_char(buf[--i]); }
+    if (n == 0) { if (*idx < 63) buf[(*idx)++] = '0'; return; }
+    while (n > 0) { tmp[i++] = (char)('0' + (n % 10)); n /= 10; }
+    while (i > 0 && *idx < 63) buf[(*idx)++] = tmp[--i];
 }
 
 // Called from exception_common in isr.asm. It never returns to the
@@ -55,15 +66,28 @@ void exception_handler(void) {
     // runs for a user fault. A kernel task's fault still returns
     // to that hang, as before: a kernel fault is an OS bug, and
     // halting with a diagnostic is the honest ending for it.
+    // v0.10.3: build one diagnostic string, log it, then print
+    // it, so the fault log and the screen agree exactly, and
+    // a graphics-mode fault is still readable from `faults`
+    // after the text restore wipes the screen version. The
+    // log call comes before task_exit, which never returns.
     vga_lock_break();
-    print("\nEXCEPTION ");
-    print_dec(exc_vector);
-    if (task_current_is_user()) {
-        print(" - task killed.\n");
+    int is_user = task_current_is_user();
+    char buf[64];
+    int idx = 0;
+    buf_append_str(buf, &idx, "EXCEPTION ");
+    buf_append_dec(buf, &idx, exc_vector);
+    if (is_user) buf_append_str(buf, &idx, " - task killed.");
+    else buf_append_str(buf, &idx, " - system halted.");
+    buf[idx] = 0;
+    faultlog_add(buf);
+    print("\n");
+    print(buf);
+    print("\n");
+    if (is_user) {
         task_exit(); // never returns
         return; // backstop, unreachable
     }
-    print(" - system halted.\n");
 }
 
 // port I/O - how we talk to PIC and keyboard hardware
