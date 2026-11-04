@@ -34,6 +34,27 @@ static void update_cursor(void) {
     outb(0x3D5, pos & 0xFF);
 }
 
+// v0.9.0: text cursor save/restore for graphics mode. The
+// graphics save captures video memory and VGA registers, but
+// the print cursor lives in these two static variables, not in
+// a register, so a text print during graphics mode (a fault
+// diagnostic, or a program printing while it owns the display)
+// would advance them while the restore reverted the screen,
+// and the next typed command would land on a fresh line with no
+// prompt in front of it. Saving them on entry and restoring
+// them on exit keeps the cursor and the restored screen in
+// agreement, and discards invisible prints along with the
+// invisible screen they wrote to.
+void text_cursor_get(int* x, int* y) {
+    *x = cx;
+    *y = cy;
+}
+void text_cursor_set(int x, int y) {
+    cx = x;
+    cy = y;
+    update_cursor();
+}
+
 static void scroll(void) {
     // move every line up by one
     for (int y = 0; y < HEIGHT - 1; y++) {
@@ -171,18 +192,86 @@ void vga_lock_break(void) {
     vga_lock_flag = 0;
 }
 
+// v0.6.0: the kernel GDT and the TSS. Boot's GDT (boot.asm) only
+// has kernel code/data segments, enough to reach C. This GDT
+// replaces it before interrupts start, adding user code/data
+// segments and a TSS, which are the two pieces user mode needs.
+// Segments, in plain terms: the CPU does not run code at a raw
+// address, it runs it through a segment, and each segment carries
+// a privilege level (DPL). Kernel segments are DPL 0, user
+// segments are DPL 3. A task's privilege is the DPL of its code
+// segment: CS 0x08 means ring 0, CS 0x1B means ring 3. Selectors
+// are index*8 + requested privilege: kernel code index 1 -> 0x08,
+// kernel data index 2 -> 0x10, user code index 3 with RPL 3 ->
+// 0x1B, user data index 4 with RPL 3 -> 0x23, TSS index 5 -> 0x28.
+// The TSS (Task State Segment) is a small CPU-owned record whose
+// only job here is esp0/ss0: when a ring 3 task traps into ring 0
+// (a syscall, a timer tick), the CPU has to switch stacks, because
+// the user stack is not trusted for kernel work, and it finds the
+// kernel stack pointer in esp0. That is why every context switch
+// updates esp0 to the incoming task's kernel stack top: without
+// it, a trap from user task B would land on user task A's kernel
+// stack. TSS layout used here (offsets in bytes): esp0 at 4, ss0
+// at 8, iomap base at 102. Everything else is zero, and iomap
+// base = 104 (the TSS size) means "no IO permission bitmap", so
+// all port IO from ring 3 is denied, as it should be.
+extern void gdt_load(uint32_t ptr);
+
+static uint64_t gdt[6];
+static uint8_t tss[104];
+
+struct gdt_ptr {
+    uint16_t limit;
+    uint32_t base;
+} __attribute__((packed));
+
+static void gdt_set_entry(int index, uint32_t base, uint32_t limit, uint8_t access, uint8_t flags) {
+    gdt[index] = (uint64_t)(limit & 0xFFFF)
+        | ((uint64_t)(base & 0xFFFF) << 16)
+        | ((uint64_t)((base >> 16) & 0xFF) << 32)
+        | ((uint64_t)access << 40)
+        | ((uint64_t)((limit >> 16) & 0xF) << 48)
+        | ((uint64_t)(flags & 0xF) << 52)
+        | ((uint64_t)((base >> 24) & 0xFF) << 56);
+}
+
+void tss_set_esp0(uint32_t esp0) {
+    *(uint32_t*)(tss + 4) = esp0;
+}
+
+void gdt_init(void) {
+    gdt_set_entry(0, 0, 0, 0, 0);                       // null
+    gdt_set_entry(1, 0, 0xFFFFF, 0x9A, 0xC);             // kernel code, DPL 0
+    gdt_set_entry(2, 0, 0xFFFFF, 0x92, 0xC);             // kernel data, DPL 0
+    gdt_set_entry(3, 0, 0xFFFFF, 0xFA, 0xC);             // user code, DPL 3
+    gdt_set_entry(4, 0, 0xFFFFF, 0xF2, 0xC);             // user data, DPL 3
+    gdt_set_entry(5, (uint32_t)tss, 103, 0x89, 0x0);     // TSS
+    for (int i = 0; i < 104; i++) tss[i] = 0;
+    *(uint32_t*)(tss + 8) = 0x10; // ss0: kernel data selector
+    *(uint16_t*)(tss + 102) = 104; // iomap base: no IO bitmap
+    struct gdt_ptr ptr;
+    ptr.limit = sizeof(gdt) - 1;
+    ptr.base = (uint32_t)gdt;
+    gdt_load((uint32_t)&ptr);
+}
+
 extern void idt_init(void);
 extern void heap_init(void);
 extern uint32_t heap_get_start(void);
 extern uint32_t heap_get_free(void);
+extern uint32_t heap_get_end(void);
 extern void shell_init(void);
-extern void ramfs_init(void);
+extern void diskfs_init(void);
 extern void timer_init(void);
+extern int mouse_init(void);
+extern void paging_init(uint32_t heap_end, uint32_t ram_top);
 extern int keyboard_poll(void);
+extern int gfx_is_active(void);
 extern void keyboard_process_scancode(uint8_t scancode);
 extern void task_init(void);
 extern void task_cleanup(void);
 extern void task_yield(void);
+extern void gdt_init(void);
 
 // v0.2.3: kernel_main now takes the multiboot magic and info pointer
 // from boot.asm (cdecl: first two stack arguments), so it can verify
@@ -213,18 +302,47 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
             }
         }
     }
-    print_color("RingTail v0.5.1 - Preemption hardening\n", COLOR_TITLE);
-    print_color("RAM filesystem, files in heap\n", COLOR_DIM);
+    print_color("RingTail v0.9.0 - GUI\n", COLOR_TITLE);
+    print_color("Graphical desktop: run gui\n", COLOR_DIM);
     print("--------------\n");
 
+    // v0.7.0: RAM top for the frame allocator. Multiboot info[2]
+    // is KB above 1 MB; without it, assume 16 MB, which is what
+    // the QEMU test machine has.
+    uint32_t ram_top = 0x01000000u;
+    if (mbi != 0) {
+        uint32_t* info_top = (uint32_t*)mbi;
+        if (info_top[0] & 0x1) ram_top = 0x100000u + info_top[2] * 1024u;
+    }
     heap_init();
-    ramfs_init();
+    // Paging before tasks: task_init needs the kernel page
+    // directory for the main task, and no task may run before
+    // its address space exists.
+    paging_init(heap_get_end(), ram_top);
+    diskfs_init();
     timer_init();
+    // Mouse before tasks and before sti: init polls the controller
+    // with interrupts off, and any packets the mouse sends in the
+    // meantime simply wait in the controller until sti, when the
+    // IRQ 12 handler (installed by idt_init below) is ready for
+    // them. A missing mouse prints and continues, like no disk.
+    if (mouse_init() == 0) {
+        print_color("Mouse: PS/2 found\n", COLOR_DIM);
+    } else {
+        print_color("Mouse: not found\n", COLOR_DIM);
+    }
     task_init();
     shell_init();
     print_color("ringtail> ", COLOR_PROMPT);
     update_cursor();
 
+    // v0.6.0: install the kernel GDT (user segments + TSS) before
+    // the IDT and before interrupts start. Interrupts are still
+    // off here (boot did cli, sti comes below), so reloading the
+    // segment registers cannot race a trap. Kernel selectors stay
+    // 0x08/0x10, so the IDT gates, which reference 0x08, remain
+    // valid after the reload.
+    gdt_init();
     idt_init();
     __asm__ volatile("sti");
 
@@ -237,8 +355,21 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     // regardless, so a sleeping task is always reconsidered promptly.
     while (1) {
         int sc;
-        while ((sc = keyboard_poll()) >= 0) {
-            keyboard_process_scancode((uint8_t)sc);
+        // v0.9.0: while a graphics program owns the display, the
+        // keyboard belongs to it, not the shell. The main loop
+        // leaves the queue alone, and the program drains it
+        // through KEY_GET, which only the owner may call, so
+        // there is exactly one drainer and no race on the queue
+        // tail. Keys typed during the GUI stay queued for the
+        // GUI; the shell never sees them, and the GUI drains the
+        // queue each frame, so nothing is left for the shell
+        // when it exits (except keys pressed after it died, which
+        // are shell input and arrive after cleanup clears the
+        // owner, in the right order).
+        if (!gfx_is_active()) {
+            while ((sc = keyboard_poll()) >= 0) {
+                keyboard_process_scancode((uint8_t)sc);
+            }
         }
         task_cleanup();
         task_yield();

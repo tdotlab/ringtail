@@ -23,22 +23,29 @@ extern uint32_t heap_get_start(void);
 extern int kfree(void* ptr);
 extern uint32_t heap_get_free_blocks(void);
 extern uint32_t heap_get_total(void);
-extern void ramfs_list(void);
-extern int ramfs_create(const char* name);
-extern int ramfs_write(const char* name, const char* content);
-extern int ramfs_read(const char* name, char* out, uint32_t max);
-extern int ramfs_delete(const char* name);
-extern int ramfs_exists(const char* name);
+extern void diskfs_list(void);
+extern int diskfs_create(const char* name);
+extern int diskfs_write(const char* name, const char* content);
+extern int diskfs_read(const char* name, char* out, uint32_t max);
+extern int diskfs_delete(const char* name);
+extern int diskfs_exists(const char* name);
 extern uint32_t timer_get_ticks(void);
 extern void task_list_tasks(void);
 extern int task_spawn_counter(void);
 extern int task_spawn_busy(void);
 extern int task_kill(int id);
+extern int loader_run(const char* name);
 extern int timer_sleep(uint32_t seconds);
 extern void print_color(const char* s, unsigned char color);
 extern void set_color(unsigned char c);
 extern void vga_lock(void);
 extern void vga_unlock(void);
+extern int mouse_found(void);
+extern int mouse_get_x(void);
+extern int mouse_get_y(void);
+extern int mouse_get_buttons(void);
+extern uint32_t mouse_get_packets(void);
+extern void gfx_demo(void);
 
 static int strcmp(const char* a, const char* b) {
     while (*a && *a == *b) { a++; b++; }
@@ -275,10 +282,33 @@ static void cmd_help(void) {
     print("  spawn counter - start a counting task\n");
     print("  spawn busy - start a task that never yields\n");
     print("  kill <id> - stop a task\n");
+    print("  run <name> - load and run a program from disk\n");
+    print("  mouse - show mouse position and buttons\n");
+    print("  gfx - graphics demo (move mouse, any key exits)\n");
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.5.1 - Preemption hardening\n");
+    print("RingTail v0.9.0 - GUI\n");
+}
+
+static void cmd_mouse(void) {
+    if (!mouse_found()) {
+        print_color("Mouse: not found\n", 0x0C);
+        return;
+    }
+    // Buttons as a bitmask, same bits the packet carries: 1 left,
+    // 2 right, 4 middle. Packets counts every complete 3-byte
+    // packet the handler assembled, so a rising count proves the
+    // IRQ path is alive even before the cursor visibly moves.
+    print("Mouse: PS/2, x=");
+    print_num((uint32_t)mouse_get_x());
+    print(" y=");
+    print_num((uint32_t)mouse_get_y());
+    print(" buttons=");
+    print_num((uint32_t)mouse_get_buttons());
+    print(" packets=");
+    print_num(mouse_get_packets());
+    print("\n");
 }
 
 static void cmd_heap(void) {
@@ -322,13 +352,13 @@ void shell_execute(void) {
     } else if (strcmp(buf, "heap") == 0) {
         cmd_heap();
     } else if (strcmp(buf, "ls") == 0) {
-        ramfs_list();
+        diskfs_list();
     } else if (strncmp(buf, "touch ", 6) == 0) {
         char* name = buf+6;
         if (name[0] == 0) {
             print_color("Usage: touch <file>\n", 0x0C);
         } else {
-            int r = ramfs_create(name);
+            int r = diskfs_create(name);
             if (r == 0) {
                 print_color("Created ", 0x0A);
                 print(name);
@@ -337,6 +367,8 @@ void shell_execute(void) {
                 print_color("Already exists\n", 0x0C);
             } else if (r == -2) {
                 print_color("Name too long (max 31)\n", 0x0C);
+            } else if (r == -4) {
+                print_color("No disk\n", 0x0C);
             } else {
                 print_color("Failed\n", 0x0C);
             }
@@ -348,10 +380,12 @@ void shell_execute(void) {
             return;
         }
         char out[256];
-        int r = ramfs_read(name, out, 256);
+        int r = diskfs_read(name, out, 256);
         if (r>=0) {
             print(out);
             print("\n");
+        } else if (r == -4) {
+            print_color("No disk\n", 0x0C);
         } else {
             print_color("No such file\n", 0x0C);
         }
@@ -359,10 +393,15 @@ void shell_execute(void) {
         char* name = buf+3;
         if (name[0] == 0) {
             print_color("Usage: rm <file>\n", 0x0C);
-        } else if (ramfs_delete(name)==0) {
-            print_color("Deleted\n", 0x0A);
         } else {
-            print_color("No such file\n", 0x0C);
+            int r = diskfs_delete(name);
+            if (r == 0) {
+                print_color("Deleted\n", 0x0A);
+            } else if (r == -4) {
+                print_color("No disk\n", 0x0C);
+            } else {
+                print_color("No such file\n", 0x0C);
+            }
         }
     } else if (strncmp(buf, "write ", 6) == 0) {
         char* rest = buf+6;
@@ -376,11 +415,13 @@ void shell_execute(void) {
             if (fname[0] == 0) {
                 print_color("Usage: write <file> <text>\n", 0x0C);
             } else {
-                int r = ramfs_write(fname, text);
+                int r = diskfs_write(fname, text);
                 if (r == 0) {
                     print_color("Wrote\n", 0x0A);
                 } else if (r == -2) {
-                    print_color("Out of memory!\n", 0x0C);
+                    print_color("Disk full or write failed\n", 0x0C);
+                } else if (r == -4) {
+                    print_color("No disk\n", 0x0C);
                 } else {
                     print_color("Failed\n", 0x0C);
                 }
@@ -446,6 +487,17 @@ void shell_execute(void) {
             print_num((uint32_t)id);
             print("\n");
         }
+    } else if (strncmp(buf, "run ", 4) == 0) {
+        int id = loader_run(buf + 4);
+        if (id < 0) {
+            print_color("Not found on disk or load failed\n", 0x0C);
+        } else {
+            print("Started ");
+            print(buf + 4);
+            print(" as task ");
+            print_num((uint32_t)id);
+            print("\n");
+        }
     } else if (strncmp(buf, "kill ", 5) == 0) {
         uint32_t id;
         if (parse_num(buf + 5, &id) != 0) {
@@ -459,6 +511,18 @@ void shell_execute(void) {
         }
     } else if (strcmp(buf, "uptime") == 0) {
         cmd_uptime();
+    } else if (strcmp(buf, "mouse") == 0) {
+        cmd_mouse();
+    } else if (strcmp(buf, "gfx") == 0) {
+        // Same lock rule as sleep: the demo runs for an
+        // indefinite time, and holding the print lock across it
+        // would stall every other task's output until the user
+        // presses a key. Release it, run the demo (which draws
+        // to the framebuffer, not the text screen, so it needs
+        // no lock), take it again before returning.
+        vga_unlock();
+        gfx_demo();
+        vga_lock();
     } else if (strcmp(buf, "tick") == 0) {
         cmd_tick();
     } else if (strncmp(buf, "sleep ", 6) == 0) {

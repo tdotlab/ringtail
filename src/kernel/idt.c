@@ -20,6 +20,9 @@ struct idt_ptr idt_ptr;
 
 extern void keyboard_isr(void);
 extern void timer_isr(void);
+extern void mouse_isr(void);
+extern void syscall_isr(void);
+extern void page_fault_isr(void);
 extern uint32_t exc_vector;
 extern void print(const char* s);
 extern void print_char(char c);
@@ -36,14 +39,30 @@ static void print_dec(uint32_t n) {
 // Called from exception_common in isr.asm. It never returns to the
 // faulting code: the common stub halts after this returns, so the
 // error code the CPU may have pushed for some vectors is irrelevant.
+extern int task_current_is_user(void);
+extern void task_exit(void);
+
 void exception_handler(void) {
     // v0.5.1: break the print lock before printing. If the fault
     // happened while a task held it, printing here would otherwise
     // spin forever on a lock held by a task that will never run
     // again, and the diagnostic would never appear.
+    // v0.7.1: same recovery rule as page faults. A user program
+    // that faults (a privileged instruction, a divide by zero,
+    // any generic exception) is killed via task_exit, which
+    // switches away and never returns, so the caller of this
+    // handler (exception_common, with its popa and hang) never
+    // runs for a user fault. A kernel task's fault still returns
+    // to that hang, as before: a kernel fault is an OS bug, and
+    // halting with a diagnostic is the honest ending for it.
     vga_lock_break();
     print("\nEXCEPTION ");
     print_dec(exc_vector);
+    if (task_current_is_user()) {
+        print(" - task killed.\n");
+        task_exit(); // never returns
+        return; // backstop, unreachable
+    }
     print(" - system halted.\n");
 }
 
@@ -77,10 +96,12 @@ static void pic_remap(void) {
     outb(0xA1, 0x01);
     // Mask everything except IRQ0 (timer), IRQ1 (keyboard) and IRQ2
     // (cascade, needed for the slave PIC to signal at all). The slave
-    // is fully masked. Leaving all IRQs unmasked with only two IDT
-    // gates present meant any stray IRQ triple-faulted the CPU.
+    // is masked except IRQ4 (the PS/2 mouse, IRQ 12): 0xEF is
+    // 11101111, bit 4 clear, everything else masked. Leaving all
+    // IRQs unmasked with only two IDT gates present meant any stray
+    // IRQ triple-faulted the CPU.
     outb(0x21, 0xF8);
-    outb(0xA1, 0xFF);
+    outb(0xA1, 0xEF);
 }
 
 extern void exception_0(void);
@@ -132,8 +153,24 @@ void idt_init(void) {
     // IRQ1 (keyboard) is now interrupt 33
     idt_set_gate(33, (uint32_t)keyboard_isr, 0x08, 0x8E);
 
+    // IRQ12 (PS/2 mouse) is now interrupt 44: slave offset 40 plus
+    // slave IRQ 4. Without this gate, the first mouse movement
+    // after sti would hit a non-present gate and triple-fault.
+    idt_set_gate(44, (uint32_t)mouse_isr, 0x08, 0x8E);
+
     // IRQ0 (PIT timer) is now interrupt 32
     idt_set_gate(32, (uint32_t)timer_isr, 0x08, 0x8E);
+
+    // v0.6.0: syscall gate, interrupt 0x80. Flags 0xEE, not 0x8E:
+    // the DPL bits are 3, not 0, and that is the whole point. A
+    // ring 3 program may only invoke an interrupt gate whose DPL
+    // is at least its own privilege; a DPL 0 gate would fault
+    // with #GP the moment user code tried int 0x80, and the
+    // syscall doorway would be locked to the very programs it
+    // exists for. The gate still points at kernel code (0x08),
+    // so the trap lands in ring 0; the DPL only controls who
+    // may knock, not where the knock goes.
+    idt_set_gate(128, (uint32_t)syscall_isr, 0x08, 0xEE);
 
     // CPU exceptions 0-31: without these, any fault (divide by zero,
     // general protection, page fault, ...) hit a non-present gate and
@@ -144,6 +181,13 @@ void idt_init(void) {
             idt_set_gate(i, (uint32_t)exc_stubs[i], 0x08, 0x8E);
         }
     }
+
+    // v0.7.0: page faults get their own handler (vector 14), not
+    // the generic exception stub set in the loop above, because
+    // the fault address and error code are the diagnostics that
+    // tell a paging bug from any other fault. This must come
+    // AFTER the loop, or the loop overwrites it.
+    idt_set_gate(14, (uint32_t)page_fault_isr, 0x08, 0x8E);
 
     idt_load((uint32_t)&idt_ptr);
 }

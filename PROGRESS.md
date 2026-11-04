@@ -319,6 +319,608 @@ pass, not a milestone)
   kill counter, tasks shows shell only, no further counter
   output. Typed echo interleaving still visible and expected.
 
-Next: the program layer: user mode, syscalls, and programs
-that run on RingTail instead of inside its kernel. Disk
-persistence and a GUI remain further out, after that.
+v0.6.0 - Program layer: user mode, syscalls, first real programs
+- What changed, in one line: RingTail now has programs, not just
+  tasks. A task was a function the kernel ran; a program is code
+  that runs ON the kernel, in ring 3, and asks the kernel for
+  things instead of calling it. The shell command is `run
+  <hello|count|crash>`.
+- kernel.c: a kernel GDT that replaces boot's, adding user code
+  (0x1B) and user data (0x23) segments at DPL 3, plus a TSS whose
+  esp0/ss0 the CPU uses to switch to a kernel stack on every ring
+  3 trap. Installed before the IDT, while interrupts are off.
+- task.c/task.asm: user tasks get two stacks (kernel stack for
+  switch_to and trap frames, user stack for the program itself)
+  and a user_entry stub that loads user data segments, builds an
+  iret frame (user SS/ESP, EFLAGS with interrupts on, user CS,
+  entry address), and irets into ring 3. TSS esp0 is set at
+  creation and again after every switch, before the task returns
+  to ring 3, so a trap from user task B never lands on task A's
+  kernel stack. Cleanup frees the user stack too.
+- isr.asm/idt.c: syscall gate, int 0x80, IDT flags 0xEE (DPL 3, so
+  ring 3 code may invoke it; a DPL 0 gate would fault). The
+  handler saves registers, re-enables interrupts (a print syscall
+  spins on the print lock, and with interrupts off the holder
+  could never run to release it), calls syscall_dispatch, and
+  returns the result in eax via the saved-eax slot.
+- syscall.c: three syscalls, eax = number, ebx/ecx/edx = args,
+  eax = result. Print (pointer + length, null/length checked,
+  under the print lock), sleep (task_sleep), exit (task_exit,
+  never returns). The kernel provides primitives; formatting and
+  string building are program work.
+- programs.c: hello (prints, exits), count (formats its own
+  numbers, prints 0-4 with a sleep between, prints done, exits),
+  crash (executes cli on purpose, to prove ring 3 is enforced).
+  Programs never call kernel functions directly; they trap
+  through int 0x80 only. Their bytes live in the kernel image in
+  this slice, which is packaging, not privilege: the CPU enforces
+  the ring, not the file location.
+- Honest limits, stated plainly: ring 3 stops privileged
+  instructions and port IO, it does NOT stop memory accesses,
+  because there is no paging yet and no per-program address
+  space. A program could still read or write kernel memory if it
+  tried. The memory wall is a paging-era layer, not this one.
+  Syscall pointer validation is therefore shallow (null and
+  length only). Also, a faulting program halts the whole OS: the
+  exception handler prints and halts, there is no per-program
+  fault recovery yet.
+- Test (QEMU, -kernel and GRUB ISO boots; host tests still pass):
+  run hello prints "Hello from user mode!" and exits, tasks shows
+  shell only; run count prints 0-4 with sleeps while the shell
+  stays responsive, then "count done", tasks shows shell only;
+  kernel counter and user count run side by side with clean
+  output lines, count finishes, counter continues, kill stops
+  it, tasks shows shell only; run crash in its own boot gives
+  "EXCEPTION 13 - system halted", proving a ring 3 cli faults.
+  One build bug, caught by the linker: boot.asm's stack_top was
+  not global, so task_init's extern failed to link; adding
+  `global stack_top` fixed it.
+
+v0.7.0 - Disk, paging, loader: one combined piece, not three demos
+- What changed, in one line: programs now live on disk, load into
+  their own memory, and run there. Loading from files, paging,
+  and disk persistence were built as one piece, on T's call,
+  because separately each would have a hole: loading from
+  RAM-only files is not really files, and paging with nothing to
+  load into it is not really programs. The shell command is now
+  `run <name>`, loading from disk, and the shell's file commands
+  (ls, touch, cat, write, rm) now operate on disk, not RAM.
+- paging.c (new, src/mm): classic two-level x86 paging, no PAE.
+  The kernel identity-maps the first 16 MB (virtual = physical),
+  supervisor-only, which covers the kernel image, the heap, VGA,
+  and every frame the allocator hands out, because the frame pool
+  is capped at 16 MB. A frame is a physical 4 KB block; the free
+  list is threaded through the frames themselves (first word =
+  next free frame), so no extra memory tracks them. Each user
+  task gets its own page directory (kernel identity entries
+  copied in, user range empty until the loader fills it), and
+  switch_to loads CR3 from the new task's directory, flushing
+  the TLB. User pages are at 0x08000000 and up, one page table
+  per task (directory index 32), present + read/write + user
+  (0x07); kernel pages are 0x03 (supervisor), so a ring 3 access
+  to kernel memory faults instead of succeeding. That is the
+  memory wall v0.6.0 said was a paging-era layer: it is here now.
+- task.c/task.asm: task_t gains pd (physical page directory) and
+  user_stack_top becomes a VIRTUAL address, not a heap pointer:
+  a user task's stack lives in its own address space, because
+  heap pages are supervisor-only now and a ring 3 stack there
+  would fault on first use. user_entry reads entry (offset 32)
+  and user_stack_top (offset 16) as virtual addresses, with no
+  add-4096 anymore: the loader computes the stack top from the
+  program size plus a guard page. task_cleanup destroys the user
+  page directory, which frees its page table and every program
+  and stack frame it maps; kernel tasks share the kernel
+  directory, which destroy refuses to free.
+- isr.asm/idt.c: vector 14 gets its own handler, not the generic
+  exception stub, because a page fault carries CR2 (faulting
+  address) and an error code, and those are the diagnostics that
+  tell a paging bug from any other fault. The handler prints
+  both and halts; per-task fault recovery (kill the program, keep
+  the OS running) is NOT built yet, so a faulting program still
+  halts the OS, just with a much better diagnostic.
+- ata.c (new, src/drivers): ATA polling PIO, primary master only,
+  LBA sectors, 512 bytes at a time, 256 words per sector through
+  port 0x1F0, commands 0x20 (read), 0x30 (write), 0xE7 (flush).
+  Polling, not interrupts, for a first driver: simpler, and a
+  finite timeout turns a missing disk into an error instead of a
+  hang, so a boot without a disk attached still works, with file
+  commands reporting "no disk".
+- diskfs.c (new, src/fs, replaces ramfs.c): a tiny flat
+  filesystem, chosen over FAT for this piece because FAT's
+  chains, cluster allocation, and 8.3 names would have doubled
+  the filesystem code and crowded out the paging and loader work
+  it shares the version with. FAT is a later contained swap, not
+  ruled out: the ATA driver and the loader do not change, only
+  the directory logic does. Layout, in 512-byte sectors: sector
+  0 superblock (magic "RTFS", version, totals, region starts),
+  a fixed 64-entry directory in sectors 1-6 (name up to 31 chars,
+  start sector, size, used flag, 48 bytes each), an 8-sector
+  bitmap in sectors 7-14 (one bit per data sector), data from
+  sector 15, each file one contiguous run. The directory and
+  bitmap are cached in RAM at init and written back on every
+  mutation; data sectors are read/written directly on each
+  operation. Writes allocate before freeing the old run, so a
+  failed write leaves the old file intact. No journaling: a crash
+  in exactly the wrong moment can still leave bitmap and
+  directory disagreeing, and a file that cannot fit in one
+  contiguous run fails instead of fragmenting. Those are toy
+  limits, stated, not hidden. Shell return codes: -4 means no
+  disk, and the shell says so instead of "no such file".
+- loader.c (new, src/kernel): a flat-binary loader, the smallest
+  honest one. A program file is raw machine code linked at
+  0x08000000 with entry at offset 0 (no ELF parser, no
+  relocation: the file says where it runs, the loader puts it
+  there, and because every program loads at the same virtual
+  address in its own address space, two programs can both live
+  there at once on different frames). Steps: read the file whole
+  (capped at 64 KB), create a page directory, map one frame per
+  program page and copy bytes through the frame's identity-mapped
+  address, leave one guard page unmapped, map one stack page,
+  hand directory + entry + stack top to task_create_user. Any
+  failure frees what was allocated and returns -1, with no
+  half-built task left behind.
+- src/programs (replaces programs.c): hello, count, and fault as
+  separate freestanding programs, linked by programs.ld at
+  0x08000000 with _start first (section .text._start, verified
+  by nm: all three at 08000000), sharing only syscall_stub.h
+  (int 0x80, PRINT 1, EXIT 2, SLEEP 3, same numbers as the
+  kernel). hello prints "Hello from disk!" (a new message, so
+  the test proves it came from disk, not from the kernel image);
+  count formats its own numbers and prints 0-4 with sleeps;
+  fault reads address 0 on purpose, replacing v0.6.0's crash
+  (cli) with a memory fault: a present supervisor page read from
+  ring 3. tools/mkdisk.py (new, host tool, not OS code) packs
+  program binaries and text files into a 16 MB RTFS image in
+  argument order; the image itself is not checked in.
+- Test (QEMU -kernel and GRUB ISO, both with a -drive image;
+  host tests 66 PASS): boot prints "Disk: RTFS, 4 files" with
+  paging on and kernel tasks working; ls shows hello (160),
+  count (340), fault (52), welcome (30); cat welcome reads its
+  data sectors; run hello prints "Hello from disk!" and exits;
+  kernel counter and disk-loaded count run side by side with
+  clean lines, count finishes, counter continues; write
+  notes.txt in one boot, reboot with the same image, ls shows
+  5 files and cat notes.txt shows the content (persistence
+  proven, not claimed); run fault in its own boot gives "PAGE
+  FAULT addr=0x00000000 code=5 - system halted" (present page,
+  read, user mode: the memory wall doing its job); boot with no
+  disk attached prints "Disk: not found, files unavailable" and
+  the shell still works, with ls saying "no disk" and run hello
+  failing cleanly. Host tests (tests/, make run): heap tests
+  unchanged, RAMFS tests replaced by diskfs tests against a mock
+  512-sector disk (create/duplicate/long name/write/read/
+  rewrite/auto-create/empty/missing/max 0/delete, multi-sector
+  1200-byte file, delete-and-reuse, re-init persistence, and a
+  disk-full write that must fail while old files survive), 66
+  checks, all passing. One test-driver bug, caught in the run:
+  the first HMP script waited out a 5-second socket timeout per
+  keystroke; reading to the (qemu) prompt instead cut a 7-command
+  run from over two minutes to under thirty seconds.
+- Honest limits, stated plainly: paging is real (per-program
+  address spaces, supervisor kernel pages), but fault recovery
+  is not yet built, so a faulting program still halts the OS;
+  there is no NX bit in classic paging, so present user pages
+  are executable; syscall pointer validation is still shallow
+  (null/length only, and program buffers are now user pages,
+  which the kernel reads through the task's own directory);
+  disk writes have no journal, so a crash mid-write-back can
+  leave the filesystem inconsistent; programs are capped at
+  64 KB and one contiguous run per file; only the primary master
+  ATA disk is supported, no DMA, no second disk, no ATAPI.
+v0.7.1 - Fault recovery: a faulting program dies, the OS keeps running
+- What changed, in one line: page faults and generic exceptions
+  in a user program now kill that program instead of halting the
+  whole OS. The v0.7.0 diagnostic ("PAGE FAULT addr=... code=...")
+  is still printed, but the ending changed from "- system
+  halted" to "- task killed" for user tasks, and the shell
+  prompt comes back.
+- task.c: a new helper, task_current_is_user, which is true
+  exactly when the current task has a virtual user stack top
+  (kernel tasks have 0 there). No new scheduler code was needed:
+  fault recovery reuses task_exit, which marks the task DEAD and
+  yields away, never returning, and the main loop's cleanup
+  frees its kernel stack, page directory, page table, and every
+  program and stack frame the directory maps. If no other task
+  is ready at fault time (the shell is sleeping, say), the exit
+  loop spins yielding until a timer tick wakes one, which is the
+  same behavior a normal exit already had, so no new scheduler
+  edge case was introduced.
+- paging.c (page faults) and idt.c (generic exceptions): both
+  handlers break the print lock first, print the diagnostic,
+  then check task_current_is_user. User task: print "- task
+  killed" and call task_exit (never returns, so the generic
+  handler's caller, exception_common with its popa and hang,
+  never runs for a user fault). Kernel task: print "- system
+  halted" and halt, as before, because a kernel fault is an OS
+  bug, and killing the shell would leave no prompt at all.
+  Interrupts are off in the trap, so the diagnostic print cannot
+  interleave with another task's print, and breaking the lock
+  first is what keeps later prints from deadlocking on a dead
+  owner: a fault can happen while the program holds the lock
+  through a syscall, and that owner will never run again to
+  release it.
+- The decision is by TASK, not by privilege level at fault time,
+  and that distinction matters. A syscall with a bad user pointer
+  faults in ring 0, while the kernel reads the pointer, but the
+  blame belongs to the program that supplied it, so it is killed,
+  not halted. Deciding by privilege level would have halted the
+  OS for a program's bad pointer, which would be exactly wrong.
+  This also changes the meaning of the shallow syscall pointer
+  validation: a bad pointer used to be an OS-killer, now it is a
+  program-killer, which is the right tradeoff for this scope
+  (checking every page a pointer spans would be the full
+  validation, and recovery is simpler and more robust).
+- src/programs: fault (null dereference, user-mode page fault)
+  stays, and two new disk programs cover the other fault paths.
+  crash executes cli in ring 3, a general protection fault
+  (vector 13), the v0.6.0 crash program brought back as a disk
+  file. badptr asks the kernel to print from an unmapped address
+  (0x09000000), which passes the null/length check and faults
+  during the print syscall, in ring 0, with error code 0
+  (not-present, read, kernel mode). Both are killed, not halted.
+- Test (QEMU -kernel and GRUB ISO, both with a -drive image;
+  host tests still 66 PASS): run fault gives "PAGE FAULT
+  addr=0x00000000 code=5 - task killed", prompt returns, tasks
+  shows shell only, run hello after it works; run crash gives
+  "EXCEPTION 13 - task killed", same survival; run badptr gives
+  "PAGE FAULT addr=0x09000000 code=0 - task killed", same
+  survival, proving the task-based decision; a counter and a
+  count running side by side survive a fault in a third program
+  (fault killed, count finishes with "count done", counter keeps
+  counting, tasks shows shell + counter, kill counter, tasks
+  shows shell only). One build note: the kernel build is clean,
+  no warnings, and all five programs still link at 0x08000000.
+- Honest limits, updated: user faults are now survivable, kernel
+  faults still halt (by design, not by omission); there is still
+  no NX bit, still no journaling, still a 64 KB program cap, and
+  a fault during a disk write (which only the shell does, as a
+  kernel task) would still be a kernel fault and halt, because
+  programs do not yet have file syscalls to fault through.
+v0.7.2 - File syscalls: programs can open, read, write, close, and delete files
+- What changed, in one line: a program can now use the disk,
+  not just the screen. Five new syscalls (OPEN 4, READ 5, WRITE
+  6, CLOSE 7, DELETE 8, alongside PRINT 1, EXIT 2, SLEEP 3), all
+  through the same int 0x80 doorway, with the numbers matching
+  exactly between syscall.c and syscall_stub.h.
+- task.c: per-task file descriptors, 8 slots (0-7) per task, held
+  in the task struct itself (fd_used, fd_offsets, fd_names), at
+  the END of the struct on purpose, so the offsets task.asm
+  relies on (esp 0, pd 12, user_stack_top 16, entry 32) do not
+  shift. Descriptors are per-task, not global: two programs can
+  both hold fd 0 for different files. The helpers
+  (task_fd_open/close/lookup/advance) live in task.c because
+  only it sees the task_t definition; syscall.c calls them
+  through externs and never touches the arrays directly.
+- syscall.c: open takes a filename and returns a slot, creating
+  the file if it does not exist (like the shell's write
+  auto-create) and resetting the offset to 0; read and write
+  take a slot, a user buffer, and a length capped at 4096, and
+  return bytes transferred or -1; read returns 0 at end of file;
+  close frees a slot; delete takes a filename and does not close
+  descriptors already open for it (later operations on those
+  descriptors fail, because the file is gone when re-read by
+  name). There are no modes and no permissions in this slice:
+  every open is read/write, every program can open any file,
+  because there are no users yet to give permissions to. There
+  is no seek yet: offsets advance only through read and write,
+  and reopening resets to 0, so appending means reading the old
+  content first. Errors are all -1, with no errno, which is the
+  toy tradeoff for not inventing an error-number table yet.
+  Read and write work by reading the whole file into a heap
+  buffer (diskfs_read_all, capped at 64 KB like the loader),
+  slicing or rebuilding it at the offset, and writing it back,
+  so a write at an offset past the end zero-fills the gap, and
+  a failed write leaves the old file intact (diskfs
+  allocate-before-free). Names are copied from user space with
+  a 32-byte bound, so the kernel never reads an unbounded user
+  string, and an unmapped user pointer faults and kills only the
+  caller (v0.7.1 recovery), which is what makes the bounded
+  validation survivable rather than OS-killing.
+- diskfs.c: the string write is now a thin wrapper around a new
+  length-based write (diskfs_write_bytes), because program bytes
+  are not strings: a program file may contain null bytes, and
+  strlen would truncate it at the first one. The shell's behavior
+  is unchanged (it passes text, the wrapper passes its length),
+  and the host diskfs tests still pass against the same logic.
+- src/programs: filedemo, the first program that uses the disk.
+  It opens demo.txt, writes "Hello from a program!", closes,
+  reopens, reads the line back, and prints it, then checks two
+  error paths (reading a closed descriptor must fail, a
+  32-character name must fail) and prints whether each behaved
+  as expected. It deliberately leaves demo.txt on disk, so the
+  shell can cat it afterward: program and shell sharing one
+  filesystem, proved, not claimed.
+- Test (QEMU -kernel and GRUB ISO, both with a -drive image;
+  host tests still 66 PASS): run filedemo prints "fd=0", "wrote
+  22 bytes", "read back: Hello from a program!", "closed fd
+  read correctly failed", "long name correctly rejected"; cat
+  demo.txt from the shell shows the program's line; ls shows
+  demo.txt (22 bytes) alongside the programs; running filedemo
+  a second time prints the identical output (overwrite at offset
+  0, not append, so no duplication); rm demo.txt from the shell
+  deletes the program's file, and ls confirms it is gone; run
+  hello and run fault afterward still work, with fault still
+  killing only itself and tasks showing shell only, so the
+  syscall changes did not regress fault recovery.
+- Honest limits, updated: programs can now read and write files,
+  but not list the directory (no LIST syscall yet, the shell
+  still owns listing, and a LIST format deserves its own design,
+  not a rushed one); no seek, no append mode, no file locking,
+  so concurrent writes to the same file from two programs are
+  not atomic (each write reads, modifies, and writes back, and
+  another task can interleave between read and write, so the
+  last writer can win with stale content: programs should not
+  share a file concurrently yet); files over 64 KB cannot be
+  read or written through syscalls in this slice (same cap as
+  the loader); errors are all -1, with no reason given.
+
+v0.8.0 - Mouse + graphics: PS/2 mouse, VGA mode 13h, drawing primitives
+- What changed, in one line: RingTail can now see a mouse and
+  draw pixels. The shell gains two commands: `mouse` (position,
+  buttons, packet count) and `gfx` (a graphics demo that draws
+  shapes and text, shows a cursor that follows the mouse, draws
+  a dot where you click, and returns to the text shell on any
+  keypress, with the shell screen exactly as it was).
+- mouse.c (new, src/drivers): PS/2 mouse on the keyboard
+  controller, IRQ 12 (slave IRQ 4, IDT vector 44, slave PIC
+  unmasked for that line only, master mask unchanged). The mouse
+  does not report a position, it reports movement in three-byte
+  packets (buttons, X delta, Y delta, with sign and overflow
+  bits), so the driver accumulates a cursor position and clamps
+  it to 0-319, 0-199. Y is inverted (PS/2 positive means up,
+  screen positive means down), overflow on an axis means that
+  axis is ignored for that packet, and a first byte without bit
+  3 set is dropped as a resync, because a lost byte would
+  otherwise shift every later packet. The handler reads, updates,
+  and sends EOI to both PICs (slave first); it never prints, so
+  it can never deadlock on the print lock. Init, with finite
+  timeouts at every step so a missing mouse cannot hang the
+  boot: drain stale output first (power-on self-test bytes left
+  in the controller will otherwise be read as the command byte
+  and written back as garbage, which is exactly what the first
+  v0.8.0 QEMU run showed, with typing dead and no mouse),
+  enable the aux device, read the controller command byte, set
+  mouse IRQ on and mouse disable off, write it back, reset the
+  mouse (ACK 0xFA first, then self-test 0xAA, then ID 0x00: a
+  reset ACKs before it reports, and waiting for 0xAA straight
+  after 0xFF reads the ACK and fails, which is what the debug
+  run showed), set defaults (0xF6, ACK), enable reporting (0xF4,
+  ACK). A failed init drains the controller and reports "not
+  found" instead of hanging, and the graphics demo still runs,
+  just with a cursor that cannot move.
+- isr.asm/idt.c: mouse_isr stub (pusha, call, popa, iret, same
+  shape as keyboard_isr), IDT gate 44, slave PIC mask 0xFF to
+  0xEF (only IRQ 12 unmasked on the slave). Without the gate, the
+  first mouse movement after sti would triple-fault.
+- vga_gfx.c (new, src/drivers): mode 13h (320x200, 256 colors,
+  one byte per pixel at 0xA0000, already identity-mapped, so no
+  paging change was needed) set by writing VGA registers
+  directly, because BIOS calls do not work in protected mode:
+  miscellaneous, sequencer (with the synchronous-reset dance),
+  CRTC (unprotecting register 0x11 first), graphics controller,
+  attribute controller (flip-flop reset before every register,
+  palette re-enabled at the end or the screen stays blank), and
+  a 16-color demo palette through the DAC. Primitives, all
+  through one bounds-checked pixel so off-screen drawing clips
+  instead of writing past the 64K framebuffer: clear, line
+  (Bresenham), rectangle (filled and outline), circle (midpoint,
+  eight-way symmetry), and text. Text uses the real VGA font,
+  read out of video memory plane 2 where the BIOS loaded it,
+  not a hand-drawn approximation: glyph n lives at font[n*32 +
+  row], because the character generator addresses each glyph in
+  a 32-byte slot (an 8x16 font uses the first 16 bytes, the rest
+  is padding), and a 16-byte stride maps every character to the
+  wrong glyph, which is what the first screenshots showed.
+- Save and restore, the reason the demo is safe to run: before
+  switching, the driver saves the VGA register state, the full
+  256-color palette, the 4000-byte text screen, and the font;
+  after the demo it restores all four, so the shell comes back
+  exactly. The font needs restoring because mode 13h writes go
+  through the same video memory the font lives in (plane 2), so
+  the demo would otherwise destroy the text font. Reading or
+  writing a single plane needs the graphics mode register's
+  odd/even addressing off (text mode has it on, and it overrides
+  plane selection with the address bit) and the memory map
+  pointed at 0xA0000, both restored afterwards. One bug, caught
+  by the post-demo garbage screen: the sequencer map mask is a
+  bitmask, not a plane number, so plane 2 alone is 0x04, not
+  0x02; writing 0x02 selected plane 1, overwrote the text
+  attributes with font bytes, and left the font broken. The
+  graphics read map IS a plane number, so font loading (a read)
+  was correct all along, which is why demo text worked while
+  restore failed.
+- gfx_demo, in vga_gfx.c: title, filled red rectangle, yellow
+  outline rectangle, green line, red circle, alphabet and digit
+  lines (the font proof), instructions, and a live coordinates
+  line (X, Y, L/M/R buttons, fixed width, redrawn on any mouse
+  change). The cursor is a 12x16 arrow, tip at the reported
+  position, drawn with save-underneath and restore, so it leaves
+  no trail and a clicked dot survives the cursor passing over
+  it. Left click draws a 4x4 yellow dot at the tip. The loop is
+  paced by the timer tick (~100 Hz, hlt between frames), polls
+  the keyboard queue itself (the main loop is inside the demo,
+  being a shell command, so it drains the queue or the exit key
+  would leak into the next shell line), and exits on any key's
+  make code, draining the rest of the queue first. The shell
+  releases the print lock around the demo, like the sleep
+  branch, so other tasks are not stalled for the demo's whole
+  duration; the demo draws only to the framebuffer, which no
+  other task touches, so it needs no lock itself.
+- kernel.c: boot banner v0.8.0, mouse_init called after timer
+  init and before task init (polling works with interrupts off;
+  packets wait in the controller until sti, when the IRQ 12
+  handler is ready), printing "Mouse: PS/2 found" or "Mouse:
+  not found" like the disk message. shell.c: `mouse` and `gfx`
+  commands, help and version updated, 25 commands total.
+- Test (QEMU -kernel and GRUB ISO, both with a -drive image;
+  host tests still 66 PASS, unchanged because mouse and graphics
+  are port I/O and VGA memory, QEMU-only like paging and the
+  timer): boot prints "Mouse: PS/2 found"; `mouse` reports
+  x=160 y=100 buttons=0 packets=0 (centered, no movement yet);
+  `gfx` shows the demo with title, shapes, alphabet, digits,
+  instructions, coordinates, and cursor at center; a mouse move
+  moves the cursor and updates the coordinates with no trail
+  left behind; a left click shows L in the coordinates and draws
+  a dot that is still there after the cursor moves away; Esc
+  returns to the text shell with the exact pre-demo screen,
+  colors, and font, and `version` afterward prints cleanly.
+  Three bugs were found and fixed in testing, all in the new
+  code, none in earlier versions: the stale-output drain (typing
+  dead on first boot), the reset ACK order (mouse not found),
+  and the font stride plus the map-mask bitmask (garbage text
+  after the demo, fixed by the 32-byte stride and 0x04 mask).
+- Honest limits, updated: graphics lives in the kernel in this
+  slice, not behind syscalls, so a user program cannot draw yet
+  (that is the next graphics step, when a GUI program needs it);
+  the demo is the only graphics mode user, and the shell stays
+  text; the mouse has no acceleration or scaling (raw deltas,
+  one pixel per unit, which is right for 320x200); there is no
+  mouse wheel support (the three-byte packet has no wheel byte,
+  a wheel needs the four-byte Intellimouse protocol, a later
+  addition); a missing mouse is handled (not found, demo still
+  runs) but was not QEMU-tested, because QEMU always presents a
+  PS/2 mouse, and the timeout path is code-reviewed, not
+  run-verified.
+
+v0.9.0 - GUI: a graphical desktop as a user program, plus the
+graphics and input syscalls it needs
+- What changed, in one line: `run gui` opens a desktop with a
+top bar, two icons, and two draggable windows with buttons,
+built entirely by a program in ring 3 through new syscalls, not
+by kernel demo code, and Quit (or Esc) returns to the text shell
+exactly as it was.
+- Syscalls 9-17 (numbers must match syscall_stub.h exactly):
+GFX_BEGIN 9 (enter graphics mode, save the text screen, become
+the graphics owner), GFX_END 10 (restore, release ownership),
+GFX_PIXEL 11 (x, y, color in registers), GFX_CLEAR 12 (color),
+GFX_RECT 13 (pointer to {x, y, w, h, color, filled}),
+GFX_LINE 14 (pointer to {x0, y0, x1, y1, color}),
+GFX_TEXT 15 (pointer to {x, y, string, color}, string copied
+to a kernel buffer with a 256-byte bound, longer strings
+truncated), MOUSE_STATE 16 (pointer to an output {x, y,
+buttons} struct), KEY_GET 17 (next scancode, or -1 if empty).
+Multi-argument calls take a struct pointer because the doorway
+only carries three register arguments and a rectangle needs
+six values; the structs are all ints in kernel-read order, so
+there is no padding to disagree about.
+- Ownership, the rule that keeps one framebuffer sane: only one
+program may own graphics mode at a time, because there is one
+saved text screen. BEGIN by the owner again is a no-op success
+(it must NOT re-save, or the saved text would be overwritten
+with the graphics state it is supposed to restore to); BEGIN
+by anyone else fails; drawing calls and KEY_GET fail for
+non-owners, so a text program cannot draw over the desktop or
+steal the GUI's keys. MOUSE_STATE is read-only and is allowed
+for any task, like the shell's `mouse` command. If the owner
+dies without calling END (it faults, or forgets), task_cleanup
+calls gfx_task_exited, which restores text mode, so the OS
+never stays stuck in graphics mode with no program drawing.
+- Keyboard routing, the other half of ownership: while graphics
+is owned, the kernel main loop leaves the keyboard queue alone
+instead of draining it into the shell, and the owner drains it
+through KEY_GET, which only the owner may call, so there is
+exactly one drainer and no race on the queue tail. Keys typed
+during the GUI stay queued for the GUI; the shell never sees
+them. The GUI drains the whole queue each frame, so nothing is
+left for the shell when it exits, except keys pressed after it
+died, which arrive after cleanup clears the owner, in the right
+order. A program that calls KEY_GET without owning graphics
+gets -1 and touches nothing.
+- The mode switch itself was refactored, not duplicated:
+vga_gfx.c now has gfx_graphics_begin/end (save text, load the
+font while still in text mode, switch to mode 13h, set the demo
+palette, clear; and the reverse), used by both the kernel `gfx`
+demo and the new syscalls, so the demo and the syscalls cannot
+drift apart. One bug that refactor exposed and fixed: the text
+cursor lives in two static variables in kernel.c, not in a VGA
+register, so the graphics save (video memory plus registers)
+did not capture it, and a text print during graphics mode (a
+fault diagnostic, or a program printing while it owns the
+display) advanced it while the restore reverted the screen,
+leaving the next typed command on a fresh line with no prompt.
+Begin now saves the cursor through text_cursor_get, end
+restores it through text_cursor_set, so cursor and restored
+screen always agree, and invisible prints are discarded along
+with the invisible screen they wrote to.
+- gui.c (new, src/programs, 3940 bytes on disk): the desktop.
+Top bar (title, live mouse coordinates, red Quit button),
+two icons (Welcome, yellow; About, cyan), two windows
+(Welcome: two lines, a "Click me" button, a click counter;
+About: version and build lines), each with a title bar, a red
+X close button, and a light-gray body. Clicking an icon opens
+its window; clicking a window brings it to the front (z-order
+is a two-element swap, because there are two windows);
+dragging a title bar moves the window, clamped so it stays
+fully on screen below the top bar; clicking X closes it;
+clicking the Welcome button increments its counter; Quit or
+Esc ends graphics mode and exits, returning to the shell.
+There is no damage tracking: any change redraws the whole
+screen (desktop, bar, icons, windows back to front, cursor
+last), which is simple, correct, and fast enough at 320x200,
+because a full redraw is a few hundred syscalls and only
+happens when something actually changed. The loop polls mouse
+and keys, because there is no blocking input wait yet, so the
+GUI spins in its time slices; preemption keeps everything else
+responsive, but it is wasteful, a known limit. The cursor is
+the kernel demo's arrow shape, drawn with a black shadow
+offset by (1,1) under the white arrow, so it stays visible on
+both the blue desktop and the light-gray window bodies.
+- One real bug, found by the first GUI screenshots and fixed
+before anything else was trusted: the desktop appeared as a
+bare blue screen with only the cursor, no bar, no icons, no
+windows, and mouse clicks did nothing, because pixels (plain
+numbers in registers) drew and rectangles and text (struct
+pointers) did not. The cause was the program-side syscall
+wrapper: one inline asm statement, with no "memory" clobber,
+so the compiler was allowed to keep a program's struct-field
+writes in registers, or reorder them after the interrupt,
+because it could not see that the interrupt reads that memory
+through the pointer. The kernel then read unwritten stack and
+drew nothing (or, for text, read a null string pointer and
+returned -1), while the program stayed alive, which is why the
+screen stayed blue instead of faulting back to text. The fix
+is the "memory" clobber on do_syscall in syscall_stub.h, which
+forces every pending write out before the interrupt and forces
+a reload of anything the kernel wrote, after it. It applies to
+every program that includes the header, which is why count grew
+from 340 to 372 bytes and gui from 1044 to 3940: the compiler
+can no longer delete struct writes it used to call dead.
+- Test (QEMU -kernel, GRUB ISO, and a scratch fault program
+that enters graphics and then faults on purpose; host tests
+still 66 PASS, unchanged, because the new syscalls are
+QEMU-only like the graphics they drive): boot prints "Disk:
+RTFS, 8 files"; `run gui` shows the desktop with title,
+coordinates X=160 Y=100, Quit, both icons, and cursor at
+center; clicking the Welcome icon opens its window at
+(80,50,180,120) with button and "Clicked: 0"; dragging its
+title bar by (40,30) moves it to (120,80) with no ghost of the
+old position; clicking "Click me" shows "Clicked: 1"; clicking
+Quit returns to the text shell with the exact pre-GUI screen,
+and `version` afterward prints cleanly, proving keyboard
+routing is restored; GRUB ISO shows the same desktop and Esc
+quits to a working shell; the fault program returns to text
+instead of staying stuck in blue graphics mode, and `version`
+after it prints as "ringtail> version" on one line, proving
+the cursor fix. Pixel-level checks on the screenshots
+confirmed the window edges, close button, body, and dragged
+position, not just the eyeball view.
+- Honest limits, updated: the desktop cannot launch programs
+yet (no LIST or SPAWN syscall, so icons only open built-in
+windows); a faulted graphics program's diagnostic is lost,
+because the text restore overwrites the fault print that
+happened during graphics mode (the safety property, not
+getting stuck, holds, the message does not, and a fault log is
+a later piece); the GUI polls instead of waiting for input;
+there is no text input in windows, no clock in the top bar
+(no tick syscall yet), and no window resizing or minimizing,
+because two fixed windows do not need them yet. The kernel
+`gfx` demo still works unchanged through the refactored
+begin/end, verified after the refactor.
+
+Next: not yet picked. Candidates, in no decided order: a GUI
+program launcher (needs a LIST syscall so the desktop can see
+what is on disk, and a SPAWN syscall so it can start a program
+by name, so icons can run programs instead of only opening
+built-in windows); FAT as a contained filesystem swap; seek as
+a small addition to the file API. User graphics syscalls are
+done, so a GUI program exists to use them.

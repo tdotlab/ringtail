@@ -8,6 +8,59 @@ idt_load:
     lidt [eax]
     ret
 
+; gdt_load(ptr): install a new GDT and reload every segment
+; register from it. The far jump reloads CS (the CPU cannot mov
+; into CS directly); the movs reload DS/ES/FS/GS/SS. The ltr
+; loads the task register with the TSS selector, which tells the
+; CPU where to find esp0 for ring 3 traps. Called with interrupts
+; off, before the IDT is live, so no trap can arrive mid-reload.
+global gdt_load
+gdt_load:
+    mov eax, [esp+4]
+    lgdt [eax]
+    jmp 0x08:reload_cs
+reload_cs:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov ax, 0x28
+    ltr ax
+    ret
+
+; syscall_isr: the int 0x80 handler. The CPU, on a ring 3 trap,
+; switches to the kernel stack (TSS esp0) and pushes SS/ESP/
+; EFLAGS/CS/EIP, then jumps here with interrupts cleared (it is
+; an interrupt gate). pusha saves the user's registers, sti
+; re-enables the timer, because the syscall handler can block:
+; a print syscall spins on the print lock, and if interrupts
+; stayed off the lock holder could never run to release it, so
+; the syscall would spin forever. With sti, a tick preempts the
+; syscall exactly like any kernel task, parks its frame, and
+; resumes it later. The cli before popa mirrors timer_isr: the
+; register restore and the iret must not be interrupted. The
+; return value in eax is written into the saved-eax slot on the
+; stack (offset 28 after pusha, once the four pushed arguments
+; are removed), so popa restores eax as the syscall's result
+; instead of the user's original eax.
+global syscall_isr
+extern syscall_dispatch
+syscall_isr:
+    pusha
+    sti
+    push edx                ; 3rd arg (c)
+    push ecx                ; 2nd arg (b)
+    push ebx                ; 1st arg (a)
+    push eax                ; syscall number
+    call syscall_dispatch
+    add esp, 16
+    mov [esp+28], eax       ; saved eax = result
+    cli
+    popa
+    iret
+
 global keyboard_isr
 extern keyboard_handler
 
@@ -16,6 +69,18 @@ keyboard_isr:
     call keyboard_handler
     popa                ; restore registers
     iret                ; return from interrupt
+
+; Mouse ISR, vector 44 (IRQ 12, slave IRQ 4). Same shape as the
+; keyboard ISR: the C handler reads the packet byte, updates the
+; cursor, and sends EOI to both PICs (slave first, then master).
+global mouse_isr
+extern mouse_handler
+
+mouse_isr:
+    pusha
+    call mouse_handler
+    popa
+    iret
 
 global timer_isr
 extern timer_handler
@@ -39,6 +104,29 @@ timer_isr:
     cli                 ; protect the restore + iret
     popa                ; restore registers
     iret                ; return from interrupt
+
+; Page fault stub (vector 14), separate from the generic exception
+; stubs because a page fault carries two diagnostics the generic
+; handler throws away: the faulting address in CR2 and the error
+; code the CPU pushes. On entry the stack top is the error code
+; (the CPU pushes EFLAGS/CS/EIP first, then the error code on
+; top). The stub pushes CR2 first, then the error code, so the C
+; handler sees (err, addr) in cdecl order, then calls a handler
+; that prints both and halts. It never returns, so no iret is
+; attempted and the stack imbalance is harmless, as with the
+; generic stubs.
+global page_fault_isr
+extern page_fault_handler
+page_fault_isr:
+    mov eax, cr2
+    push eax                ; addr (2nd arg)
+    mov eax, [esp+4]        ; error code (was on top, now shifted)
+    push eax                ; err (1st arg)
+    call page_fault_handler
+.hang_pf:
+    cli
+    hlt
+    jmp .hang_pf
 
 ; Exception stubs (vectors 0-31). Each stub records its vector number
 ; and jumps to a common handler that prints it and halts. The handler

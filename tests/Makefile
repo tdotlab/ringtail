@@ -1,13 +1,13 @@
-# RingTail host tests: heap + RAMFS, 32-bit host build.
+# RingTail host tests: heap + disk filesystem, 32-bit host build.
 # Needs gcc -m32 (gcc-multilib on Ubuntu). Run with: make run
 CC = gcc
 CFLAGS = -m32 -Wall -Wextra -g -fno-builtin
 
-TEST = test_heap_ramfs
+TEST = test_heap_diskfs
 
 all: $(TEST)
 
-$(TEST): test_heap_ramfs.c ../src/mm/heap.c ../src/fs/ramfs.c
+$(TEST): test_heap_diskfs.c ../src/mm/heap.c ../src/fs/diskfs.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Native 32-bit execution is unavailable on some VMs (on this one
