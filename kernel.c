@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 // RingTail - Piece 7: Scrolling + cursor
  // No more clear_screen on overflow - we scroll like a real terminal
 
@@ -103,6 +105,7 @@ extern uint32_t heap_get_start(void);
 extern uint32_t heap_get_free(void);
 extern void shell_init(void);
 extern void ramfs_init(void);
+extern void timer_init(void);
 
 void kernel_main(void) {
     // enable cursor: set scanlines 0-15
@@ -112,12 +115,13 @@ void kernel_main(void) {
     outb(0x3D5, 15);
 
     clear_screen();
-    print_color("RingTail v0.2.1 - Colors + TUI\n", COLOR_TITLE);
+    print_color("RingTail v0.2.2 - Timer\n", COLOR_TITLE);
     print_color("RAM filesystem, files in heap\n", COLOR_DIM);
     print("--------------\n");
 
     heap_init();
     ramfs_init();
+    timer_init();
     shell_init();
     print_color("ringtail> ", 0x0A);
     update_cursor();

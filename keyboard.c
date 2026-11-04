@@ -24,9 +24,16 @@ extern void shell_backspace(void);
 extern void shell_enter(void);
 extern void shell_history_prev(void);
 extern void shell_history_next(void);
+extern volatile int timer_sleeping;
 
 void keyboard_handler(void) {
     uint8_t scancode = inb(0x60);
+    if (timer_sleeping) {
+        // Sleeping: drop the key so it cannot re-enter the shell,
+        // which is already running inside this interrupt handler.
+        outb(0x20, 0x20);
+        return;
+    }
     if (scancode & 0x80) {
         // key release
     } else {

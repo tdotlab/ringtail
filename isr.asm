@@ -17,3 +17,12 @@ keyboard_isr:
     call keyboard_handler
     popa                ; restore registers
     iret                ; return from interrupt
+
+global timer_isr
+extern timer_handler
+
+timer_isr:
+    pusha               ; save all registers
+    call timer_handler
+    popa                ; restore registers
+    iret                ; return from interrupt

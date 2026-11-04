@@ -3,7 +3,7 @@
 Bare-metal x86 operating system, built from scratch: Multiboot/GRUB boot,
 freestanding C + NASM, no libc.
 
-Current version: v0.2.1 - Colors + TUI
+Current version: v0.2.2 - Timer
 
 - Boot, VGA print/scroll/hardware cursor
 - IDT + PIC remap + keyboard with shell history
@@ -11,6 +11,7 @@ Current version: v0.2.1 - Colors + TUI
 - RAMFS: files live in the heap, shell commands ls, touch, cat, write, rm
 - Colors: print_color, `color <name>`, `colors` palette demo, errors in red,
   successes in green, `clear` resets the color
+- Timer: PIT at ~100 Hz, `uptime`, `tick`, `sleep <seconds>`
 
 Build (from this folder):
 

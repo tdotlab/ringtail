@@ -20,6 +20,7 @@ struct idt_entry idt[256];
 struct idt_ptr idt_ptr;
 
 extern void keyboard_isr(void);
+extern void timer_isr(void);
 
 // port I/O - how we talk to PIC and keyboard hardware
 static inline uint8_t inb(uint16_t port) {
@@ -68,6 +69,9 @@ void idt_init(void) {
 
     // IRQ1 (keyboard) is now interrupt 33
     idt_set_gate(33, (uint32_t)keyboard_isr, 0x08, 0x8E);
+
+    // IRQ0 (PIT timer) is now interrupt 32
+    idt_set_gate(32, (uint32_t)timer_isr, 0x08, 0x8E);
 
     idt_load((uint32_t)&idt_ptr);
 }

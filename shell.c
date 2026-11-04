@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 // RingTail - Piece 6.5: Shell with history
  // Buffer + backspace + enter + command history (up/down)
 
@@ -27,6 +29,8 @@ extern int ramfs_write(const char* name, const char* content);
 extern int ramfs_read(const char* name, char* out, uint32_t max);
 extern int ramfs_delete(const char* name);
 extern int ramfs_exists(const char* name);
+extern uint32_t timer_get_ticks(void);
+extern void timer_sleep(uint32_t seconds);
 extern void print_color(const char* s, unsigned char color);
 extern void set_color(unsigned char c);
 
@@ -187,6 +191,18 @@ static void cmd_colors(void) {
     print_color("white\n", 0x0F);
 }
 
+static void cmd_uptime(void) {
+    print("Uptime: ");
+    print_num(timer_get_ticks() / 100);
+    print(" seconds\n");
+}
+
+static void cmd_tick(void) {
+    print("Ticks: ");
+    print_num(timer_get_ticks());
+    print("\n");
+}
+
 static void cmd_help(void) {
     print("Commands:\n");
     print("  help    - this list\n");
@@ -204,10 +220,13 @@ static void cmd_help(void) {
     print("  rm <file> - delete file\n");
     print_color("  color <name> - set text color\n", 0x0B);
     print_color("  colors - show palette\n", 0x0B);
+    print("  uptime - show seconds since boot\n");
+    print("  tick   - show raw timer ticks (100 per second)\n");
+    print("  sleep <seconds> - wait\n");
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.2.1 - Colors + TUI\n");
+    print("RingTail v0.2.2 - Timer\n");
 }
 
 static void cmd_heap(void) {
@@ -315,6 +334,16 @@ void shell_execute(void) {
         cmd_colors();
     } else if (strncmp(buf, "color ", 6) == 0) {
         cmd_color(buf + 6);
+    } else if (strcmp(buf, "uptime") == 0) {
+        cmd_uptime();
+    } else if (strcmp(buf, "tick") == 0) {
+        cmd_tick();
+    } else if (strncmp(buf, "sleep ", 6) == 0) {
+        uint32_t secs = atoi(buf + 6);
+        timer_sleep(secs);
+        print("Slept ");
+        print_num(secs);
+        print(" seconds\n");
     } else if (strncmp(buf, "echo ", 5) == 0) {
         print(buf + 5);
         print("\n");

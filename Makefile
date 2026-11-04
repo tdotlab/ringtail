@@ -7,7 +7,7 @@ ASFLAGS = -f elf32
 
 all: myos.iso
 
-OBJS = boot.o isr.o kernel.o idt.o keyboard.o shell.o heap.o ramfs.o
+OBJS = boot.o isr.o kernel.o idt.o keyboard.o shell.o heap.o ramfs.o timer.o
 
 boot.o: boot.asm
 	$(AS) $(ASFLAGS) boot.asm -o boot.o

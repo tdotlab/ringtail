@@ -43,4 +43,20 @@ clear (back to white)
 touch hello.txt (Created in green)
 cat nope (red error)
 
-Next: TBD - next piece to be chosen
+v0.2.2 - Timer
+- timer.c NEW: PIT channel 0 at ~100 Hz (divisor 11931), volatile tick counter, timer_handler with EOI to master PIC
+- isr.asm: timer_isr wrapper, idt.c: gate 32 for IRQ0, kernel.c calls timer_init()
+- shell commands: uptime, tick, sleep <seconds>
+- Wrinkle: the shell runs inside the keyboard ISR with interrupts off, so timer_sleep does sti, halts until the target tick, then cli again; keyboard.c drops keys while timer_sleeping is set, so a keypress during sleep cannot re-enter the shell
+
+Current (v0.2.2):
+- Timer: PIT ticks, uptime in seconds, raw tick count, sleep
+- Everything from v0.2.1 still works: heap, RAMFS, colors
+
+Test:
+uptime
+tick
+sleep 2
+uptime (should be about 2 seconds larger)
+
+Next: scheduler / multitasking (the timer now makes a scheduling quantum possible)
