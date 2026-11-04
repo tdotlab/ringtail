@@ -2,10 +2,10 @@
 // folder. These are the program's half of the int 0x80 doorway:
 // the kernel's half is syscall.c, and the numbers must match it
 // exactly (PRINT 1, EXIT 2, SLEEP 3, OPEN 4, READ 5, WRITE 6,
-// CLOSE 7, DELETE 8, graphics and input 9-17). A program never
-// calls a kernel function directly; it only asks through this
-// interrupt, with the syscall number in eax and arguments in
-// ebx, ecx, edx.
+// CLOSE 7, DELETE 8, graphics and input 9-17, seek 18,
+// list 19, spawn 20). A program never calls a kernel function
+// directly; it only asks through this interrupt, with the
+// syscall number in eax and arguments in ebx, ecx, edx.
 // The wrapper is one inline asm statement: move the number and
 // arguments into registers, int $0x80, take the result from eax.
 // Programs are freestanding (no libc), so they also carry their
@@ -29,6 +29,13 @@
 #define SYS_GFX_TEXT 15
 #define SYS_MOUSE_STATE 16
 #define SYS_KEY_GET 17
+#define SYS_SEEK 18
+#define SYS_LIST 19
+#define SYS_SPAWN 20
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
 
 static inline int do_syscall(int num, int a, int b, int c) {
     int result;
@@ -66,14 +73,19 @@ static inline void sys_sleep(int seconds) {
     do_syscall(SYS_SLEEP, seconds, 0, 0);
 }
 
-// File syscalls, v0.7.2. Open takes a null-terminated filename
-// and returns a per-task descriptor (0-7) or -1. Read and write
-// take a descriptor, a buffer, and a length (capped at 4096 by
-// the kernel), and return bytes transferred or -1. Read advances
-// the offset and returns 0 at end of file. Close takes a
-// descriptor and returns 0 or -1. Delete takes a filename and
-// returns 0 or -1; it does not close descriptors already open
-// for that file, and later operations on those descriptors fail.
+// File syscalls, v0.7.2, plus seek in v0.10.1, list and
+// spawn in v0.10.2. Open takes a
+// null-terminated filename and returns a per-task descriptor
+// (0-7) or -1. Read and write take a descriptor, a buffer, and
+// a length (capped at 4096 by the kernel), and return bytes
+// transferred or -1. Read advances the offset and returns 0
+// at end of file. Close takes a descriptor and returns 0 or
+// -1. Delete takes a filename and returns 0 or -1; it does
+// not close descriptors already open for that file, and later
+// read and write operations on those descriptors fail (seek
+// from the start or current offset still succeeds, because
+// that is offset arithmetic only, while seek from the end
+// fails, because it needs the file's size).
 static inline int sys_open(const char* name) {
     return do_syscall(SYS_OPEN, (int)name, 0, 0);
 }
@@ -92,6 +104,37 @@ static inline int sys_close(int fd) {
 
 static inline int sys_delete(const char* name) {
     return do_syscall(SYS_DELETE, (int)name, 0, 0);
+}
+
+// Seek, v0.10.1. Moves an open file's offset and returns the
+// new absolute offset, or -1 on failure (offset unchanged).
+// whence is SEEK_SET (from the start), SEEK_CUR (from the
+// current offset), or SEEK_END (from the end of the file, so
+// a negative offset counts back from the end). Seeking past
+// end of file is allowed: reading there returns 0, and
+// writing there extends the file with a zero-filled gap.
+static inline int sys_seek(int fd, int offset, int whence) {
+    return do_syscall(SYS_SEEK, fd, offset, whence);
+}
+
+// List and spawn, v0.10.2. List copies the Nth regular
+// file's display name (uppercase, dot inserted, like ls)
+// into the buffer, null-terminated, and returns 0, or -1
+// if the index is out of range, the buffer is null, or
+// the buffer is too small for the name plus null. Call
+// with index 0, 1, 2, and so on until -1 to enumerate
+// every file. Spawn starts a file as a new task, like
+// the shell's run command, and returns the new task id,
+// or -1 on failure. Spawn refuses while the caller owns
+// graphics mode, because the new program's output would
+// be invisible there: a graphics caller must GFX_END
+// first, then spawn, then exit.
+static inline int sys_list(int index, char* buf, int buf_size) {
+    return do_syscall(SYS_LIST, index, (int)buf, buf_size);
+}
+
+static inline int sys_spawn(const char* name) {
+    return do_syscall(SYS_SPAWN, (int)name, 0, 0);
 }
 
 // Graphics and input syscalls, v0.9.0. The kernel provides

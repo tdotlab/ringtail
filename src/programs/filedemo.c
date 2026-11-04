@@ -80,7 +80,7 @@ __attribute__((section(".text._start"))) void _start(void) {
         sys_print(msg, prog_strlen(msg));
     }
 
-    // Error path 2: a 32-character name must fail (max is 31).
+    // Error path 2: a 32-character name must fail (too long for 8.3).
     int longfd = sys_open("12345678901234567890123456789012");
     if (longfd < 0) {
         const char* msg = "long name correctly rejected\n";

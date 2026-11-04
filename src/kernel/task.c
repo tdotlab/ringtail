@@ -451,12 +451,20 @@ extern void user_entry(void);
 // irets into ring 3 at entry_va with ESP = stack_top_va. The
 // program's pages and stack frame belong to the page directory
 // and are freed by paging_destroy_user_pd when the task dies,
-// so this function allocates no user memory itself. TSS esp0 is
-// set here, before the first switch, because the first ring 3
-// trap needs it already correct (see the v0.6.0 comment on
-// task_create_user, which this replaces: programs no longer
-// live in the kernel image, so there is no kernel function
-// pointer to enter, only a virtual address). Returns the task
+// so this function allocates no user memory itself. TSS esp0
+// is deliberately NOT set here. Esp0 is the kernel stack a
+// ring 3 task traps onto, and it must belong to the task
+// that is currently running, not to the task just created.
+// Setting it here, at creation, would point the creating
+// task's next trap onto the new task's stack, overwriting
+// the new task's startup frame before it ever runs, so the
+// new program would jump to garbage and fault (found by
+// SPAWN in v0.10.2: a spawned hello faulted with EXCEPTION
+// 0, while a shell-run hello worked, because the shell never
+// traps). Esp0 is set where it belongs instead: on first
+// entry, in user_entry, just before the first iret into
+// ring 3, and on every resume, in task_yield and
+// task_preempt, before the task returns to ring 3. Returns the task
 // id, or -1 on out of memory. Programs must exit via the exit
 // syscall: user_entry has nowhere to return to if they return.
 int task_create_user(const char* name, uint32_t pd_pa, uint32_t entry_va, uint32_t stack_top_va) {
@@ -495,7 +503,6 @@ int task_create_user(const char* name, uint32_t pd_pa, uint32_t entry_va, uint32
             task_t* tail = task_list;
             while (tail->next) tail = tail->next;
             tail->next = t;
-            tss_set_esp0(top);
             result = t->id;
         } else {
             kfree(t);

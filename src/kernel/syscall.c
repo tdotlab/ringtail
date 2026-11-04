@@ -9,7 +9,7 @@
 // print bytes, sleep seconds, and exit, because that is all
 // hello and count needed. v0.7.2 adds file syscalls, so programs
 // can use the disk the shell already uses: open, read, write,
-// close, and delete. Everything else a program wants
+// close, delete, and, since v0.10.1, seek. Everything else a program wants
 // (formatting numbers, building strings) it does itself, in its
 // own code, on its own stack: the kernel provides primitives,
 // not a library. That split is the point, and it is why the
@@ -19,15 +19,16 @@
 // per-task slot numbers, 0-7, held in the task struct (see
 // task_fd_open and friends in task.c): open takes a filename and
 // returns a slot, read and write take a slot, a user buffer, and
-// a length, close frees a slot, delete takes a filename. There
-// are no modes and no permissions in this slice: every open is
-// read/write, every program can open any file, because there are
-// no users yet to give permissions to. Open creates the file if
-// it does not exist, like the shell's write auto-create, and
-// resets the offset to 0; read and write advance the offset, so
-// a large file is handled in chunks; there is no seek yet, so
-// appending means reading the old content first, or reopening
-// after a close does not help, because reopen also resets to 0.
+// a length, close frees a slot, delete takes a filename, seek
+// moves a slot's offset (from the start, from the current
+// offset, or from the end of the file). There are no modes and
+// no permissions in this slice: every open is read/write, every
+// program can open any file, because there are no users yet to
+// give permissions to. Open creates the file if it does not
+// exist, like the shell's write auto-create, and resets the
+// offset to 0; read and write advance the offset, so a large
+// file is handled in chunks, and seek lets a program jump
+// back, skip ahead, or read the tail without reopening.
 // Read and write lengths are capped at 4096, like print, so a
 // single syscall never copies an unbounded user buffer. Errors
 // are all -1, with no errno: a program that needs to know why
@@ -75,6 +76,13 @@
 #define SYS_GFX_TEXT 15
 #define SYS_MOUSE_STATE 16
 #define SYS_KEY_GET 17
+#define SYS_SEEK 18
+#define SYS_LIST 19
+#define SYS_SPAWN 20
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
 
 extern void print_char(char c);
 extern void vga_lock(void);
@@ -103,6 +111,9 @@ extern int diskfs_create(const char* name);
 extern int diskfs_delete(const char* name);
 extern int diskfs_write_bytes(const char* name, const uint8_t* content, uint32_t len);
 extern uint8_t* diskfs_read_all(const char* name, uint32_t* size_out);
+extern int diskfs_size(const char* name, uint32_t* size_out);
+extern int diskfs_list_at(int index, char* name_out);
+extern int loader_run(const char* name);
 
 // Copy a null-terminated filename from user space, with a hard
 // 32-byte bound. Returns 0 on success (kernel_buf holds the
@@ -329,6 +340,92 @@ uint32_t syscall_dispatch(uint32_t num, uint32_t a, uint32_t b, uint32_t c) {
         if (task_current_id() != gfx_owner) return (uint32_t)-1;
         int sc = keyboard_poll();
         return (uint32_t)sc; // -1 if empty, else the scancode
+    }
+    if (num == SYS_SEEK) {
+        // Seek: move an open file's read/write offset, like Unix
+        // lseek. a = fd, b = offset (signed), c = whence
+        // (0 = from start, 1 = from current, 2 = from end).
+        // Returns the new absolute offset, or -1 on failure,
+        // with the offset unchanged on failure. SET and CUR
+        // only do offset arithmetic, so they do not touch the
+        // disk and succeed even if the file was deleted after
+        // opening; END needs the file's size, so it fails if
+        // the file is gone or there is no disk. Seeking past
+        // end of file is allowed: a later read returns 0
+        // (end of file), and a later write extends the file
+        // with a zero-filled gap, by the existing write logic.
+        // The new offset must fit in a signed 32-bit int
+        // (0..2147483647), because the program-side wrapper
+        // returns int and -1 means error; a larger offset
+        // would be indistinguishable from an error.
+        int fd = (int)a;
+        int32_t off = (int32_t)b;
+        int whence = (int)c;
+        char name[32];
+        uint32_t cur = 0;
+        if (task_fd_lookup(fd, name, &cur) != 0) return (uint32_t)-1;
+        int64_t base;
+        if (whence == SEEK_SET) {
+            base = 0;
+        } else if (whence == SEEK_CUR) {
+            base = (int64_t)cur;
+        } else if (whence == SEEK_END) {
+            uint32_t size = 0;
+            if (diskfs_size(name, &size) != 0) return (uint32_t)-1;
+            base = (int64_t)size;
+        } else {
+            return (uint32_t)-1;
+        }
+        int64_t new_off = base + (int64_t)off;
+        if (new_off < 0 || new_off > 2147483647LL) return (uint32_t)-1;
+        if (task_fd_advance(fd, (uint32_t)new_off) != 0) return (uint32_t)-1;
+        return (uint32_t)new_off;
+    }
+    if (num == SYS_LIST) {
+        // List: a = index, b = user buffer pointer, c = buffer
+        // size in bytes. Returns 0 on success with the Nth
+        // regular file's display name copied into the buffer,
+        // null-terminated, or -1 on failure (index out of
+        // range, null buffer, buffer too small, no disk).
+        // Call with increasing index, starting at 0, until
+        // -1 to enumerate every file on disk. The order and
+        // the skip rules match diskfs_list, so LIST and the
+        // shell's ls agree on what is on disk. The size check
+        // happens before any copy, so a too-small buffer
+        // gets -1 and no partial name, never a truncation.
+        // A negative buffer size, passed as a signed int,
+        // is rejected the same way: the check is signed.
+        int idx = (int)a;
+        char* user_buf = (char*)b;
+        int32_t max_len = (int32_t)c;
+        if (!user_buf || max_len <= 0) return (uint32_t)-1;
+        char kname[16];
+        if (diskfs_list_at(idx, kname) != 0) return (uint32_t)-1;
+        uint32_t len = 0;
+        while (kname[len]) len++;
+        if (len + 1 > (uint32_t)max_len) return (uint32_t)-1;
+        for (uint32_t i = 0; i <= len; i++) user_buf[i] = kname[i];
+        return 0;
+    }
+    if (num == SYS_SPAWN) {
+        // Spawn: a = filename pointer. Returns the new task
+        // id on success, or -1 on failure (no such file,
+        // load failed, no free task slot, bad name). It
+        // reuses loader_run, like the shell's run command,
+        // so a spawned program is a normal task, not a
+        // special kind of task. One guard: it refuses while
+        // the caller owns graphics mode, because the new
+        // program's output would be invisible. Text output
+        // goes to the text screen, which graphics mode
+        // hides, and the restore on graphics exit would
+        // overwrite it, so the output would be lost, not
+        // just delayed. A caller in graphics mode must
+        // GFX_END first, then spawn, then exit.
+        if (task_current_id() == gfx_owner) return (uint32_t)-1;
+        char name[32];
+        if (copy_user_name((const char*)a, name) != 0) return (uint32_t)-1;
+        int id = loader_run(name);
+        return (uint32_t)id;
     }
     return (uint32_t)-1; // unknown syscall number
 }

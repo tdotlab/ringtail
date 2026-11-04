@@ -288,7 +288,7 @@ static void cmd_help(void) {
 }
 
 static void cmd_version(void) {
-    print("RingTail v0.9.0 - GUI\n");
+    print("RingTail v0.10.2 - GUI launcher\n");
 }
 
 static void cmd_mouse(void) {
@@ -366,7 +366,7 @@ void shell_execute(void) {
             } else if (r == -1) {
                 print_color("Already exists\n", 0x0C);
             } else if (r == -2) {
-                print_color("Name too long (max 31)\n", 0x0C);
+                print_color("Name must fit 8.3 (e.g. DEMO.TXT)\n", 0x0C);
             } else if (r == -4) {
                 print_color("No disk\n", 0x0C);
             } else {

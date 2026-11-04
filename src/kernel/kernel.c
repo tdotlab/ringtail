@@ -302,7 +302,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
             }
         }
     }
-    print_color("RingTail v0.9.0 - GUI\n", COLOR_TITLE);
+    print_color("RingTail v0.10.2 - GUI launcher\n", COLOR_TITLE);
     print_color("Graphical desktop: run gui\n", COLOR_DIM);
     print("--------------\n");
 

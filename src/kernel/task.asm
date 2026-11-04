@@ -31,12 +31,16 @@
 ; pd 12). v0.7.0 change: user_stack_top is already a stack top,
 ; not a stack base, so no add-4096 here anymore; the loader
 ; computes the top from the program size plus a guard page.
-; Two things must happen before the iret, or the user task faults
+; Three things must happen before the iret, or the user task faults
 ; on its first instruction. First, DS/ES/FS/GS must be the user
 ; data selector (0x23): they still hold the kernel data selector
 ; (0x10, DPL 0), and a ring 3 task cannot use a DPL 0 data segment
 ; (its privilege is lower than the segment's, so the first data
-; access would fault). Second, the iret frame must carry user
+; access would fault). Second, TSS esp0 must be this task's
+; kernel stack top, so its first trap lands on its own stack:
+; setting esp0 at creation would have pointed the creating
+; task's next trap here instead, overwriting this task's
+; startup frame. Third, the iret frame must carry user
 ; SS/ESP/CS/EIP and EFLAGS with interrupts on (0x202: IF plus the
 ; always-1 bit), so the CPU switches stacks, drops to ring 3, and
 ; resumes with the timer able to preempt it. The iret itself does
@@ -48,10 +52,27 @@
 
 global user_entry
 extern current_task
+extern tss_set_esp0
 user_entry:
     mov eax, [current_task]
     mov edx, [eax+32]   ; entry virtual address
     mov ecx, [eax+16]   ; user stack top, virtual address
+    ; Set TSS esp0 to this task's kernel stack top (offset 8
+    ; in task_t), before the first iret. This is the first
+    ; moment it is safe to do so: at creation, another task
+    ; is running, and setting esp0 then would point that
+    ; task's next trap onto this task's stack, overwriting
+    ; its startup frame. Here, this task is about to run,
+    ; so its first trap will correctly land on its own
+    ; stack. The C call clobbers eax, ecx, edx, so entry
+    ; and stack top are saved across it and restored after.
+    push edx
+    push ecx
+    push dword [eax+8]  ; kstack_top
+    call tss_set_esp0
+    add esp, 4
+    pop ecx
+    pop edx
     mov ax, 0x23        ; user data selector
     mov ds, ax
     mov es, ax

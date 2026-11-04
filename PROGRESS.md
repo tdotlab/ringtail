@@ -160,8 +160,8 @@ v0.3.1 - Boot fixes (found by actually building and booting in QEMU)
   all verified from screendumps.
 
 Test:
-make myos.bin CC=gcc 'LD=ld -m elf_i386' CFLAGS='-ffreestanding -O2 -Wall -Wextra -nostdlib -lgcc -fno-builtin -fno-stack-protector -m32'
-qemu-system-i386 -kernel myos.bin -m 16 -display none -monitor unix:/tmp/ringtail-mon,server,nowait
+make ringtail.bin CC=gcc 'LD=ld -m elf_i386' CFLAGS='-ffreestanding -O2 -Wall -Wextra -nostdlib -lgcc -fno-builtin -fno-stack-protector -m32'
+qemu-system-i386 -kernel ringtail.bin -m 16 -display none -monitor unix:/tmp/ringtail-mon,server,nowait
 
 v0.3.2 - Layout (no behavior change)
 - Sources moved from a flat ringtail/ into src/ by subsystem:
@@ -172,7 +172,7 @@ v0.3.2 - Layout (no behavior change)
   paths updated. No source file includes another, so the move is
   mechanical; rebuild, host tests, and QEMU boot re-verified
   after the move.
-- Build artifacts (.o, myos.bin, myos.iso, isodir) are not part
+- Build artifacts (.o, ringtail.bin, ringtail.iso, isodir) are not part
   of the source tree; make clean removes them.
 
 v0.4.0 - Cooperative tasks (no behavior change to anything else)
@@ -917,10 +917,357 @@ because two fixed windows do not need them yet. The kernel
 `gfx` demo still works unchanged through the refactored
 begin/end, verified after the refactor.
 
-Next: not yet picked. Candidates, in no decided order: a GUI
-program launcher (needs a LIST syscall so the desktop can see
-what is on disk, and a SPAWN syscall so it can start a program
-by name, so icons can run programs instead of only opening
-built-in windows); FAT as a contained filesystem swap; seek as
-a small addition to the file API. User graphics syscalls are
-done, so a GUI program exists to use them.
+v0.10.0 - FAT filesystem: RTFS replaced by standard FAT16,
+as a contained swap, with the same diskfs API throughout
+- What changed, in one line: the disk is now FAT16, the
+standard filing system used by DOS, Windows, USB sticks, and
+SD cards, instead of the homemade RTFS flat layout, so a
+RingTail disk is readable by real tools and a disk made by a
+real tool is readable by RingTail, with no change to the ATA
+driver, the loader, the syscalls, or the shell's file commands
+beyond the version strings and one error message.
+- Layout: superfloppy (no partition table, FAT starts at
+sector 0, as RTFS did), 512-byte sectors, 1 sector per cluster
+in our own images, 1 reserved sector (the boot sector with
+the BPB), two identical FAT copies, a 512-entry root
+directory, then data. Our 16 MB image works out to FATs of
+127 sectors each, root 32 sectors, data from sector 287,
+32481 clusters (2..32482), which is in the FAT16 range. The
+kernel does not hardcode any of that: it parses the BPB at
+init (bytes per sector, sectors per cluster, reserved,
+FAT count, root entries, total sectors, FAT size, boot
+signature) and derives FAT start, root start, data start,
+and cluster count from it, and it accepts any power-of-two
+cluster size, so a disk made by mkfs.fat works too. The
+cluster count decides the type, per the spec: below 4085
+is FAT12, at or above 65525 is FAT32, and both are rejected
+with "not a FAT16 filesystem" instead of being misread.
+- Chains, the core difference from RTFS: a file is a chain
+followed through the FAT (0 = free, a cluster number = next
+piece, 0xFFF8 and up = end), so its pieces need not sit
+together. Deleting a file in the middle leaves holes, and a
+new file fills them first-fit, which RTFS could not do (it
+needed one unbroken run, and failed when none fit, even with
+free space scattered around). Writes keep the RTFS
+allocate-before-free shape: allocate a new chain, write its
+sectors, then free the old chain, then write back the FAT
+copies and the root directory, so a failed write leaves the
+old file intact on disk, because the FAT and directory have
+not been flushed yet when the failure is detected. The FAT
+and root directory live in RAM after init (65 KB + 16 KB
+for our image) and are written back on every mutation;
+data sectors are never cached. All public functions run
+under interrupt save/restore, as before.
+- Names are DOS 8.3, the visible change: at most 8
+characters, a dot, at most 3 for the extension, stored
+uppercase, space-padded, with no dot stored. The kernel
+converts user names to that form on every operation, so
+typing lowercase still finds the file, and converts back
+for listing, so ls now shows HELLO, DEMO.TXT, and so on,
+instead of the lowercase names RTFS preserved. Names that
+do not fit 8.3, or use a forbidden character, are rejected
+with -2, and the shell's touch message now says "Name must
+fit 8.3 (e.g. DEMO.TXT)" instead of "max 31". The syscall
+name buffer (32 bytes) and the per-task fd names did not
+change: 8.3 names fit easily, and fd lookups work because
+every diskfs call normalizes the same way.
+- Volume labels: mkdisk.py now writes a volume label entry
+("RINGTAIL", attribute 0x08) as root entry 0, matching the
+BPB label, so fsck does not report a label mismatch. The
+kernel skips volume entries (and long-name entries, and
+directories) when listing, finding, counting, and checking
+collisions, so the boot banner still counts regular files
+only (8, not 9, for the standard image).
+- mkdisk.py: same command line as before (name:file pairs,
+-o, --size-mb), now building FAT16 instead of RTFS, with
+the same BPB fields the kernel parses, clusters allocated
+in argument order (so an initial image's chains happen to
+be contiguous), and a volume label entry first. The disk
+image is still not checked in; rebuild it whenever the
+programs change. Old RTFS images are unreadable now, by
+design: the format changed, so any old disk.img must be
+rebuilt with the new tool.
+- Test: host tests are 84 checks, all passing (was 66). The
+mock disk grew to 8192 sectors (4 MB) because a smaller
+mock would have fewer than 4085 clusters and would be
+FAT12, which the kernel correctly rejects, so the mock had
+to be big enough to be FAT16. New checks cover 8.3 edges
+(too-long base, multiple dots, slash, lowercase lookup),
+a fragmented chain (A=2,3,4; B=5,6,7; C=8,9,10; delete B;
+write a 5-cluster file, and its chain is verified from the
+mock FAT to be 5,6,7,11,12, jumping over C), a disk-full
+write one byte over the remaining free space (fails, old
+file still readable), and a FAT12 mock (init refused,
+create returns -4). QEMU, all passing: boot prints
+"RingTail v0.10.0 - FAT filesystem" and "Disk: FAT16, 8
+files"; ls, cat (lowercase and uppercase input), touch,
+write, rm, and the 8.3 error messages all behave as above;
+run hello, run count, run filedemo (twice, idempotent),
+run fault/crash/badptr (task killed, shell survives), and
+run gui (desktop identical to v0.9.0, proving an 8-cluster
+program loads through a chain); write-then-reboot persists;
+GRUB ISO boots with the FAT disk; no-disk boot still says
+"Disk: not found" and the shell still works. External
+tools, both directions, installed for the test via apt
+(dosfstools, mtools; apt tools do not survive VM
+replacement): fsck.fat on a RingTail-written disk is clean
+(10 files, 19 clusters used, free space matching the
+cluster arithmetic exactly); mdir lists the same files;
+mcopy reads PERSIST.TXT back byte-for-byte; and a disk
+made by mkfs.fat -F 16 -s 1 (whose BPB turns out identical
+to ours: same FAT size, same data start, same cluster
+count) with files copied in by mcopy boots in RingTail,
+lists 2 files (volume skipped), cats, and runs hello.
+Kernel size 59,688 bytes (was 59,340), 0 warnings.
+- Honest limits, updated: no long file names (a file made
+elsewhere with a long name is reached by its short name,
+like LONGFI~1.TXT, and deleting it leaves its long-name
+entries orphaned, harmless but wasted slots, until a new
+file reuses those slots); no subdirectories (root only, as
+before); no timestamps (date/time fields are zero, so
+external tools show 1980, the FAT epoch); no journaling
+(a crash mid-write can leave FAT and directory
+disagreeing, as with RTFS); FAT16 only, FAT12 and FAT32
+rejected; the 64 KB whole-file cap from read_all stays,
+so FAT itself has no such cap but programs still do; the
+FAT must fit in the heap (65 KB for our image, fine, but
+a huge disk's FAT would fail init with out of memory);
+cluster allocation scans from cluster 2 each time, so
+writing a very large file is quadratic in clusters, which
+is fine for the small files this OS actually writes.
+
+v0.10.1 - Seek: one new syscall, SEEK 18, that moves an open
+file's offset, completing the file API from v0.7.2
+- What changed, in one line: a program can now jump to a
+byte position in an open file, instead of only reading
+forward from where it left off, so it can reread a header,
+skip ahead, or read the tail without closing and reopening
+(which would reset to 0 anyway).
+- Syscall 18, numbers must match syscall_stub.h exactly:
+SEEK, with a = fd, b = offset (signed 32-bit), c = whence,
+returning the new absolute offset, or -1 on failure with
+the offset unchanged. Whence follows Unix: SEEK_SET 0
+(from the start), SEEK_CUR 1 (from the current offset),
+SEEK_END 2 (from the end of the file, so a negative
+offset counts back from the end). The implementation in
+syscall.c reuses task_fd_lookup and task_fd_advance, so
+offsets stay per-task, as before, and it computes the new
+offset in 64-bit to detect overflow, then requires the
+result to fit in a signed 32-bit int (0..2147483647),
+because the program-side wrapper returns int and -1 means
+error; a larger offset would be indistinguishable from an
+error, and on a 16 MB disk no real offset comes close.
+- The one asymmetry, by design: SET and CUR only do offset
+arithmetic, so they do not touch the disk and succeed even
+if the file was deleted after opening; END needs the
+file's size, so it fails if the file is gone or there is
+no disk. END uses a new diskfs_size function, not
+read_all, because read_all buffers the whole file and caps
+at 64 KB: size only reads the directory entry, which is
+already in RAM, so it is cheap and works for larger files
+too. diskfs_size returns 0 with the size, -1 for a missing
+or invalid name, -4 for no disk, under the same interrupt
+locking as the other diskfs functions.
+- Seeking past end of file is allowed, Unix-style: a later
+read returns 0 (end of file, offset unchanged), and a later
+write extends the file with a zero-filled gap, by the
+existing write logic (which builds old content plus the
+new slice, zero-initialized). No new shell command: the
+shell's file commands work on whole files, not offsets,
+so seek is a program-level operation, and seekdemo is the
+proof, not a shell feature.
+- seekdemo (2876 bytes): writes "0123456789ABCDEF" (16
+bytes, every index its own digit or letter), then checks
+SET 5 reading "567", CUR 2 reading "AB", END -4 reading
+"CDEF", END 0 reading end of file, SET 100 reading end
+of file past the end, CUR -100 back to 0 reading "0123",
+and three failures that must leave the offset unchanged,
+proved by reading after each one (bad whence 99, SET -1,
+CUR -100 from 8), a seek on a closed descriptor, and the
+deleted-file asymmetry (SET succeeds, END fails). Each
+test prints its seek return and the bytes it read, or an
+ERROR line, so the screenshot is the proof, not just a
+claim. It leaves seek.txt on disk for the shell to cat,
+like filedemo leaves demo.txt. A comment fix rides along:
+filedemo's "max is 31" note was stale after FAT (the limit
+is 8.3 now), and now says so; the program itself is
+unchanged (1304 bytes, same as before).
+- Test: host tests are 92 checks, all passing (was 84).
+New checks cover diskfs_size on a small file (4), a
+multi-cluster file (1200), an empty file (0), a missing
+file (-1), a 100,000-byte file (100000, past the read_all
+cap, proving size is uncapped), and a FAT12 disk (-4).
+Count correction: v0.10.0 was reported as 85 checks, but
+that count included the CHECK macro definition line; the
+true invocation count was 84, and this version's 92 is
+counted the same way (invocations only, plus two printf
+PASS lines for diskfs_list, which are not CHECKs). QEMU,
+all passing: run seekdemo prints all twelve ok lines,
+with SET 100 and CUR -100 on separate lines (an earlier
+run had them joined by a one-byte print-length slip, now
+fixed, along with three other print lengths that were off
+by one); cat seek.txt reads back the sixteen bytes; ls
+shows SEEK.TXT; write-then-reboot persists seek.txt;
+run filedemo, fault, crash, badptr, count, and gui all
+still behave as before (gui desktop identical, Esc
+returns to a working shell); GRUB ISO boots and runs
+seekdemo identically. Kernel size 59,740 bytes (was
+59,688), 0 warnings. A VM replacement mid-build wiped
+/tmp and the apt toolchain, so the toolchain was
+reinstalled (same versions: QEMU 8.2.2, nasm 2.16.01)
+and the seek code was re-applied from the surviving
+screenshot and conversation, in a persistent workspace
+scratch dir instead of /tmp, then verified from the
+canonical tree; the QEMU harness itself was also
+reconstructed in ~/workspace/ringtail/harness/ for the
+same reason, and it runs a full seek test in about
+eleven seconds.
+- Honest limits, updated: seek does not change the 64 KB
+read_all cap (a program still cannot read a larger file
+in one read_all call, though size now reports it, and
+the shell's bounded read still reads its first part);
+seek cannot create a hole larger than the disk or heap
+(a write at a huge offset fails as before, offset
+unchanged); there is still no LIST, so a program cannot
+discover filenames, and no SPAWN, so the GUI still cannot
+launch programs; those remain the launcher piece.
+
+v0.10.2 - GUI launcher. The desktop can now start real
+programs by clicking, not just open its own built-in
+windows. Two new syscalls, both completing the file
+story that seek started. LIST (19) gives a program the
+Nth file's name: call it with index 0, 1, 2, and so on
+until it fails, and you have every file on disk, in the
+same order and with the same names ls prints, because
+both go through the same root-directory walk and the
+same raw-to-display conversion (uppercase, dot
+inserted). The kernel side is a new diskfs_list_at,
+which counts regular files only, skipping deleted,
+long-name, directory, and volume entries, and entries
+with a nonzero first-cluster-high, exactly as ls does.
+A buffer that is null, or too small for the name plus
+its null terminator, fails with -1 and no partial copy,
+never a truncation, and a negative buffer size is
+rejected the same way. SPAWN (20) starts a file as a
+new task, like the shell's run command, and returns the
+new task id, or -1 on failure. It reuses loader_run, so
+a spawned program is a normal task, not a special kind.
+One guard: SPAWN refuses while the caller owns graphics
+mode, because a program started inside graphics mode
+would print to a text screen nobody can see, and the
+restore on graphics exit would overwrite it, so the
+output would be lost, not just delayed. A graphics
+caller must end graphics first, then spawn, then exit.
+The demo is listdemo (1344 bytes): it checks a
+too-small buffer size (passed with a roomy buffer, so
+even a kernel that ignored the size could not overflow
+the stack, it would only return the wrong value, which
+the check catches) and a null buffer, then lists every
+file, then spawns hello (which should succeed) and a
+missing file (which should fail), printing each result.
+The GUI itself, at startup, lists every file, keeps
+only names with no dot (programs have no extension,
+data files do), and draws one green icon per program,
+up to nine, in columns to the right of the built-in
+icons (built-in yellow Welcome and cyan About stay
+where they were). Clicking a program icon ends
+graphics, spawns that program, prints "Started <name>
+as task <id>" the way the shell does, and exits, so
+the new program runs in text mode, where its output is
+visible. Windows are still checked before icons, so a
+click on an open window never launches through it, and
+clicking the GUI icon itself relaunches the desktop,
+which is the graphics-ownership handoff working: the
+old desktop ends graphics, the new one begins it.
+Two cleanups ride along. The welcome file is now
+packed as WELCOME.TXT, not WELCOME, so the
+no-extension rule holds: before, welcome was a data
+file with no extension, which would have shown up as
+a program icon, and cat welcome.txt would not have
+found it; now it does, and the launcher correctly
+leaves it out. The About window's version was stale
+since v0.9.0 and now says v0.10.2, matching the kernel
+and shell banners. A layout fix, found by screenshot:
+icon rows moved from y=30, 90, 150 to y=26, 86, 146,
+so the bottom row's label ends exactly at the screen's
+bottom edge (146 + 38 + 16 = 200); at y=30 the bottom
+labels were clipped by 4 pixels, proved by pixel counts
+in the screenshots, not just by eye.
+- A real kernel bug, found by SPAWN and fixed here.
+Creating a task set the kernel trap stack (TSS esp0)
+to the new task's stack immediately, at creation.
+That was fine when the shell created a task, because
+the shell never traps, so nothing ran on the new
+stack before the new task did. It broke when a program
+created a task: the creating program's next system
+call trapped onto the new task's stack and overwrote
+its startup frame, so the new program jumped to
+garbage and faulted. The symptom was exact: a spawned
+hello faulted with EXCEPTION 0 and never printed,
+while a shell-run hello in the same build printed
+fine. The fix is in the right place, not a workaround:
+task creation no longer touches esp0 at all, and esp0
+is set on first entry, in user_entry, just before the
+first iret into ring 3, and on every resume, in
+task_yield and task_preempt, before the task returns
+to ring 3. Esp0 now always belongs to the task that
+is about to run, never to the task just created.
+- Test: host tests are 106 checks, all passing (was
+92). New checks cover list_at on an empty disk (-1),
+on a fresh disk with four files (A.TXT, B.TXT, C.TXT,
+PROG, in order, then past the last file, then a
+negative index), after deleting the middle file
+(A.TXT, C.TXT, PROG, then past the last file,
+proving deleted entries are skipped), and on a FAT12
+disk (-1), plus the setup creates and delete themselves.
+Count is invocations only, plus two printf PASS lines
+for diskfs_list, which are not CHECKs. QEMU, all
+passing: run listdemo lists all ten files in disk
+order, spawns hello (which now prints "Hello from
+disk!", after the esp0 fix), and fails the missing
+file correctly; ls agrees with LIST on names, order,
+and sizes; cat welcome.txt prints "Welcome to
+RingTail!"; run seekdemo, filedemo, fault, and gui
+all still behave as before; run gui shows nine green
+program icons in LIST order (HELLO, COUNT, FAULT,
+CRASH, BADPTR, FILEDEMO, GUI, SEEKDEMO, LISTDEMO),
+no WELCOME.TXT icon; clicking HELLO exits the desktop
+and runs hello in text mode, with "Started HELLO as
+task 2" printed; clicking GUI relaunches a fresh
+desktop (top bar shows the click position, X=265
+Y=43); a minimal disk with only hello, count, gui,
+and welcome.txt shows only three program icons,
+proving the icons come from LIST, not from hardcoded
+names; the Welcome window still opens, and Esc still
+exits to a working shell; GRUB ISO boots and runs
+listdemo identically (byte-identical screenshot to
+the direct-kernel run). Kernel size 59,836 bytes (was
+59,740), 0 warnings. GUI grew 3940 to 5024 bytes,
+still well under the 64 KB program cap.
+- Honest limits, updated: the launcher shows at most
+nine programs, and any past nine are simply not shown,
+not paged or scrolled; it lists only files with no
+extension, so a program with an extension would not
+show, and a data file with no extension would show
+and fail on launch (old disk images with WELCOME, no
+extension, do exactly that: rebuild the disk with the
+new welcome.txt packing to fix it); launching a text
+program exits the desktop, because text programs print
+to the text screen, which graphics mode hides, and a
+persistent desktop that keeps text programs visible
+would need text rendering in graphics mode, which is
+a later piece; the 64 KB read_all cap is unchanged,
+and there is still no blocking input wait, so the GUI
+still spins polling the mouse and keys.
+
+Next: push (rename + v0.10.0 + v0.10.1 + v0.10.2,
+awaiting T's word, do not push unasked); then, as
+build candidates, a GUI blocking input wait (so the
+desktop stops spinning on poll), a fault log so
+graphics-mode fault diagnostics survive the text
+restore, and the other open items (64 KB cap
+raise/streaming only when a file needs it, heap from
+the memory map, VGA text split out of kernel.c, real
+headers, UNDERSTANDING.md into a repo docs folder,
+mock update past v0.9.0, now three versions behind,
+unrequested).

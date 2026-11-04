@@ -11,6 +11,22 @@
 // hook, not left hanging in graphics mode.
 // Design, kept deliberately small. There are two windows,
 // Welcome and About, and two desktop icons that open them.
+// v0.10.2 adds the launcher: at startup the GUI lists every
+// file on disk through LIST, keeps the ones with no dot in
+// the name (programs have no extension, data files do), and
+// draws one green icon per program, up to nine, in columns
+// to the right of the built-in icons. Clicking a program
+// icon exits graphics first, then spawns the program
+// through SPAWN, prints the result the way the shell does,
+// and exits, so the new program runs in text mode, where
+// its output is visible. That order is required, not just
+// polite: SPAWN refuses while the caller owns graphics,
+// because a program started inside graphics mode would
+// print to a text screen nobody can see, and the restore
+// on graphics exit would overwrite it. LIST is safe in
+// graphics mode, because it returns data to the program,
+// not output to the screen, so the startup list happens
+// after GFX_BEGIN without any special handling.
 // Windows drag by their title bars, close with the X, and come
 // to the front when clicked. The Welcome window has a button
 // that counts clicks. There is no damage tracking: any change
@@ -41,6 +57,29 @@ static window_t wins[2];
 static int zorder[2] = {0, 1};
 static int dragging = -1;
 static int drag_dx = 0, drag_dy = 0;
+
+// Launcher programs, from LIST at startup. Nine is the
+// desktop's capacity: three columns of three, to the right
+// of the built-in icons, and any programs past nine are
+// simply not shown, not paged or scrolled, a known limit.
+// Names are display names (uppercase, 8.3, no dot, because
+// files with a dot are data files and are filtered out).
+#define MAX_PROGS 9
+static char prog_names[MAX_PROGS][13];
+static int prog_count = 0;
+
+// Program icon position for index i: column i/3, row i%3.
+// Columns start at x=80, so they never overlap the
+// built-in icons (the Welcome click area ends at x=73),
+// and rows match the built-in rows (y=26, 86, 146).
+// Rows start at 26, not 30, so the bottom row's label
+// ends exactly at the screen's bottom edge (146 + 38
+// for the label offset + 16 for the glyph height = 200):
+// at y=30 the bottom labels were clipped by 4 pixels.
+static void prog_xy(int i, int* x, int* y) {
+    *x = 80 + (i / 3) * 80;
+    *y = 26 + (i % 3) * 60;
+}
 
 // Cursor arrow, 12x16, same shape as the kernel demo's: rows are
 // 12-bit values, bit 11 is the leftmost pixel, tip top-left.
@@ -121,7 +160,7 @@ static void draw_window(int idx) {
         buf[i] = 0;
         draw_text(w->x + 10, w->y + 95, buf, 0);
     } else {
-        draw_text(w->x + 10, w->y + 30, "RingTail v0.9.0", 0);
+        draw_text(w->x + 10, w->y + 30, "RingTail v0.10.2", 0);
         draw_text(w->x + 10, w->y + 50, "Bare-metal x86 OS", 0);
         draw_text(w->x + 10, w->y + 70, "C + NASM, no libc", 0);
     }
@@ -138,10 +177,20 @@ static void draw_all(mouse_state_t* ms) {
     draw_rect(QUIT_X, 2, QUIT_W, 16, 4, 1);
     draw_text(QUIT_X + 4, 2, "Quit", 15);
     // Desktop icons: a filled square and a label under it.
-    draw_rect(10, 30, 50, 35, 14, 1);
-    draw_text(10, 68, "Welcome", 15);
-    draw_rect(10, 90, 50, 35, 11, 1);
-    draw_text(10, 128, "About", 15);
+    // Built-in icons first (yellow Welcome, cyan About),
+    // then green program icons from LIST, same size and
+    // same label offset (label 38 below the icon top, so
+    // it sits 3 below the icon's bottom edge).
+    draw_rect(10, 26, 50, 35, 14, 1);
+    draw_text(10, 64, "Welcome", 15);
+    draw_rect(10, 86, 50, 35, 11, 1);
+    draw_text(10, 124, "About", 15);
+    for (int i = 0; i < prog_count; i++) {
+        int px, py;
+        prog_xy(i, &px, &py);
+        draw_rect(px, py, 50, 35, 10, 1);
+        draw_text(px, py + 38, prog_names[i], 15);
+    }
     // Windows back to front, so the front window overdraws.
     for (int zi = 0; zi < 2; zi++) {
         if (wins[zorder[zi]].open) draw_window(zorder[zi]);
@@ -161,6 +210,24 @@ __attribute__((section(".text._start"))) void _start(void) {
         const char* msg = "Graphics busy: another program owns it\n";
         sys_print(msg, prog_strlen(msg));
         sys_exit();
+    }
+    // Launcher list: LIST every file, keep only names with
+    // no dot (programs), up to nine. A LIST failure at
+    // index 0 (no disk, or an empty disk) just means no
+    // program icons, not an error: the GUI still works
+    // with its built-in windows.
+    {
+        char namebuf[16];
+        for (int idx = 0; prog_count < MAX_PROGS; idx++) {
+            if (sys_list(idx, namebuf, 16) != 0) break;
+            int has_dot = 0;
+            for (int j = 0; namebuf[j]; j++) if (namebuf[j] == '.') has_dot = 1;
+            if (has_dot) continue;
+            int j = 0;
+            while (namebuf[j]) { prog_names[prog_count][j] = namebuf[j]; j++; }
+            prog_names[prog_count][j] = 0;
+            prog_count++;
+        }
     }
     wins[0].x = 80; wins[0].y = 50; wins[0].w = 180; wins[0].h = 120;
     wins[0].open = 0; wins[0].clicks = 0; wins[0].title = "Welcome";
@@ -235,14 +302,47 @@ __attribute__((section(".text._start"))) void _start(void) {
                 }
             }
             if (!handled) {
-                if (in_rect(ms.x, ms.y, 10, 30, 63, 55)) {
+                if (in_rect(ms.x, ms.y, 10, 26, 63, 55)) {
                     wins[0].open = 1;
                     bring_to_front(0);
                     need_redraw = 1;
-                } else if (in_rect(ms.x, ms.y, 10, 90, 50, 55)) {
+                } else if (in_rect(ms.x, ms.y, 10, 86, 50, 55)) {
                     wins[1].open = 1;
                     bring_to_front(1);
                     need_redraw = 1;
+                } else {
+                    // Program icons, checked after windows
+                    // and built-in icons, so a click on an
+                    // open window never launches through it.
+                    // The click area is the icon plus its
+                    // label: width is the wider of the icon
+                    // (50) and the label (9 per character),
+                    // height 55 covers icon plus label.
+                    for (int i = 0; i < prog_count; i++) {
+                        int px, py;
+                        prog_xy(i, &px, &py);
+                        int lw = prog_strlen(prog_names[i]) * 9;
+                        int cw = lw > 50 ? lw : 50;
+                        if (!in_rect(ms.x, ms.y, px, py, cw, 55)) continue;
+                        // Launch, and exit directly, not
+                        // through quit: graphics is already
+                        // ended, so the loop-end GFX_END
+                        // must not run a second time.
+                        sys_gfx_end();
+                        int id = sys_spawn(prog_names[i]);
+                        if (id >= 0) {
+                            sys_print("Started ", 8);
+                            sys_print(prog_names[i], prog_strlen(prog_names[i]));
+                            sys_print(" as task ", 9);
+                            char numbuf[12];
+                            int nl = append_num(numbuf, id);
+                            sys_print(numbuf, nl);
+                            sys_print("\n", 1);
+                        } else {
+                            sys_print("spawn failed\n", 13);
+                        }
+                        sys_exit();
+                    }
                 }
             }
         }
