@@ -179,7 +179,7 @@ class Runner:
 
 def tests(m, t):
     boot = m.expect(re.escape(PROMPT), 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.12.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.13.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -195,6 +195,20 @@ def tests(m, t):
     t.check("run hello", "Hello from disk!" in out, out)
     out = m.run("run args one two three")
     t.check("arguments reach the program", "argc=4" in out and "argv[3]=three" in out, out)
+    out = m.run("hello")
+    t.check("a bare program name runs it", "Hello from disk!" in out, out)
+    start = time.time()
+    out = m.run("sleep 1")
+    took = time.time() - start
+    t.check("sleep 1 takes about a second", 0.8 < took < 3, "%.2f s: %s" % (took, out))
+    out = m.run("sleep 99999")
+    t.check("sleep rejects an hour and more", "usage" in out, out)
+    out = m.run("echo  two   spaces")
+    t.check("echo keeps the spacing", "two   spaces" in out, out)
+    out = m.run("exit")
+    t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
+    out = m.run("version")
+    t.check("and the new shell works", "0.13.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest"]:
         out = m.run("run " + prog, timeout=30)
@@ -243,7 +257,13 @@ def tests(m, t):
         out = m.run("kill " + busy.group(1))
         t.check("kill stops it", "Killed task" in out, out)
     out = m.run("kill 1")
-    t.check("the shell refuses to kill itself", "will not kill itself" in out or "no such" in out, out)
+    t.check("kernel tasks cannot be killed", "not permitted" in out, out)
+    out = m.run("tasks")
+    shell = re.search(r"^\s*(\d+)\s+\d+\s+user\s+\S+\s+\S+\s+shell\s*$", out, re.M)
+    t.check("the shell is a user task", shell, out)
+    if shell:
+        out = m.run("kill " + shell.group(1))
+        t.check("the shell refuses to kill itself", "will not kill itself" in out, out)
 
     # Interactive stdin.
     m.send("run readline\r")

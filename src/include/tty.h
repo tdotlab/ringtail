@@ -50,8 +50,11 @@ int tty_read(char* buf, uint32_t len);
 // whenever the foreground changes.
 int tty_set_mode(int mode);
 
-// The foreground job receives input and Ctrl+C. 0 means the shell.
+// The foreground job receives input, Ctrl+C and Ctrl+backslash.
+// tty_set_foreground is for the kernel (init); it forgets any
+// handovers. tty_handover is SYS_TTY_FG, with its rules (abi.h).
 void tty_set_foreground(int job);
+int tty_handover(int job);
 int tty_foreground(void);
 
 // Channel woken on any input (keyboard, serial or mouse).

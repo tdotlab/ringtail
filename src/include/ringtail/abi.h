@@ -3,8 +3,8 @@
 // Calling convention: int $0x80 with the call number in eax and up
 // to three arguments in ebx, ecx, edx. The result comes back in eax.
 // Failures return a negative errno value (-ENOENT and so on).
-// Exit statuses are plain ints: a killed program reports -1 and one
-// that faulted reports -2.
+// Exit statuses are plain ints: a killed program reports EXIT_KILLED
+// and one that faulted reports EXIT_FAULTED.
 #ifndef RINGTAIL_ABI_H
 #define RINGTAIL_ABI_H
 
@@ -27,7 +27,7 @@
 #define SYS_KEY_GET     17  // ()                      -> scancode, or -EAGAIN
 #define SYS_SEEK        18  // (fd, offset, whence)    -> new offset
 #define SYS_LIST        19  // (index, buf, size)      -> 0, -ENOENT past the end
-#define SYS_SPAWN       20  // (name, argv or NULL)    -> task id; argv is NULL-terminated, argv[0] is the name
+#define SYS_SPAWN       20  // (name, argv or NULL, spawn_opts_t* or NULL) -> task id; argv is NULL-terminated, argv[0] is the name
 #define SYS_WAIT        21  // (last_x, last_y, last_buttons) -> 0 on new input
 #define SYS_TICKS       22  // ()                      -> timer ticks since boot (100 Hz)
 #define SYS_GETPID      23  // ()                      -> caller's task id
@@ -37,7 +37,46 @@
 #define SYS_SBRK        27  // (increment)             -> old program break, or -ENOMEM
 #define SYS_TTY_MODE    28  // (TTY_* flags)           -> previous flags; foreground only
 #define SYS_SAVE        29  // (name, buf, len)        -> 0; replaces the file whole or not at all (len <= 1 MB)
-#define NUM_SYSCALLS    30
+#define SYS_TTY_FG      30  // (job)                   -> 0; hand the terminal to a job, or take it back
+#define SYS_WAIT_JOB    31  // (job)                   -> 0 once no task of the job is alive
+#define SYS_KILL        32  // (task id)               -> 0; kernel tasks cannot be killed
+#define SYS_READDIR     33  // (int* cursor, dirent_t*) -> 0, -ENOENT after the last file
+#define SYS_KINFO       34  // (KINFO_*, buf, size)    -> length of the full text; buf gets as much as fits, NUL-terminated
+#define SYS_SET_COLOR   35  // (VGA attribute)         -> 0; the console's default colour
+#define SYS_POWER       36  // (POWER_*)               -> does not return
+#define NUM_SYSCALLS    37
+
+#define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
+#define EXIT_FAULTED (-2)
+
+// SYS_SPAWN options. By default the child joins the caller's job and
+// its descriptors 0, 1 and 2 are copies of the caller's. SPAWN_NEW_JOB
+// makes the child the leader of a new job (its id is the job's);
+// SPAWN_JOIN puts it in job `job` instead, which must be the caller's
+// own or one the caller started. fd[i] >= 0 gives the child a copy of
+// the caller's fd[i] as its descriptor i; -1 keeps the default.
+#define SPAWN_NEW_JOB 1
+#define SPAWN_JOIN    2
+typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
+
+// SYS_TTY_FG: the foreground job may hand the terminal to a job it
+// started. Once that job has no live tasks, the job that handed it
+// over takes it back with SYS_TTY_FG(0), and gets back the terminal
+// mode it had.
+
+// SYS_KINFO reports, as the text the shell prints.
+#define KINFO_VERSION 0  // the name, version and codename
+#define KINFO_MEM     1  // frames and heap, free and total
+#define KINFO_HEAP    2  // kernel heap details
+#define KINFO_TASKS   3  // the task table
+#define KINFO_FAULTS  4  // the fault log
+#define KINFO_MMAP    5  // the boot memory map
+#define KINFO_DISK    6  // "N KB free of M KB"
+
+#define POWER_REBOOT 0
+#define POWER_OFF    1
+
+typedef struct { char name[16]; unsigned size; } dirent_t;
 
 // Values from -4095 to -1 are errors. Anything else is a result,
 // including addresses above 2 GB that look negative as an int.
@@ -56,6 +95,7 @@
 // Standard descriptors. Every program starts with these open.
 #define STDIN_FILENO  0     // console input, foreground only; line at a time unless TTY_RAW
 #define STDOUT_FILENO 1     // console output
+#define STDERR_FILENO 2     // console output, for errors
 
 // open() flags. Values match Linux so they look familiar.
 #define O_RDONLY 0x0000
@@ -63,6 +103,7 @@
 #define O_RDWR   0x0002
 #define O_ACCMODE 0x0003
 #define O_CREAT  0x0040
+#define O_EXCL   0x0080     // with O_CREAT: fail with EEXIST if it exists
 #define O_TRUNC  0x0200
 #define O_APPEND 0x0400
 

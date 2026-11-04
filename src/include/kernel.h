@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.12.0"
-#define RINGTAIL_CODENAME "Octavo"
+#define RINGTAIL_VERSION "0.13.0"
+#define RINGTAIL_CODENAME "Userland"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08
@@ -44,20 +44,25 @@ void tss_set_esp0(uint32_t esp0);
 // Fault log: the last few fatal events, kept so a fault that happened
 // while the screen was in graphics mode can still be read afterwards.
 void faultlog_add(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
-void faultlog_dump(void);
+void faultlog_format(sbuf_t* sb);
 
 // Syscalls (syscall.c).
 struct regs;
 void syscall_handle(struct regs* r);
 
 // Program loader (loader.c). Loads an ELF program from the disk and
-// starts it in job (0 for a new job of its own). Returns the new
-// task id or -errno.
+// starts it in job (0 for a new job of its own), with descriptors 0-2
+// copied from the current task's std[0..2], or the console when std
+// is NULL. Returns the new task id or -errno.
 #define ARGV_MAX 16
-int loader_spawn(const char* name, int argc, const char* const* argv, int job);
+int loader_spawn(const char* name, int argc, const char* const* argv, int job, const int std[3]);
 
-// Shell task entry (shell.c).
-void shell_main(void* arg);
+// SYS_KINFO's reports (kinfo.c): 0, or -EINVAL for an unknown one.
+int kinfo_format(int what, sbuf_t* sb);
+
+// The init task (init.c): starts the shell and starts it again
+// whenever it ends.
+void init_main(void* arg);
 
 // Power control (power.c).
 void machine_reboot(void) __attribute__((noreturn));

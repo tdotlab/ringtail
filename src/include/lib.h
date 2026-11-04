@@ -29,6 +29,11 @@ int parse_uint(const char* s, uint32_t* out);
 int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
 int snprintf(char* buf, size_t size, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
 
+// Text built up a piece at a time in a fixed buffer. len counts what
+// the whole text needs, so a caller can tell it was cut short.
+typedef struct { char* buf; size_t size, len; } sbuf_t;
+void sbprintf(sbuf_t* sb, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))

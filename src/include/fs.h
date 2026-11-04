@@ -48,6 +48,9 @@ typedef struct {
 struct task;
 void files_init_std(struct task* t);
 void files_close_all(struct task* t);
+// Give child copies of parent's descriptors std[0..2] as its 0-2.
+void files_inherit(struct task* child, struct task* parent, const int std[3]);
+int file_fd_ok(int fd);  // fd is open in the current task
 // These operate on the current task and take user pointers.
 int file_open(const char* uname, int flags);
 int file_close(int fd);

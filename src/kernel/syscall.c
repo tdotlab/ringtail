@@ -229,24 +229,38 @@ static int sys_list(uint32_t index, uint32_t ubuf, uint32_t size) {
 // all, NULL-terminated. A NULL argv means just the program name.
 #define SPAWN_ARGS_BYTES 2048
 
-static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t c) {
-    (void)c;
+static int spawn_job(const spawn_opts_t* o) {
+    if (o->flags & ~(SPAWN_NEW_JOB | SPAWN_JOIN)) return -EINVAL;
+    if (o->flags == (SPAWN_NEW_JOB | SPAWN_JOIN)) return -EINVAL;
+    if (o->flags & SPAWN_NEW_JOB) return 0;
+    if (o->flags & SPAWN_JOIN) return task_job_mine(o->job) ? o->job : -EPERM;
+    return current->job;
+}
+
+static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t uopts) {
     char name[FS_NAME_MAX];
     int n = copy_name(name, uname);
     if (n < 0) return n;
     // While the caller holds the display the child could not print
     // anything visible, and could not take the display either.
     if (is_owner()) return -EBUSY;
-    if (!uargv) {
-        const char* argv[1] = { name };
-        return loader_spawn(name, 1, argv, current->job);
+    spawn_opts_t o = { 0, 0, { -1, -1, -1 } };
+    if (uopts && copy_from_user(&o, (const void*)uopts, sizeof o)) return -EFAULT;
+    int job = spawn_job(&o);
+    if (job < 0) return job;
+    int std[3];
+    for (int i = 0; i < 3; i++) {
+        std[i] = o.fd[i] < 0 ? i : o.fd[i];
+        if (o.fd[i] >= 0 && !file_fd_ok(o.fd[i])) return -EBADF;
     }
+
     char* strings = kmalloc(SPAWN_ARGS_BYTES);
     if (!strings) return -ENOMEM;
     const char* argv[ARGV_MAX];
     int argc = 0, r = 0;
     uint32_t used = 0;
-    for (;;) {
+    if (!uargv) argv[argc++] = name;
+    while (uargv) {
         uint32_t up;
         if (copy_from_user(&up, (const void*)(uargv + (uint32_t)argc * 4), 4)) { r = -EFAULT; break; }
         if (!up) break;
@@ -258,9 +272,67 @@ static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t c) {
         used += (uint32_t)len + 1;
     }
     if (!r && argc == 0) r = -EINVAL;
-    if (!r) r = loader_spawn(name, argc, argv, current->job);
+    if (!r) r = loader_spawn(name, argc, argv, job, std);
     kfree(strings);
     return r;
+}
+
+static int sys_tty_fg(uint32_t job, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    return tty_handover((int)job);
+}
+
+static int sys_wait_job(uint32_t job, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    if ((int)job <= 0) return -EINVAL;
+    task_wait_job((int)job);
+    return current->killed ? -EINTR : 0;
+}
+
+static int sys_kill(uint32_t id, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    return task_kill_user((int)id);
+}
+
+static int sys_readdir(uint32_t ucursor, uint32_t uent, uint32_t c) {
+    (void)c;
+    int cursor;
+    if (copy_from_user(&cursor, (const void*)ucursor, sizeof cursor)) return -EFAULT;
+    dirent_t d;
+    memset(&d, 0, sizeof d);
+    int r = diskfs_readdir(&cursor, d.name, &d.size);
+    if (r < 0) return r;
+    if (copy_to_user((void*)uent, &d, sizeof d)) return -EFAULT;
+    return copy_to_user((void*)ucursor, &cursor, sizeof cursor);
+}
+
+#define KINFO_MAX 4096
+static int sys_kinfo(uint32_t what, uint32_t ubuf, uint32_t size) {
+    char* buf = kmalloc(KINFO_MAX);
+    if (!buf) return -ENOMEM;
+    sbuf_t sb = { buf, KINFO_MAX, 0 };
+    int r = kinfo_format((int)what, &sb);
+    if (!r && size) {
+        uint32_t n = MIN((uint32_t)MIN(sb.len, KINFO_MAX - 1), size - 1);
+        buf[n] = 0;
+        r = copy_to_user((void*)ubuf, buf, n + 1);
+    }
+    kfree(buf);
+    return r ? r : (int)sb.len;
+}
+
+static int sys_set_color(uint32_t color, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    if (color > 0xFF || (color >> 4) == (color & 0x0F)) return -EINVAL;  // invisible text
+    console_set_color((uint8_t)color);
+    return 0;
+}
+
+static int sys_power(uint32_t what, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    if (what == POWER_REBOOT) { kprintf("Rebooting...\n"); machine_reboot(); }
+    if (what == POWER_OFF) { kprintf("Powering off...\n"); machine_poweroff(); }
+    return -EINVAL;
 }
 
 // Move the program break. The pages between the old and new break
@@ -328,6 +400,13 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_SBRK] = sys_sbrk,
     [SYS_TTY_MODE] = sys_tty_mode,
     [SYS_SAVE] = sys_save,
+    [SYS_TTY_FG] = sys_tty_fg,
+    [SYS_WAIT_JOB] = sys_wait_job,
+    [SYS_KILL] = sys_kill,
+    [SYS_READDIR] = sys_readdir,
+    [SYS_KINFO] = sys_kinfo,
+    [SYS_SET_COLOR] = sys_set_color,
+    [SYS_POWER] = sys_power,
 };
 
 void syscall_handle(regs_t* r) {

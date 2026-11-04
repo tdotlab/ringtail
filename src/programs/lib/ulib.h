@@ -34,6 +34,16 @@ static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS
 static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }
 // argv[0] is conventionally the program name; the list ends with NULL.
 static inline int sys_spawn_args(const char* name, const char* const* argv) { return SC2(SYS_SPAWN, name, argv); }
+static inline int sys_spawn_opts(const char* name, const char* const* argv, const spawn_opts_t* o) {
+    return SC3(SYS_SPAWN, name, argv, o);
+}
+static inline int sys_tty_fg(int job) { return SC1(SYS_TTY_FG, job); }
+static inline int sys_wait_job(int job) { return SC1(SYS_WAIT_JOB, job); }
+static inline int sys_kill(int id) { return SC1(SYS_KILL, id); }
+static inline int sys_readdir(int* cursor, dirent_t* d) { return SC2(SYS_READDIR, cursor, d); }
+static inline int sys_kinfo(int what, char* buf, uint32_t size) { return SC3(SYS_KINFO, what, buf, size); }
+static inline int sys_set_color(int attr) { return SC1(SYS_SET_COLOR, attr); }
+static inline int sys_power(int what) { return SC1(SYS_POWER, what); }
 static inline int sys_tty_mode(int mode) { return SC1(SYS_TTY_MODE, mode); }
 static inline int sys_save(const char* name, const void* buf, uint32_t len) { return SC3(SYS_SAVE, name, buf, len); }
 static inline int sys_join(int id) { return SC1(SYS_JOIN, id); }
@@ -64,6 +74,7 @@ void free(void* p);
 int print(const char* s);
 int puts(const char* s);  // adds a newline
 int printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+int dprintf(int fd, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 
 // Self-checking programs: check() prints one result line, and
 // check_summary() prints the total and returns an exit status.

@@ -1,5 +1,5 @@
-// Kernel entry: bring the machine up in dependency order, start the
-// shell, then become the idle task.
+// Kernel entry: bring the machine up in dependency order, start
+// init (which starts the shell), then become the idle task.
 #include "kernel.h"
 #include "arch.h"
 #include "console.h"
@@ -113,7 +113,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     serial_enable_input();
     start_disk();
 
-    if (task_create_kernel("shell", shell_main, 0) < 0) panic("cannot start the shell");
+    if (task_create_kernel("init", init_main, 0) < 0) panic("cannot start init");
     sti();
     // Idle: the scheduler runs us only when nothing else is ready.
     for (;;) hlt();

@@ -125,7 +125,7 @@ static int setup_stack(uint32_t pd, int argc, const char* const* argv, uint32_t*
     return 0;
 }
 
-int loader_spawn(const char* name, int argc, const char* const* argv, int job) {
+int loader_spawn(const char* name, int argc, const char* const* argv, int job, const int std[3]) {
     if (argc < 1 || argc > ARGV_MAX) return -E2BIG;
     int node = diskfs_lookup(name);
     if (node < 0) return node;
@@ -138,7 +138,7 @@ int loader_spawn(const char* name, int argc, const char* const* argv, int job) {
     r = load_image(node, pd, &entry, &end);
     if (!r) r = setup_stack(pd, argc, argv, &esp);
     if (r) { as_destroy(pd); goto out; }
-    r = task_create_user(argv[0], pd, entry, esp, end, job);  // owns pd from here
+    r = task_create_user(argv[0], pd, entry, esp, end, job, std);  // owns pd from here
 out:
     diskfs_unref(node);
     return r;

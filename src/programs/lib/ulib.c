@@ -2,23 +2,36 @@
 #include "ulib.h"
 
 int print(const char* s) {
-    return sys_print(s, strlen(s));
+    return sys_write(STDOUT_FILENO, s, strlen(s));
 }
 
 int puts(const char* s) {
     int n = print(s);
-    sys_print("\n", 1);
+    sys_write(STDOUT_FILENO, "\n", 1);
     return n;
 }
 
-int printf(const char* fmt, ...) {
+static int vdprintf(int fd, const char* fmt, va_list ap) {
     char buf[512];
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    if (n > (int)sizeof buf - 1) n = sizeof buf - 1;
+    return sys_write(fd, buf, (uint32_t)n);
+}
+
+int printf(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    int n = vdprintf(STDOUT_FILENO, fmt, ap);
     va_end(ap);
-    if (n > (int)sizeof buf - 1) n = sizeof buf - 1;
-    return sys_print(buf, (uint32_t)n);
+    return n;
+}
+
+int dprintf(int fd, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vdprintf(fd, fmt, ap);
+    va_end(ap);
+    return n;
 }
 
 static int checks, failures;

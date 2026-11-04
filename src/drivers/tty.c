@@ -68,15 +68,64 @@ static int try_getc(void) {
     return c;
 }
 
-void tty_set_foreground(int job) {
+// Handovers in progress, innermost last: the job that has the
+// terminal, the job that gave it, and that giver's mode.
+#define HANDOVER_MAX 8
+static struct { int to, from, mode; } handover[HANDOVER_MAX];
+static int handovers;
+
+static void switch_to_job(int job, int new_mode) {
     uint32_t f = irq_save();
-    int was_raw = mode != 0;
+    int was_raw = (mode & TTY_RAW) != 0;
     fg_job = job;
-    mode = 0;
+    mode = new_mode;
     pending_pos = pending_len = 0;  // half-read input belongs to the old job
     irq_restore(f);
-    // A raw-mode program may have died with the screen in any state.
+    // A raw-mode program may have left the screen in any state.
     if (was_raw) console_reset();
+}
+
+void tty_set_foreground(int job) {
+    handovers = 0;
+    switch_to_job(job, 0);
+}
+
+static int handover_locked(int job) {
+    int me = current->job;
+    if (job == 0) job = me;
+    if (job == fg_job && me == fg_job) return 0;
+    if (me == fg_job) {
+        if (!task_job_mine(job)) return -EPERM;
+        if (!task_job_alive(job)) return -ESRCH;
+        if (handovers == HANDOVER_MAX) return -EBUSY;
+        handover[handovers].to = job;
+        handover[handovers].from = me;
+        handover[handovers].mode = mode;
+        handovers++;
+        switch_to_job(job, 0);
+        return 0;
+    }
+    // Taking it back: only by a job that gave it away, and only once
+    // everything it was passed on to since is gone.
+    if (job != me) return -EPERM;
+    for (int i = handovers - 1; i >= 0; i--) {
+        if (handover[i].from != me) continue;
+        for (int k = i; k < handovers; k++)
+            if (task_job_alive(handover[k].to)) return -EBUSY;
+        int m = handover[i].mode;
+        handovers = i;
+        switch_to_job(me, m);
+        return 0;
+    }
+    return -EPERM;
+}
+
+int tty_handover(int job) {
+    static mutex_t lock = MUTEX_INIT;
+    mutex_lock(&lock);
+    int r = handover_locked(job);
+    mutex_unlock(&lock);
+    return r;
 }
 
 int tty_foreground(void) { return fg_job; }

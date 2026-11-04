@@ -243,7 +243,7 @@ int task_create_kernel(const char* name, void (*entry)(void*), void* arg) {
 }
 
 int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
-                     uint32_t brk, int job) {
+                     uint32_t brk, int job, const int std[3]) {
     task_t* t = task_alloc(name);
     if (!t) { as_destroy(pd); return -ENOMEM; }
     t->user = 1;
@@ -253,6 +253,7 @@ int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
     t->brk_start = t->brk = brk;
     t->job = job;
     files_init_std(t);
+    if (std) files_inherit(t, current, std);
     return task_start(t);
 }
 
@@ -286,6 +287,24 @@ int task_kill(int id) {
     }
     irq_restore(f);
     return r;
+}
+
+int task_kill_user(int id) {
+    uint32_t f = irq_save();
+    task_t* t = task_find(id);
+    int r = !t || t->state == TASK_DEAD ? -ESRCH : !t->user ? -EPERM : task_kill(id);
+    irq_restore(f);
+    return r;
+}
+
+int task_job_mine(int job) {
+    if (job <= 0) return 0;
+    if (job == current->job) return 1;
+    uint32_t f = irq_save();
+    task_t* leader = task_find(job);
+    int ok = leader && leader->job == job && leader->parent == current->id;
+    irq_restore(f);
+    return ok;
 }
 
 void task_kill_job(int job) {
@@ -334,8 +353,8 @@ void task_wait_job(int job) {
     irq_restore(f);
 }
 
-void task_list(void) {
-    // Snapshot under cli, print afterwards: printing may block.
+void task_format(sbuf_t* sb) {
+    // Snapshot under cli, format afterwards.
     struct { int id, job, user; task_state_t state; uint32_t pages; char name[TASK_NAME_MAX]; } snap[32];
     int n = 0;
     uint32_t f = irq_save();
@@ -353,12 +372,12 @@ void task_list(void) {
         t = t->next;
     } while (t != task_list_head);
     irq_restore(f);
-    kprintf("  ID  JOB  KIND    STATE     MEM   NAME\n");
+    sbprintf(sb, "  ID  JOB  KIND    STATE     MEM   NAME\n");
     for (int i = 0; i < n; i++) {
         char mem[12] = "-";
         if (snap[i].user) snprintf(mem, sizeof(mem), "%uK", snap[i].pages * 4);
-        kprintf("%4d %4d  %-6s  %-8s %5s   %s\n", snap[i].id, snap[i].job,
-                snap[i].user ? "user" : "kernel", task_state_name(snap[i].state), mem, snap[i].name);
+        sbprintf(sb, "%4d %4d  %-6s  %-8s %5s   %s\n", snap[i].id, snap[i].job,
+                 snap[i].user ? "user" : "kernel", task_state_name(snap[i].state), mem, snap[i].name);
     }
 }
 

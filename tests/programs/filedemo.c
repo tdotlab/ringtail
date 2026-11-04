@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
         if (last < 0) break;
         held[opened++] = last;
     }
-    check(last == -EMFILE && opened == 14, "the 15th open gives EMFILE (16 slots, 2 are stdio)");
+    check(last == -EMFILE && opened == 13, "the 14th open gives EMFILE (16 slots, 3 are stdio)");
     for (int i = 0; i < opened; i++) sys_close(held[i]);
 
     for (uint32_t i = 0; i < sizeof big; i++) big[i] = (char)(i * 7 + i / 251);

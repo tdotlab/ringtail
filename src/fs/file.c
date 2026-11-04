@@ -1,5 +1,7 @@
-// Per-task file descriptors. fd 0 is console input, fd 1 console
-// output, the rest are diskfs files. All buffers passed in are user
+// Per-task file descriptors. A program starts with console input on
+// fd 0 and console output on 1 and 2, or with copies of its parent's
+// descriptors; the rest are diskfs files. Copies of a file descriptor
+// each keep their own offset. All buffers passed in are user
 // pointers; data moves through a kernel bounce buffer, so the disk
 // code never touches user memory.
 #include "fs.h"
@@ -18,6 +20,24 @@ void files_init_std(task_t* t) {
     t->fds[STDIN_FILENO].flags = O_RDONLY;
     t->fds[STDOUT_FILENO].kind = FD_CONSOLE_OUT;
     t->fds[STDOUT_FILENO].flags = O_WRONLY;
+    t->fds[STDERR_FILENO] = t->fds[STDOUT_FILENO];
+}
+
+int file_fd_ok(int fd) {
+    return fd >= 0 && fd < MAX_FDS && current->fds[fd].kind != FD_NONE;
+}
+
+static void fd_ref(const fd_t* f) {
+    if (f->kind == FD_FILE) diskfs_ref(f->node);
+}
+
+void files_inherit(task_t* child, task_t* parent, const int std[3]) {
+    for (int i = 0; i < 3; i++) {
+        const fd_t* f = &parent->fds[std[i]];
+        if (f->kind == FD_NONE) continue;  // the caller checked; keep the console
+        fd_ref(f);
+        child->fds[i] = *f;
+    }
 }
 
 void files_close_all(task_t* t) {
@@ -38,7 +58,7 @@ int file_open(const char* uname, int flags) {
     if (n < 0) return n == -ENAMETOOLONG ? -EINVAL : n;
     int acc = flags & O_ACCMODE;
     if (acc == O_ACCMODE) return -EINVAL;
-    if (flags & ~(O_ACCMODE | O_CREAT | O_TRUNC | O_APPEND)) return -EINVAL;
+    if (flags & ~(O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND)) return -EINVAL;
     if ((flags & O_TRUNC) && acc == O_RDONLY) return -EINVAL;
 
     int fd = -1;
@@ -47,9 +67,10 @@ int file_open(const char* uname, int flags) {
     if (fd < 0) return -EMFILE;
 
     int node = diskfs_lookup(name);
+    if (node >= 0 && (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) return -EEXIST;
     if (node == -ENOENT && (flags & O_CREAT)) {
         node = diskfs_create(name);
-        if (node == -EEXIST) node = diskfs_lookup(name);  // lost a race
+        if (node == -EEXIST && !(flags & O_EXCL)) node = diskfs_lookup(name);  // lost a race
     }
     if (node < 0) return node;
     diskfs_ref(node);  // before truncating, so nobody can delete it under us

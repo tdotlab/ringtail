@@ -1831,6 +1831,40 @@ Bug found on the way: SGR colours inherited brightness from the bright
 white default, so red came out light red. Bold is now its own flag.
 
 
+## v0.13.0 "Userland"
+
+The shell moved out of the kernel. It is now SHELL on the disk, an
+ordinary ring 3 program, and src/shell is gone. A kernel task, init,
+starts it, gives it the terminal, waits for its job and starts a fresh
+one when it ends (with a second's pause if it died at once, so a broken
+shell cannot spin).
+
+Syscalls the shell needed, each usable by any program:
+- `tty_fg`: lend the terminal to a job you started, and take it back
+  (with your terminal mode) once every job it was passed to is dead.
+- `wait_job`: wait until every task in a job has ended.
+- `kill`: stop a user task; kernel tasks answer EPERM.
+- `readdir`, `kinfo` (version, mem, heap, tasks, faults, mmap, disk),
+  `set_color` (refuses invisible text) and `power` (reboot, off).
+- `spawn` takes options: a new job or an existing one to join, and a
+  map for the child's descriptors 0-2. Children inherit copies of the
+  parent's standard descriptors; fd 2 is now stderr.
+- `open` understands O_EXCL.
+
+The kernel's reports (task list, fault log, memory) are built into a
+buffer with a new sbprintf instead of printed, and kinfo copies that
+buffer out to the caller. The console's backspace now crosses back over a line wrap, so the
+line editor can erase anywhere.
+
+Shell: same commands, plus `exit`, typing a program's name without
+`run`, and `echo` that keeps spacing. `sleep` became a program. The
+tokenizer already knows `|`, `<`, `>` and `>>`; they are refused until
+the next step.
+
+Tests: 97 host checks, 83 QEMU checks (new: bare program names, sleep,
+exit and respawn, kernel tasks refusing kill, the shell refusing to kill
+itself by its real id).
+
 ## Plan (in progress)
 
 Agreed order. Tick each off as it lands; delete this section when all
@@ -1839,7 +1873,7 @@ three are done.
 1. [x] Small cleanup. The desktop's Welcome icon opens WELCOME.TXT in
    Octavo. The emergency kill moves off triple Ctrl+C (which Octavo
    uses for copy) to Ctrl+backslash (one byte, so serial has it too).
-2. [ ] Shell to user space. New syscalls for what the kernel shell
+2. [x] Shell to user space. New syscalls for what the kernel shell
    did directly (run a program and wait, list the directory, hand over
    the foreground, and the rest the built-ins need); the shell becomes
    SHELL on the disk and the kernel shell goes away.

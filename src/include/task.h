@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include "fs.h"
 #include "sync.h"
+#include "lib.h"
+#include "ringtail/abi.h"
 
 typedef enum {
     TASK_READY,
@@ -18,11 +20,6 @@ typedef enum {
 
 #define TASK_NAME_MAX 32
 #define KSTACK_SIZE   (16 * 1024)
-
-// Exit status of a task that was killed (Ctrl+C, kill) or that
-// faulted. Normal exits use whatever the program returned.
-#define EXIT_KILLED  (-1)
-#define EXIT_FAULTED (-2)
 
 typedef struct task {
     uint32_t esp;          // saved kernel stack pointer while switched out
@@ -59,9 +56,12 @@ void task_init(void);
 void fpu_init(void);
 int task_create_kernel(const char* name, void (*entry)(void*), void* arg);
 // Takes ownership of pd. The task starts in ring 3 at eip with the
-// given user stack pointer; its heap starts empty at brk.
+// given user stack pointer; its heap starts empty at brk. Job 0 makes
+// it the leader of a new job. With std (three of the current task's
+// descriptors, already checked), descriptors 0-2 are copies of those;
+// without, they are the console.
 int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
-                     uint32_t brk, int job);
+                     uint32_t brk, int job, const int std[3]);
 void task_exit(int status) __attribute__((noreturn));
 
 // Must be called with interrupts disabled.
@@ -82,6 +82,7 @@ int task_sleep_ticks(uint32_t ticks);
 // Deferred kill: the target stops at its next safe point (on the
 // way back to user mode, or at a kernel task's own check).
 int task_kill(int id);
+int task_kill_user(int id);  // for programs: -EPERM for kernel tasks
 void task_kill_job(int job);
 // Wait for a task to exit and return its exit status.
 int task_join(int id);
@@ -92,7 +93,11 @@ int task_job_alive(int job);
 task_t* task_find(int id);
 int task_current_id(void);
 int task_is_user(void);
-void task_list(void);
+// The task table as text, for the tasks command.
+void task_format(sbuf_t* sb);
+// 1 if the job exists and the current task may add tasks to it or
+// hand it the terminal: its own job, or one whose leader it started.
+int task_job_mine(int job);
 const char* task_state_name(task_state_t s);
 
 #endif

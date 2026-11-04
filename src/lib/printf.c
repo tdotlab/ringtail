@@ -83,6 +83,14 @@ int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap) {
     return (int)o.len;
 }
 
+void sbprintf(sbuf_t* sb, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    size_t room = sb->len < sb->size ? sb->size - sb->len : 0;
+    sb->len += (size_t)vsnprintf(room ? sb->buf + sb->len : 0, room, fmt, ap);
+    va_end(ap);
+}
+
 int snprintf(char* buf, size_t size, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

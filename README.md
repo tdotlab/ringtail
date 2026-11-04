@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.12.0 "Octavo"**. See PROGRESS.md for the history.
+Current version: **v0.13.0 "Userland"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -64,11 +64,15 @@ and the physical frame pool are sized from the Multiboot memory map. A program's
 `sbrk`; the C runtime has malloc, calloc, realloc and free on top.
 
 Tasks: a round-robin, preemptive scheduler runs on the 100 Hz PIT. The
-kernel's own tasks (the shell, the demo tasks) and user programs are
-scheduled the same way. A program that faults is killed and the fault is
+kernel's own tasks (idle, init) and user programs are scheduled the same
+way. init starts SHELL from the disk, hands it the terminal, and starts a
+fresh one whenever it ends. A program that faults is killed and the fault is
 logged (`faults` in the shell). A kill takes effect at the next safe
 point, never in the middle of a kernel operation. The tty belongs to one
-foreground job, which receives keyboard input, Ctrl+C and Ctrl+\.
+foreground job, which receives keyboard input, Ctrl+C and Ctrl+\. A job
+can lend the terminal to a job it started and take it back once that job
+is gone, getting its own terminal mode back with it; that is how the
+shell runs a program in the foreground.
 
 Terminal: programs read the keyboard (or the serial port) through
 standard input, a line at a time by default. Raw mode hands over every
@@ -83,7 +87,12 @@ and edx, and the result in eax. A failed call returns a negative errno.
 Every user pointer is checked against the caller's page tables before the
 kernel touches it. The numbers and structures are in
 `src/include/ringtail/abi.h`, and the user-side wrappers are in
-`src/programs/lib/ulib.h`.
+`src/programs/lib/ulib.h`. A spawned program inherits copies of its
+parent's standard input, output and error (descriptors 0-2), and spawn
+can remap them or put the program in a new or existing job. The shell is
+an ordinary program: everything it shows comes through syscalls such as
+`readdir`, `kinfo` (version, memory, heap, tasks, faults, memory map,
+disk) and `kill`.
 
 Filesystem: FAT16, root directory only, DOS 8.3 names. The FAT and the
 directory are cached in memory and written back after each operation.
@@ -102,9 +111,8 @@ src/mm         heap, physical frames, paging and checked user copies
 src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
 src/lib        string and printf subset, shared by the kernel and programs
-src/shell      the kernel shell
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
-src/programs   user programs, their C runtime (lib/) and linker script
+src/programs   user programs (the shell among them), their C runtime (lib/) and linker script
 tools          mkdisk.py, the FAT16 image builder
 tests          host unit tests, the QEMU integration suite, test programs
 ```
@@ -115,12 +123,13 @@ Type `help` at the `ringtail>` prompt for the command list. The editor
 keeps the last 10 lines (Up and Down), Ctrl+C cancels a line or kills the
 foreground program, and Ctrl+L clears the screen.
 
-`run <program> [args...]` starts a program from the disk, and a trailing
-`&` runs it in the background. `tasks` lists what is running and
+`run <program> [args...]`, or just the program's name, starts a program
+from the disk, and a trailing `&` runs it in the background. `tasks` lists what is running and
 `kill <id>` stops it. `ls`, `cat`, `touch`, `write <file> <text>` and
 `rm` work on files. `mem`, `heap` and `mmap` show memory, `uptime` the
 time and timer ticks, and `faults` the fault log. `color <name>` sets
-the text colour, and `reboot` and `poweroff` do what they say.
+the text colour, and `reboot` and `poweroff` do what they say. `exit`
+ends the shell, and init starts a new one.
 
 Programs on the disk:
 
@@ -128,6 +137,8 @@ Programs on the disk:
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
 | gui | Desktop: a paged launcher for every program, and page icons for .TXT and .LEM files that open them in Octavo. Esc quits. |
+| shell | The command line. init starts it at boot and again whenever it ends. |
+| sleep | `sleep <seconds>`, up to an hour. |
 | hello | Hello world, and the starting point for your own |
 
 To write your own, copy `src/programs/hello.c`. Every `.c` file in

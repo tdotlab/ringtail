@@ -166,7 +166,14 @@ static void put_raw(char c) {
     switch (c) {
     case '\n': wrap_pending = 0; newline(); return;
     case '\r': wrap_pending = 0; col = 0; return;
-    case '\b': wrap_pending = 0; if (col > 0) col--; return;
+    case '\b':
+        // Back over the last character written, even across a line
+        // wrap, so "\b \b" erases it wherever it is. After the last
+        // column the cursor is still on that character.
+        if (wrap_pending) wrap_pending = 0;
+        else if (col > 0) col--;
+        else if (row > 0) { row--; col = COLS - 1; }
+        return;
     case '\t':
         if (wrap_pending) { wrap_pending = 0; newline(); }
         col = (col + 8) & ~7;

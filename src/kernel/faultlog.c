@@ -27,15 +27,19 @@ void faultlog_add(const char* fmt, ...) {
     irq_restore(f);
 }
 
-void faultlog_dump(void) {
-    uint32_t n = count < FAULTLOG_SIZE ? count : FAULTLOG_SIZE;
-    if (n == 0) {
-        kprintf("No faults logged.\n");
-        return;
+void faultlog_format(sbuf_t* sb) {
+    // Copy under cli so a fault logged meanwhile cannot tear an entry.
+    char copy[FAULTLOG_SIZE][FAULTLOG_LEN];
+    uint32_t f = irq_save();
+    uint32_t total = count, n = total < FAULTLOG_SIZE ? total : FAULTLOG_SIZE;
+    uint32_t when[FAULTLOG_SIZE];
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t slot = (total - n + i) % FAULTLOG_SIZE;
+        memcpy(copy[i], entries[slot], FAULTLOG_LEN);
+        when[i] = stamps[slot];
     }
-    for (uint32_t i = count - n; i < count; i++) {
-        uint32_t slot = i % FAULTLOG_SIZE;
-        uint32_t t = stamps[slot];
-        kprintf("[%u.%02u] %s\n", t / TIMER_HZ, t % TIMER_HZ, entries[slot]);
-    }
+    irq_restore(f);
+    if (n == 0) sbprintf(sb, "No faults logged.\n");
+    for (uint32_t i = 0; i < n; i++)
+        sbprintf(sb, "[%u.%02u] %s\n", when[i] / TIMER_HZ, when[i] % TIMER_HZ, copy[i]);
 }
