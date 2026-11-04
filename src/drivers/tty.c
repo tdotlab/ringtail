@@ -24,19 +24,10 @@ int input_chan;
 static char pending[LINE_MAX];
 static uint32_t pending_len, pending_pos;
 
-// With TTY_NOSIG, Ctrl+C is an ordinary key, but three presses within
-// a second still kill the job, so a stuck program cannot lock you out.
-static uint32_t ctrl_c_ticks[3];
-
-static int force_kill(void) {
-    ctrl_c_ticks[0] = ctrl_c_ticks[1];
-    ctrl_c_ticks[1] = ctrl_c_ticks[2];
-    ctrl_c_ticks[2] = timer_ticks();
-    return ctrl_c_ticks[0] && ctrl_c_ticks[2] - ctrl_c_ticks[0] < TIMER_HZ;
-}
-
 void tty_input(int c) {
-    if (c == KEY_CTRL_C && fg_job && (!(mode & TTY_NOSIG) || force_kill())) {
+    // Ctrl+C kills the foreground job unless it asked for TTY_NOSIG.
+    // Ctrl+\ always does, so a stuck raw program cannot lock you out.
+    if (fg_job && (c == KEY_CTRL_BACKSLASH || (c == KEY_CTRL_C && !(mode & TTY_NOSIG)))) {
         task_kill_job(fg_job);
         return;
     }
@@ -83,7 +74,6 @@ void tty_set_foreground(int job) {
     fg_job = job;
     mode = 0;
     pending_pos = pending_len = 0;  // half-read input belongs to the old job
-    ctrl_c_ticks[0] = ctrl_c_ticks[1] = ctrl_c_ticks[2] = 0;
     irq_restore(f);
     // A raw-mode program may have died with the screen in any state.
     if (was_raw) console_reset();

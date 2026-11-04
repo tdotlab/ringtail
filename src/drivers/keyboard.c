@@ -110,6 +110,7 @@ static void translate(uint8_t sc) {
     else if (c >= 'A' && c <= 'Z' && caps && shift) c = (char)(c - 'A' + 'a');
     if (ctrl) {
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) c = (char)(c & 0x1F);
+        else if (c == '\\' || c == '|') c = KEY_CTRL_BACKSLASH;
         else return;
     }
     if (lalt || ralt) tty_input(0x1B);  // Alt+key: ESC, then the key

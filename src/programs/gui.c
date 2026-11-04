@@ -1,5 +1,5 @@
-// A small desktop: draggable windows, a program launcher, and a
-// mouse cursor. Frames are drawn into a buffer in this program's own
+// A small desktop: a program launcher, text files that open in
+// Octavo, a draggable About window, and a mouse cursor. Frames are drawn into a buffer in this program's own
 // memory and sent to the screen in one call, so nothing flickers.
 // Esc or the Quit button leaves.
 #include "ulib.h"
@@ -64,18 +64,20 @@ static int inside(int mx, int my, int x, int y, int w, int h) {
 // ---- Desktop state ----
 
 typedef struct {
-    int x, y, w, h, open, clicks;
-    const char* title;
+    int x, y, w, h, open;
 } window_t;
 
-static window_t wins[2] = {
-    { 80, 50, 180, 120, 0, 0, "Welcome" },
-    { 100, 70, 170, 100, 0, 0, "About" },
-};
-static int zorder[2] = { 0, 1 };  // back to front
-static int dragging = -1, drag_dx, drag_dy;
+static window_t about = { 100, 60, 170, 100, 0 };
+static int dragging, drag_dx, drag_dy;
 
-static char progs[MAX_PROGS][16];
+// Icons: text files first, then programs.
+typedef struct {
+    char name[16];  // the file name on disk
+    char label[9];  // what the icon says underneath: the name without its extension
+    char ext[4];    // empty for a program
+} icon_t;
+
+static icon_t progs[MAX_PROGS];
 static int prog_count, page;
 
 static int pages(void) { return (prog_count + PER_PAGE - 1) / PER_PAGE; }
@@ -85,32 +87,57 @@ static void prog_xy(int slot, int* x, int* y) {
     *y = 26 + (slot % 3) * 60;
 }
 
-static void load_programs(void) {
-    char name[16];
-    for (int i = 0; prog_count < MAX_PROGS && sys_list(i, name, sizeof name) == 0; i++)
-        if (!strchr(name, '.') && strcmp(name, "GUI") != 0) strlcpy(progs[prog_count++], name, 16);
+// Text files Octavo opens from the desktop.
+static int is_document(const char* ext) {
+    return strcmp(ext, "TXT") == 0 || strcmp(ext, "LEM") == 0;
 }
 
-static void draw_window(int idx) {
-    window_t* w = &wins[idx];
+static void add_icon(const char* name) {
+    icon_t* ic = &progs[prog_count++];
+    strlcpy(ic->name, name, sizeof ic->name);
+    const char* dot = strchr(name, '.');
+    size_t base = dot ? (size_t)(dot - name) : strlen(name);
+    if (base >= sizeof ic->label) base = sizeof ic->label - 1;
+    memcpy(ic->label, name, base);
+    ic->label[base] = 0;
+    strlcpy(ic->ext, dot ? dot + 1 : "", sizeof ic->ext);
+}
+
+static void load_programs(void) {
+    char name[16];
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; prog_count < MAX_PROGS && sys_list(i, name, sizeof name) == 0; i++) {
+            const char* dot = strchr(name, '.');
+            if (pass == 0 && dot && is_document(dot + 1)) add_icon(name);
+            if (pass == 1 && !dot && strcmp(name, "GUI") != 0) add_icon(name);
+        }
+    }
+}
+
+static void draw_icon(const icon_t* ic, int x, int y) {
+    if (ic->ext[0]) {
+        // A page with a folded corner, and the file type on it.
+        rect(x + 8, y, 34, 35, 15);
+        rect(x + 34, y, 8, 8, 1);
+        rect(x + 34, y + 8, 8, 1, 8);
+        rect(x + 33, y, 1, 9, 8);
+        text(x + 12, y + 10, ic->ext, 8);
+    } else {
+        rect(x, y, 50, 35, 10);
+    }
+    text(x, y + 38, ic->label, 15);
+}
+
+static void draw_about(void) {
+    window_t* w = &about;
     rect(w->x, w->y + BAR_H, w->w, w->h - BAR_H, 7);
     rect(w->x, w->y, w->w, BAR_H, 9);
-    text(w->x + 5, w->y + 2, w->title, 15);
+    text(w->x + 5, w->y + 2, "About", 15);
     rect(w->x + w->w - 20, w->y + 2, 18, 16, 4);
     text(w->x + w->w - 14, w->y + 2, "X", 15);
-    if (idx == 0) {
-        char buf[32];
-        text(w->x + 10, w->y + 30, "Welcome to RingTail!", 0);
-        text(w->x + 10, w->y + 50, "Click the button:", 0);
-        rect(w->x + 10, w->y + 70, 90, 20, 1);
-        text(w->x + 19, w->y + 72, "Click me", 15);
-        snprintf(buf, sizeof buf, "Clicked: %d", w->clicks);
-        text(w->x + 10, w->y + 95, buf, 0);
-    } else {
-        text(w->x + 10, w->y + 30, "RingTail v0.12", 0);
-        text(w->x + 10, w->y + 50, "Bare-metal x86 OS", 0);
-        text(w->x + 10, w->y + 70, "C + NASM, no libc", 0);
-    }
+    text(w->x + 10, w->y + 30, "RingTail v0.12", 0);
+    text(w->x + 10, w->y + 50, "Bare-metal x86 OS", 0);
+    text(w->x + 10, w->y + 70, "C + NASM, no libc", 0);
 }
 
 static void draw(const mouse_state_t* m) {
@@ -131,37 +158,35 @@ static void draw(const mouse_state_t* m) {
     rect(QUIT_X, 2, QUIT_W, 16, 4);
     text(QUIT_X + 4, 2, "Quit", 15);
 
-    rect(10, 26, 50, 35, 14);
-    text(10, 64, "Welcome", 15);
-    rect(10, 86, 50, 35, 11);
-    text(10, 124, "About", 15);
+    rect(10, 26, 50, 35, 11);
+    text(10, 64, "About", 15);
     for (int s = 0; s < PER_PAGE && page * PER_PAGE + s < prog_count; s++) {
         int x, y;
         prog_xy(s, &x, &y);
-        rect(x, y, 50, 35, 10);
-        text(x, y + 38, progs[page * PER_PAGE + s], 15);
+        draw_icon(&progs[page * PER_PAGE + s], x, y);
     }
-    for (int z = 0; z < 2; z++)
-        if (wins[zorder[z]].open) draw_window(zorder[z]);
+    if (about.open) draw_about();
     cursor(m->x, m->y);
     sys_gfx_blit(fb);
 }
 
-static void to_front(int idx) {
-    zorder[1] = idx;
-    zorder[0] = 1 - idx;
-}
-
-// Leave graphics, run a program in text mode, wait for it, and come
-// back when the user presses Enter. Returns 0 to keep going.
-static int launch(const char* name) {
+// Leave graphics, run a program in text mode (a text file runs
+// Octavo on it), wait for it, and come back. After a program the user
+// presses Enter first, to read what it printed; after a file that
+// Octavo closed normally there is nothing to read. Returns 0 to keep
+// going.
+static int launch(const icon_t* ic) {
     sys_gfx_end();
-    int id = sys_spawn(name);
+    const char* prog = ic->ext[0] ? "OCTAVO" : ic->name;
+    const char* argv[] = { prog, ic->name, 0 };
+    if (!ic->ext[0]) argv[1] = 0;
+    int id = sys_spawn_args(prog, argv);
     if (id < 0) {
-        printf("gui: cannot start %s: %s\n", name, strerror(id));
+        printf("gui: cannot start %s: %s\n", prog, strerror(id));
     } else {
         int status = sys_join(id);
-        printf("[%s exited with status %d]\n", name, status);
+        if (ic->ext[0] && status == 0) return sys_gfx_begin();
+        printf("[%s exited with status %d]\n", prog, status);
     }
     print("Press Enter to return to the desktop.");
     char line[8];
@@ -182,33 +207,24 @@ static int click(int mx, int my) {
         page = (page + 1) % pages();
         return 0;
     }
-    // Windows front to back, so the front one gets the click.
-    for (int z = 1; z >= 0; z--) {
-        int idx = zorder[z];
-        window_t* w = &wins[idx];
-        if (!w->open || !inside(mx, my, w->x, w->y, w->w, w->h)) continue;
+    window_t* w = &about;
+    if (w->open && inside(mx, my, w->x, w->y, w->w, w->h)) {
         if (inside(mx, my, w->x + w->w - 20, w->y + 2, 18, 16)) {
             w->open = 0;
-            return 0;
-        }
-        to_front(idx);
-        if (my < w->y + BAR_H) {
-            dragging = idx;
+        } else if (my < w->y + BAR_H) {
+            dragging = 1;
             drag_dx = mx - w->x;
             drag_dy = my - w->y;
-        } else if (idx == 0 && inside(mx, my, w->x + 10, w->y + 70, 90, 20)) {
-            w->clicks++;
         }
         return 0;
     }
-    if (inside(mx, my, 10, 26, 63, 55)) { wins[0].open = 1; to_front(0); return 0; }
-    if (inside(mx, my, 10, 86, 50, 55)) { wins[1].open = 1; to_front(1); return 0; }
+    if (inside(mx, my, 10, 26, 50, 55)) { w->open = 1; return 0; }
     for (int s = 0; s < PER_PAGE && page * PER_PAGE + s < prog_count; s++) {
         int x, y;
         prog_xy(s, &x, &y);
-        const char* name = progs[page * PER_PAGE + s];
-        if (inside(mx, my, x, y, MAX(50, text_width(name)), 55))
-            return launch(name) != 0;
+        const icon_t* ic = &progs[page * PER_PAGE + s];
+        if (inside(mx, my, x, y, MAX(50, text_width(ic->label)), 55))
+            return launch(ic) != 0;
     }
     return 0;
 }
@@ -237,13 +253,13 @@ int main(int argc, char** argv) {
         sys_mouse_state(&m);
         int down = (m.buttons & 1) && !(prev.buttons & 1);
         int up = !(m.buttons & 1) && (prev.buttons & 1);
-        if (up) dragging = -1;
-        if (dragging >= 0) {
-            window_t* w = &wins[dragging];
+        if (up) dragging = 0;
+        if (dragging) {
+            window_t* w = &about;
             w->x = MAX(0, MIN(W - w->w, m.x - drag_dx));
             w->y = MAX(BAR_H, MIN(H - w->h, m.y - drag_dy));
         }
-        if (down && dragging < 0 && click(m.x, m.y)) quit = 1;
+        if (down && !dragging && click(m.x, m.y)) quit = 1;
         if (quit) break;
         draw(&m);
         prev = m;

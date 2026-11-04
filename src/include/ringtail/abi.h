@@ -47,9 +47,9 @@
 // they arrive, without echo or line editing; Backspace reads as 0x7F
 // and the navigation keys as xterm escape sequences (ESC [ A,
 // ESC [ 1 ; 5 C for Ctrl+Right, ESC [ 3 ~ for Delete). TTY_NOSIG:
-// Ctrl+C is delivered as byte 3 instead of killing the job; pressing
-// it three times within a second still kills it. The mode returns
-// to 0 (cooked) when the program's job leaves the foreground.
+// Ctrl+C is delivered as byte 3 instead of killing the job.
+// Ctrl+backslash kills the job in any mode and is never delivered.
+// The mode returns to 0 (cooked) when the job leaves the foreground.
 #define TTY_RAW   1
 #define TTY_NOSIG 2
 

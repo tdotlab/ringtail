@@ -1836,9 +1836,9 @@ white default, so red came out light red. Bold is now its own flag.
 Agreed order. Tick each off as it lands; delete this section when all
 three are done.
 
-1. [ ] Small cleanup. The desktop's Welcome icon opens WELCOME.TXT in
+1. [x] Small cleanup. The desktop's Welcome icon opens WELCOME.TXT in
    Octavo. The emergency kill moves off triple Ctrl+C (which Octavo
-   uses for copy) to Ctrl+Alt+Backspace.
+   uses for copy) to Ctrl+backslash (one byte, so serial has it too).
 2. [ ] Shell to user space. New syscalls for what the kernel shell
    did directly (run a program and wait, list the directory, hand over
    the foreground, and the rest the built-ins need); the shell becomes

@@ -68,14 +68,13 @@ kernel's own tasks (the shell, the demo tasks) and user programs are
 scheduled the same way. A program that faults is killed and the fault is
 logged (`faults` in the shell). A kill takes effect at the next safe
 point, never in the middle of a kernel operation. The tty belongs to one
-foreground job, which receives keyboard input and Ctrl+C.
+foreground job, which receives keyboard input, Ctrl+C and Ctrl+\.
 
 Terminal: programs read the keyboard (or the serial port) through
 standard input, a line at a time by default. Raw mode hands over every
 key as it comes, with arrows, Home/End, PgUp/PgDn, Delete and F1-F12 as
 xterm escape sequences and Alt as an ESC prefix; with TTY_NOSIG, Ctrl+C
-is an ordinary byte, though three presses within a second still kill
-the job. The console understands the common ANSI escapes for cursor
+is an ordinary byte, and Ctrl+\ is the kill switch that always works. The console understands the common ANSI escapes for cursor
 motion, erasing, colours and hiding the cursor, on screen and on serial
 alike.
 
@@ -128,7 +127,7 @@ Programs on the disk:
 | Program | What it does |
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
-| gui | Desktop: draggable windows and a paged launcher for every program. Esc quits. |
+| gui | Desktop: a paged launcher for every program, and page icons for .TXT and .LEM files that open them in Octavo. Esc quits. |
 | hello | Hello world, and the starting point for your own |
 
 To write your own, copy `src/programs/hello.c`. Every `.c` file in
@@ -159,9 +158,7 @@ is Backspace in a terminal, and Save as hylic is F12 because Ctrl+Shift+S
 arrives as Ctrl+S. New documents are saved as `.LEM`, `.lemur` squeezed
 into 8.3. Files keep their line endings (LF or CR LF). Bytes are shown
 one column each, so it is an ASCII editor; there is no mouse, and files
-are limited to 1 MB. Three Ctrl+C presses within a second are the
-terminal's kill switch, so copying three times in a hurry ends the
-editor.
+are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 
 ## Limits
 

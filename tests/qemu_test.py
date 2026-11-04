@@ -311,10 +311,12 @@ def tests(m, t):
     m.send("\x03")
     out = m.expect(rb"keys: [^\n]*\n", 5)
     t.check("with TTY_NOSIG, Ctrl+C is a byte", "keys: 03" in out, out)
-    time.sleep(1.3)
     m.send("\x03\x03\x03")
+    out = m.expect(rb"keys: [^\n]*\n", 5)
+    t.check("three quick Ctrl+C are just bytes too", "03" in out and "^C" not in out, out)
+    m.send("\x1c")
     out = m.expect(re.escape(PROMPT), 5)
-    t.check("three quick Ctrl+C still kill it", "^C" in out, out)
+    t.check("Ctrl+\\ kills a TTY_NOSIG program", "^C" in out, out)
 
     # ANSI escapes position and colour text on the VGA screen.
     m.run("run ansi")
@@ -395,6 +397,24 @@ def tests(m, t):
         if size == (640, 400):
             break
     t.check("gui switches to mode 13h graphics", size == (640, 400), f"screen is {size}")
+    # Click the WELCOME page icon (the first slot, at 80,26): the pointer
+    # is pinned to the corner first, since mouse moves are relative.
+    m.monitor_cmd("mouse_move -400 -400")
+    m.monitor_cmd("mouse_move 95 40")
+    time.sleep(0.3)
+    m.monitor_cmd("mouse_button 1")
+    time.sleep(0.2)
+    m.monitor_cmd("mouse_button 0")
+    row = m.wait_row(0, "Welcome to RingTail.")
+    t.check("a text file on the desktop opens in Octavo", row.startswith("Welcome to RingTail."), repr(row))
+    m.send("\x11")  # Ctrl+Q, nothing changed so no question
+    size = None
+    for _ in range(30):
+        time.sleep(0.2)
+        size = m.screen_size()
+        if size == (640, 400):
+            break
+    t.check("closing Octavo goes straight back to the desktop", size == (640, 400), f"screen is {size}")
     m.monitor_cmd("sendkey esc")
     m.expect(re.escape(PROMPT), 5)
     t.check("Esc leaves the gui and text mode returns", m.screen_size() == (720, 400))

@@ -8,6 +8,7 @@
 #define KEY_CTRL_C 0x03
 #define KEY_CTRL_D 0x04
 #define KEY_CTRL_L 0x0C
+#define KEY_CTRL_BACKSLASH 0x1C  // the kill switch, even for raw programs
 #define KEY_CTRL_W 0x17  // what Ctrl+Backspace sends: delete a word
 
 // Navigation and function keys travel through the queue as single
