@@ -103,22 +103,31 @@ int tty_set_mode(int m) {
 }
 
 // The bytes a terminal would send for a key, as xterm does it:
-// ESC [ A for Up, ESC [ 1 ; 5 D for Ctrl+Left, ESC [ 3 ~ for Delete.
+// ESC [ A for Up, ESC [ 1 ; 5 D for Ctrl+Left, ESC [ 3 ~ for Delete,
+// ESC O R for F3 and ESC [ 1 ; 2 R for Shift+F3.
 static uint32_t encode_key(int c, char out[8]) {
     if (c == '\b') { out[0] = 0x7F; return 1; }
     if (!KEY_IS_NAV(c)) { out[0] = (char)c; return 1; }
     static const char final[] = { 'A', 'B', 'C', 'D', 'H', 'F' };
-    static const char tilde[] = { 0, 0, 0, 0, 0, 0, '2', '3', '5', '6' };
+    static const uint8_t tilde[] = { 0, 0, 0, 0, 0, 0, 2, 3, 5, 6,
+                                     0, 0, 0, 0, 15, 17, 18, 19, 20, 21, 23, 24 };
     int key = KEY_NAV_KEY(c), mods = KEY_NAV_MODS(c);
     int xmod = 1 + ((mods & KEY_MOD_SHIFT) ? 1 : 0) + ((mods & KEY_MOD_CTRL) ? 4 : 0);
     uint32_t n = 0;
     out[n++] = 0x1B;
-    out[n++] = '[';
-    if (key < NAV_INSERT) {
+    if (key >= NAV_F1 && key < NAV_F1 + 4) {
+        // F1-F4: ESC O P..S, or ESC [ 1 ; mod P..S with modifiers
+        if (mods) { out[n++] = '['; out[n++] = '1'; out[n++] = ';'; out[n++] = (char)('0' + xmod); }
+        else out[n++] = 'O';
+        out[n++] = (char)('P' + key - NAV_F1);
+    } else if (key < NAV_INSERT) {
+        out[n++] = '[';
         if (mods) { out[n++] = '1'; out[n++] = ';'; out[n++] = (char)('0' + xmod); }
         out[n++] = final[key];
     } else {
-        out[n++] = tilde[key];
+        out[n++] = '[';
+        if (tilde[key] >= 10) out[n++] = (char)('0' + tilde[key] / 10);
+        out[n++] = (char)('0' + tilde[key] % 10);
         if (mods) { out[n++] = ';'; out[n++] = (char)('0' + xmod); }
         out[n++] = '~';
     }

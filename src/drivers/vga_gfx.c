@@ -184,6 +184,11 @@ static void leave_graphics(void) {
 
 void gfx_init_font(void) {
     load_font();
+    // Attribute bit 7 means a bright background, not blinking text, so
+    // ANSI's bright and reversed colours look right. Graphics mode
+    // saves and restores this along with the other text registers.
+    ac_write(0x10, ac_read(0x10) & ~0x08);
+    ac_enable_palette();
 }
 
 // ---- Ownership ----

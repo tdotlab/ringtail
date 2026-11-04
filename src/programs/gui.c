@@ -107,7 +107,7 @@ static void draw_window(int idx) {
         snprintf(buf, sizeof buf, "Clicked: %d", w->clicks);
         text(w->x + 10, w->y + 95, buf, 0);
     } else {
-        text(w->x + 10, w->y + 30, "RingTail v0.11", 0);
+        text(w->x + 10, w->y + 30, "RingTail v0.12", 0);
         text(w->x + 10, w->y + 50, "Bare-metal x86 OS", 0);
         text(w->x + 10, w->y + 70, "C + NASM, no libc", 0);
     }

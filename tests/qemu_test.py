@@ -12,6 +12,7 @@ that other systems can read.
 import argparse
 import os
 import re
+import select
 import shutil
 import socket
 import subprocess
@@ -63,6 +64,9 @@ class Machine:
         self.log += data
         return True
 
+    def _pending(self):
+        return bool(select.select([self.serial], [], [], 0)[0])
+
     def expect(self, pattern, timeout=10):
         """Wait for a regex (bytes) in the output; return everything up to
         and including the match, consuming it."""
@@ -92,19 +96,33 @@ class Machine:
         return out[first_nl + 1:] if first_nl >= 0 else ""
 
     def monitor_cmd(self, cmd):
-        """Run a monitor command and return what the monitor printed."""
-        self.monitor.sendall((cmd + "\n").encode())
-        time.sleep(0.15)
-        self.monitor.settimeout(0.2)
-        out = b""
+        """Run a monitor command and return what the monitor printed,
+        reading until its next "(qemu)" prompt."""
+        # Keep the serial port drained, or the guest stalls writing to it.
+        while self._pending() and self._fill(0.01):
+            pass
+        self.monitor.settimeout(0.05)
         try:
-            while True:
-                data = self.monitor.recv(65536)
-                if not data:
-                    break
-                out += data
+            while self.monitor.recv(65536):  # whatever is left over
+                pass
         except socket.timeout:
             pass
+        self.monitor.sendall((cmd + "\n").encode())
+        out = b""
+        end = time.time() + 5
+        self.monitor.settimeout(0.2)
+        while time.time() < end:
+            try:
+                data = self.monitor.recv(65536)
+            except socket.timeout:
+                continue
+            if not data:
+                break
+            out += data
+            # The echo of the command comes first, then output, then the prompt.
+            tail = out.split(b"\n", 1)
+            if len(tail) == 2 and b"(qemu)" in tail[1]:
+                break
         return out.decode(errors="replace")
 
     def screen_row(self, row):
@@ -125,6 +143,15 @@ class Machine:
         with open(path, "rb") as f:
             header = f.read(20).split()
         return int(header[1]), int(header[2])
+
+    def wait_row(self, row, text, timeout=5):
+        """Wait until a screen row contains text; return the row."""
+        end = time.time() + timeout
+        while True:
+            line, _ = self.screen_row(row)
+            if text in line or time.time() > end:
+                return line
+            time.sleep(0.1)
 
     def close(self):
         try:
@@ -152,7 +179,7 @@ class Runner:
 
 def tests(m, t):
     boot = m.expect(re.escape(PROMPT), 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.11.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.12.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -299,6 +326,58 @@ def tests(m, t):
     t.check("cursor back and erase to end of line", row6.rstrip() == "abcX", repr(row6))
     row7, _ = m.screen_row(7)
     t.check("save and restore the cursor", row7.rstrip() == "!AVE", repr(row7))
+
+    # Octavo: type, save, undo, replace, quit.
+    m.send("run octavo notes.txt\r")
+    t.check("octavo starts on a new file", "notes.txt" in m.wait_row(24, "notes.txt"))
+    m.send("hello world\rsecond line")
+    row0 = m.wait_row(0, "hello world")
+    t.check("octavo shows typed text", row0.rstrip() == "hello world", repr(row0))
+    t.check("and the caret readout follows", "Ln 2, Col 12" in m.wait_row(24, "Ln 2, Col 12"))
+    m.send("\x13")
+    t.check("Ctrl+S saves", "Saved notes.txt" in m.wait_row(23, "Saved"))
+    m.send("\x1b[1;5F extra")  # Ctrl+End, then type
+    m.wait_row(1, "extra")
+    m.send("\x1a")  # Ctrl+Z undoes the whole typed run
+    row1 = m.wait_row(1, "second line")
+    for _ in range(20):
+        if "extra" not in row1:
+            break
+        time.sleep(0.1)
+        row1, _ = m.screen_row(1)
+    t.check("Ctrl+Z undoes a typed run in one step", row1.rstrip() == "second line", repr(row1))
+    m.send("\x12world\rthere\r")  # Ctrl+R: find, replace with
+    m.wait_row(23, "Replace this one")
+    m.send("a")
+    t.check("replace all reports the count", "1 occurrence matched." in m.wait_row(23, "occurrence"))
+    m.send("\x01\x03\x1b[1;5F\r\x16")  # select all, copy, Ctrl+End, Enter, paste
+    row3 = m.wait_row(3, "second line")
+    row2, _ = m.screen_row(2)
+    t.check("copy and paste", row2.rstrip() == "hello there" and row3.rstrip() == "second line",
+            repr(row2 + row3))
+    m.send("\x11")
+    t.check("quitting with changes asks first", "Save changes before closing" in m.wait_row(23, "Save changes"))
+    m.send("y")
+    out = m.expect(re.escape(PROMPT), 5)
+    out = m.run("cat notes.txt")
+    t.check("the saved file has every edit", out.replace("\r", "") ==
+            "hello there\nsecond line\nhello there\nsecond line\n" or
+            "hello there\nsecond line\nhello there\nsecond line" in out, repr(out))
+
+    m.send("run octavo\r")
+    m.wait_row(24, "Untitled")
+    m.send("lemur " * 20)
+    row1 = m.wait_row(1, "lemur")
+    t.check("long lines wrap at a word", m.screen_row(0)[0].rstrip().endswith("lemur") and
+            row1.startswith("lemur"), repr(row1))
+    m.send("\x13")
+    m.wait_row(23, "Save as")
+    m.send("zoo\r")
+    t.check("an untitled document is saved as a lemur", "Saved zoo.LEM" in m.wait_row(23, "Saved"))
+    m.send("\x11")
+    m.expect(re.escape(PROMPT), 5)
+    out = m.run("cat zoo.lem")
+    t.check("and the file is there", out.count("lemur") == 20, repr(out))
 
     # History recall with the Up arrow.
     m.run("echo first")

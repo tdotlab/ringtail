@@ -1798,3 +1798,35 @@ file behind when creating a new file failed with ENOSPC. Fixed.
 
 Known limits: root directory only, 8.3 names, no SSE in programs, no
 pipes or signals, no SMP, VGA text and mode 13h only.
+
+## v0.12.0 "Octavo"
+
+Octavo, the editor: a port of the Win32 Octavo to the terminal, keeping
+its design (one buffer with caret and anchor offsets, soft word wrap
+with hanging blanks, snapshot undo with typed runs grouped, word motion
+by character class, find and replace that match case by default, the
+two-line footer). It redraws by diffing a back buffer against what is on
+screen, so a keystroke sends a few dozen bytes.
+
+Kernel pieces it needed, each usable by any program:
+- `sbrk` and a user malloc/calloc/realloc/free (first fit, both-way
+  coalescing, bad frees end the program).
+- Raw terminal mode with xterm key sequences, F1-F12 and Alt, plus
+  TTY_NOSIG with a triple-Ctrl+C escape hatch. The mode resets when the
+  foreground changes.
+- ANSI escapes in the console (cursor motion, erase, save/restore, SGR
+  colours, cursor hide/show), with blink turned off so bright
+  backgrounds work.
+- `save`: replace a file whole or not at all.
+- `spawn` with an argument list.
+
+Cleanup: the test and demo programs moved to tests/programs and only go
+on the test disk. The shell lost ps, spawn, malloc, free, tick, colors,
+mouse and gfx, and the kernel code only they used.
+
+Tests: 97 host checks, 72 QEMU checks, including heap, raw keys, ANSI
+output read back from VGA memory, and a scripted Octavo session.
+
+Bug found on the way: SGR colours inherited brightness from the bright
+white default, so red came out light red. Bold is now its own flag.
+

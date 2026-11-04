@@ -35,6 +35,7 @@ static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); 
 // argv[0] is conventionally the program name; the list ends with NULL.
 static inline int sys_spawn_args(const char* name, const char* const* argv) { return SC2(SYS_SPAWN, name, argv); }
 static inline int sys_tty_mode(int mode) { return SC1(SYS_TTY_MODE, mode); }
+static inline int sys_save(const char* name, const void* buf, uint32_t len) { return SC3(SYS_SAVE, name, buf, len); }
 static inline int sys_join(int id) { return SC1(SYS_JOIN, id); }
 static inline int sys_getpid(void) { return SC0(SYS_GETPID); }
 static inline uint32_t sys_ticks(void) { return (uint32_t)SC0(SYS_TICKS); }

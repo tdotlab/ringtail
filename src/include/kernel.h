@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.11.0"
-#define RINGTAIL_CODENAME "Hardened"
+#define RINGTAIL_VERSION "0.12.0"
+#define RINGTAIL_CODENAME "Octavo"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08

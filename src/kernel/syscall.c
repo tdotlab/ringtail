@@ -76,6 +76,23 @@ static int sys_delete(uint32_t uname, uint32_t b, uint32_t c) {
     return n < 0 ? n : diskfs_unlink(name);
 }
 
+// Replace a whole file in one step: the new contents go to fresh
+// clusters and the directory entry switches only once they are all
+// written, so a full disk or an I/O error leaves the old file intact.
+#define SAVE_MAX (1024u * 1024u)
+static int sys_save(uint32_t uname, uint32_t ubuf, uint32_t len) {
+    char name[FS_NAME_MAX];
+    int n = copy_name(name, uname);
+    if (n < 0) return n;
+    if (len > SAVE_MAX) return -EFBIG;
+    if (user_range_ok(ubuf, len, 0)) return -EFAULT;
+    void* buf = kmalloc(len ? len : 1);
+    if (!buf) return -ENOMEM;
+    int r = copy_from_user(buf, (const void*)ubuf, len) ? -EFAULT : diskfs_write_file(name, buf, len);
+    kfree(buf);
+    return r;
+}
+
 // ---- Graphics: only the task that owns the display may draw ----
 
 static int is_owner(void) { return gfx_owner() == current->id; }
@@ -310,6 +327,7 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_GFX_FONT] = sys_gfx_font,
     [SYS_SBRK] = sys_sbrk,
     [SYS_TTY_MODE] = sys_tty_mode,
+    [SYS_SAVE] = sys_save,
 };
 
 void syscall_handle(regs_t* r) {

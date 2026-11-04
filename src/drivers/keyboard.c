@@ -30,6 +30,7 @@ static const char shift_map[128] = {
 #define SC_RSHIFT 0x36
 #define SC_CAPS   0x3A
 #define SC_BACKSPACE 0x0E
+#define SC_ALT    0x38
 
 // Navigation keys. The arrows answer with or without the E0 prefix
 // (the keypad sends them without, while Num Lock is off, which is
@@ -42,7 +43,12 @@ static int nav_key(uint8_t code, int ext) {
     case 0x4B: return NAV_LEFT;
     case 0x4D: return NAV_RIGHT;
     }
-    if (!ext) return -1;
+    if (!ext) {
+        if (code >= 0x3B && code <= 0x44) return NAV_F1 + (code - 0x3B);  // F1-F10
+        if (code == 0x57) return NAV_F1 + 10;
+        if (code == 0x58) return NAV_F1 + 11;
+        return -1;
+    }
     switch (code) {
     case 0x47: return NAV_HOME;
     case 0x4F: return NAV_END;
@@ -58,7 +64,7 @@ static int nav_key(uint8_t code, int ext) {
 static volatile uint8_t raw_queue[RAW_SIZE];
 static volatile uint32_t raw_head, raw_tail;
 
-static int ext, lshift, rshift, lctrl, rctrl, caps;
+static int ext, lshift, rshift, lctrl, rctrl, lalt, ralt, caps;
 
 static void translate(uint8_t sc) {
     if (sc == 0xE0) { ext = 1; return; }
@@ -69,6 +75,10 @@ static void translate(uint8_t sc) {
 
     if (code == SC_LCTRL) {
         if (was_ext) rctrl = !release; else lctrl = !release;
+        return;
+    }
+    if (code == SC_ALT) {
+        if (was_ext) ralt = !release; else lalt = !release;
         return;
     }
     if (code == SC_LSHIFT || code == SC_RSHIFT) {
@@ -102,6 +112,7 @@ static void translate(uint8_t sc) {
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) c = (char)(c & 0x1F);
         else return;
     }
+    if (lalt || ralt) tty_input(0x1B);  // Alt+key: ESC, then the key
     tty_input((uint8_t)c);
 }
 

@@ -36,7 +36,8 @@
 #define SYS_GFX_FONT    26  // (uint8_t* 4096 bytes)   -> 0, 256 glyphs of 8x16, one byte per row
 #define SYS_SBRK        27  // (increment)             -> old program break, or -ENOMEM
 #define SYS_TTY_MODE    28  // (TTY_* flags)           -> previous flags; foreground only
-#define NUM_SYSCALLS    29
+#define SYS_SAVE        29  // (name, buf, len)        -> 0; replaces the file whole or not at all (len <= 1 MB)
+#define NUM_SYSCALLS    30
 
 // Values from -4095 to -1 are errors. Anything else is a result,
 // including addresses above 2 GB that look negative as an int.

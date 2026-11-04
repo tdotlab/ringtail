@@ -15,7 +15,8 @@ static int present;
 int serial_present(void) { return present; }
 
 // Escape sequences from the terminal: CSI (ESC [ params final) and
-// SS3 (ESC O final), as xterm sends them for the navigation keys,
+// SS3 (ESC O final), as xterm sends them for the navigation and
+// function keys,
 // with an optional modifier parameter (2 Shift, 5 Ctrl, 6 both).
 static int nav_mods(int p) {
     if (p < 2) return 0;
@@ -32,6 +33,7 @@ static void csi_key(int final, const int* params, int n) {
     case 'D': nav = NAV_LEFT; break;
     case 'H': nav = NAV_HOME; break;
     case 'F': nav = NAV_END; break;
+    case 'P': case 'Q': case 'R': case 'S': nav = NAV_F1 + (final - 'P'); break;
     case '~':
         switch (n ? params[0] : 0) {
         case 1: case 7: nav = NAV_HOME; break;
@@ -40,6 +42,12 @@ static void csi_key(int final, const int* params, int n) {
         case 3: nav = NAV_DELETE; break;
         case 5: nav = NAV_PGUP; break;
         case 6: nav = NAV_PGDN; break;
+        case 11: case 12: case 13: case 14: case 15:
+            nav = NAV_F1 + params[0] - 11; break;
+        case 17: case 18: case 19: case 20: case 21:
+            nav = NAV_F1 + 5 + params[0] - 17; break;
+        case 23: case 24:
+            nav = NAV_F1 + 10 + params[0] - 23; break;
         }
         break;
     }
@@ -56,7 +64,7 @@ static void serial_irq(void) {
             if (c == '[') { state = 2; nparams = 0; params[0] = 0; continue; }
             if (c == 'O') { state = 3; continue; }
             state = 0;
-            tty_input(0x1B);  // a lone Escape, then this byte as usual
+            tty_input(0x1B);  // a lone Escape (or Alt), then this byte as usual
         } else if (state == 2) {
             if (c >= '0' && c <= '9') {
                 if (nparams == 0) nparams = 1;

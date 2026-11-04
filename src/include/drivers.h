@@ -51,6 +51,6 @@ void gfx_rect(int x, int y, int w, int h, uint8_t color, int filled);
 void gfx_text(int x, int y, const char* s, uint8_t color);
 void gfx_blit(const uint8_t* pixels);
 const uint8_t* gfx_font(void);  // 256 glyphs x 16 rows
-void gfx_init_font(void);       // read the BIOS font, while still in text mode
+void gfx_init_font(void);       // read the BIOS font and turn off blink, while still in text mode
 
 #endif

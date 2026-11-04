@@ -10,11 +10,14 @@
 #define KEY_CTRL_L 0x0C
 #define KEY_CTRL_W 0x17  // what Ctrl+Backspace sends: delete a word
 
-// Navigation keys travel through the queue as single bytes from 0x80
-// up: the key in bits 2-6, the Shift and Ctrl modifiers in bits 0-1.
-// Programs in raw mode see them as the usual xterm escape sequences.
+// Navigation and function keys travel through the queue as single
+// bytes from 0x80 up: the key in bits 2-6, the Shift and Ctrl
+// modifiers in bits 0-1. Programs in raw mode see them as the usual
+// xterm escape sequences. Alt+key arrives as ESC followed by the key,
+// as xterm sends it.
 enum { NAV_UP, NAV_DOWN, NAV_RIGHT, NAV_LEFT, NAV_HOME, NAV_END,
-       NAV_INSERT, NAV_DELETE, NAV_PGUP, NAV_PGDN, NAV_COUNT };
+       NAV_INSERT, NAV_DELETE, NAV_PGUP, NAV_PGDN,
+       NAV_F1, NAV_F12 = NAV_F1 + 11, NAV_COUNT };
 #define KEY_MOD_SHIFT 1
 #define KEY_MOD_CTRL  2
 #define KEY_NAV(k, mods) (0x80 | ((k) << 2) | (mods))
