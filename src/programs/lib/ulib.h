@@ -31,7 +31,10 @@ static inline int sys_close(int fd) { return SC1(SYS_CLOSE, fd); }
 static inline int sys_delete(const char* name) { return SC1(SYS_DELETE, name); }
 static inline int sys_seek(int fd, int32_t off, int whence) { return SC3(SYS_SEEK, fd, off, whence); }
 static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS_LIST, index, buf, size); }
-static inline int sys_spawn(const char* name) { return SC1(SYS_SPAWN, name); }
+static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }
+// argv[0] is conventionally the program name; the list ends with NULL.
+static inline int sys_spawn_args(const char* name, const char* const* argv) { return SC2(SYS_SPAWN, name, argv); }
+static inline int sys_tty_mode(int mode) { return SC1(SYS_TTY_MODE, mode); }
 static inline int sys_join(int id) { return SC1(SYS_JOIN, id); }
 static inline int sys_getpid(void) { return SC0(SYS_GETPID); }
 static inline uint32_t sys_ticks(void) { return (uint32_t)SC0(SYS_TICKS); }
@@ -48,6 +51,13 @@ static inline int sys_gfx_font(uint8_t* buf) { return SC1(SYS_GFX_FONT, buf); }
 static inline int sys_mouse_state(mouse_state_t* m) { return SC1(SYS_MOUSE_STATE, m); }
 static inline int sys_key_get(void) { return SC0(SYS_KEY_GET); }
 static inline int sys_wait(int x, int y, int buttons) { return SC3(SYS_WAIT, x, y, buttons); }
+
+// Memory. sbrk returns the old break, or NULL when memory runs out.
+void* sbrk(int incr);
+void* malloc(size_t size);
+void* calloc(size_t count, size_t size);
+void* realloc(void* p, size_t size);
+void free(void* p);
 
 // Output to stdout.
 int print(const char* s);

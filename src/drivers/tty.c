@@ -15,14 +15,28 @@
 static volatile uint8_t queue[QUEUE_SIZE];
 static volatile uint32_t head, tail;
 static volatile int fg_job;
+static volatile int mode;
 int input_chan;
 
-// Part of a line a program read with a buffer too small for it.
+// Bytes already produced for a read but not yet taken: the rest of a
+// cooked line read with a small buffer, or the rest of an escape
+// sequence in raw mode.
 static char pending[LINE_MAX];
 static uint32_t pending_len, pending_pos;
 
+// With TTY_NOSIG, Ctrl+C is an ordinary key, but three presses within
+// a second still kill the job, so a stuck program cannot lock you out.
+static uint32_t ctrl_c_ticks[3];
+
+static int force_kill(void) {
+    ctrl_c_ticks[0] = ctrl_c_ticks[1];
+    ctrl_c_ticks[1] = ctrl_c_ticks[2];
+    ctrl_c_ticks[2] = timer_ticks();
+    return ctrl_c_ticks[0] && ctrl_c_ticks[2] - ctrl_c_ticks[0] < TIMER_HZ;
+}
+
 void tty_input(int c) {
-    if (c == KEY_CTRL_C && fg_job) {
+    if (c == KEY_CTRL_C && fg_job && (!(mode & TTY_NOSIG) || force_kill())) {
         task_kill_job(fg_job);
         return;
     }
@@ -34,7 +48,7 @@ void tty_input(int c) {
     task_wakeup(&input_chan);
 }
 
-int tty_pending(void) { return head != tail; }
+int tty_pending(void) { return head != tail || pending_pos != pending_len; }
 
 int tty_getc(void) {
     uint32_t f = irq_save();
@@ -52,16 +66,98 @@ int tty_getc(void) {
     return c;
 }
 
+static int try_getc(void) {
+    uint32_t f = irq_save();
+    int c = -1;
+    if (head != tail) {
+        c = queue[tail % QUEUE_SIZE];
+        tail++;
+    }
+    irq_restore(f);
+    return c;
+}
+
 void tty_set_foreground(int job) {
     uint32_t f = irq_save();
+    int was_raw = mode != 0;
     fg_job = job;
-    pending_pos = pending_len = 0;  // a half-read line belongs to the old job
+    mode = 0;
+    pending_pos = pending_len = 0;  // half-read input belongs to the old job
+    ctrl_c_ticks[0] = ctrl_c_ticks[1] = ctrl_c_ticks[2] = 0;
     irq_restore(f);
+    // A raw-mode program may have died with the screen in any state.
+    if (was_raw) console_reset();
 }
+
 int tty_foreground(void) { return fg_job; }
 
-int tty_read(char* buf, uint32_t len) {
-    if (len == 0) return 0;
+int tty_set_mode(int m) {
+    if (m & ~(TTY_RAW | TTY_NOSIG)) return -EINVAL;
+    if (current->job != fg_job) return -EPERM;
+    uint32_t f = irq_save();
+    int old = mode;
+    mode = m;
+    pending_pos = pending_len = 0;
+    irq_restore(f);
+    return old;
+}
+
+// The bytes a terminal would send for a key, as xterm does it:
+// ESC [ A for Up, ESC [ 1 ; 5 D for Ctrl+Left, ESC [ 3 ~ for Delete.
+static uint32_t encode_key(int c, char out[8]) {
+    if (c == '\b') { out[0] = 0x7F; return 1; }
+    if (!KEY_IS_NAV(c)) { out[0] = (char)c; return 1; }
+    static const char final[] = { 'A', 'B', 'C', 'D', 'H', 'F' };
+    static const char tilde[] = { 0, 0, 0, 0, 0, 0, '2', '3', '5', '6' };
+    int key = KEY_NAV_KEY(c), mods = KEY_NAV_MODS(c);
+    int xmod = 1 + ((mods & KEY_MOD_SHIFT) ? 1 : 0) + ((mods & KEY_MOD_CTRL) ? 4 : 0);
+    uint32_t n = 0;
+    out[n++] = 0x1B;
+    out[n++] = '[';
+    if (key < NAV_INSERT) {
+        if (mods) { out[n++] = '1'; out[n++] = ';'; out[n++] = (char)('0' + xmod); }
+        out[n++] = final[key];
+    } else {
+        out[n++] = tilde[key];
+        if (mods) { out[n++] = ';'; out[n++] = (char)('0' + xmod); }
+        out[n++] = '~';
+    }
+    return n;
+}
+
+static int take_pending(char* buf, uint32_t len) {
+    uint32_t avail = pending_len - pending_pos;
+    uint32_t take = avail < len ? avail : len;
+    memcpy(buf, pending + pending_pos, take);
+    pending_pos += take;
+    return (int)take;
+}
+
+static int raw_read(char* buf, uint32_t len) {
+    if (pending_pos != pending_len) return take_pending(buf, len);
+    int c = tty_getc();  // block for the first key only
+    if (c < 0) return c;
+    uint32_t n = 0;
+    for (;;) {
+        char seq[8];
+        uint32_t k = encode_key(c, seq);
+        if (n + k > len) {
+            // Keep a sequence whole: what does not fit waits for the
+            // next read.
+            uint32_t fit = len - n;
+            memcpy(buf + n, seq, fit);
+            memcpy(pending, seq + fit, k - fit);
+            pending_pos = 0;
+            pending_len = k - fit;
+            return (int)len;
+        }
+        memcpy(buf + n, seq, k);
+        n += k;
+        if (n == len || (c = try_getc()) < 0) return (int)n;
+    }
+}
+
+static int cooked_read(char* buf, uint32_t len) {
     if (pending_pos == pending_len) {
         char line[LINE_MAX];
         uint32_t n = 0;
@@ -94,9 +190,10 @@ int tty_read(char* buf, uint32_t len) {
         pending_len = n;
         pending_pos = 0;
     }
-    uint32_t avail = pending_len - pending_pos;
-    uint32_t take = avail < len ? avail : len;
-    memcpy(buf, pending + pending_pos, take);
-    pending_pos += take;
-    return (int)take;
+    return take_pending(buf, len);
+}
+
+int tty_read(char* buf, uint32_t len) {
+    if (len == 0) return 0;
+    return (mode & TTY_RAW) ? raw_read(buf, len) : cooked_read(buf, len);
 }

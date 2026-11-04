@@ -44,6 +44,7 @@ typedef struct task {
     void (*entry)(void*);
     void* arg;
     uint32_t user_eip, user_esp;
+    uint32_t brk_start, brk;  // user heap: from the end of the image to the break
 
     char name[TASK_NAME_MAX];
     fd_t fds[MAX_FDS];
@@ -58,8 +59,9 @@ void task_init(void);
 void fpu_init(void);
 int task_create_kernel(const char* name, void (*entry)(void*), void* arg);
 // Takes ownership of pd. The task starts in ring 3 at eip with the
-// given user stack pointer.
-int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp, int job);
+// given user stack pointer; its heap starts empty at brk.
+int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
+                     uint32_t brk, int job);
 void task_exit(int status) __attribute__((noreturn));
 
 // Must be called with interrupts disabled.

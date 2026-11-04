@@ -1,4 +1,9 @@
 // Text console: VGA text mode plus a mirror on the serial port.
+// Output understands the common ANSI escape sequences: cursor moves
+// (CSI A B C D G H f, s u), erasing (CSI J K), colours (CSI m with
+// 0 1 7 22 27 30-37 39 40-47 49 90-97 100-107) and cursor visibility
+// (CSI ?25 l / h). The serial mirror passes them through unchanged,
+// so a terminal on the other end shows the same screen.
 #ifndef RINGTAIL_CONSOLE_H
 #define RINGTAIL_CONSOLE_H
 
@@ -14,6 +19,9 @@
 
 void console_init(void);
 void console_clear(void);
+// Back to a clean slate after a full-screen program: default colours,
+// visible cursor, empty screen.
+void console_reset(void);
 void console_set_color(uint8_t color);
 uint8_t console_get_color(void);
 

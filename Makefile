@@ -2,6 +2,7 @@
 #   make          kernel, programs, disk image and bootable ISO
 #   make run      boot in QEMU (screen + serial on this terminal)
 #   make test     host unit tests, then the QEMU integration tests
+#                 (on build/test-disk.img, which adds tests/programs)
 #   make clean
 
 BUILD := build
@@ -36,16 +37,22 @@ ULIB_C := $(wildcard src/programs/lib/*.c) src/lib/string.c src/lib/printf.c
 ULIB_OBJS := $(ULIB_C:%.c=$(BUILD)/u/%.o)
 PROGRAMS := $(notdir $(basename $(wildcard src/programs/*.c)))
 PROGRAM_BINS := $(PROGRAMS:%=$(BUILD)/programs/%)
+# Programs that exist to test the kernel. They go on a separate test
+# disk with everything else, not on the disk you boot.
+TEST_PROGRAMS := $(notdir $(basename $(wildcard tests/programs/*.c)))
+TEST_PROGRAM_BINS := $(TEST_PROGRAMS:%=$(BUILD)/test-programs/%)
 
 DISK := $(BUILD)/disk.img
+TEST_DISK := $(BUILD)/test-disk.img
 ISO := $(BUILD)/ringtail.iso
 
-.PHONY: all kernel programs disk iso run run-serial test test-host test-qemu clean
+.PHONY: all kernel programs disk test-disk iso run run-serial test test-host test-qemu clean
 all: iso disk
 
 kernel: $(KERNEL)
 programs: $(PROGRAM_BINS)
 disk: $(DISK)
+test-disk: $(TEST_DISK)
 iso: $(ISO)
 
 $(BUILD)/k/%.o: %.c
@@ -67,10 +74,21 @@ $(BUILD)/programs/%: $(BUILD)/u/src/programs/%.o $(ULIB_OBJS) src/programs/user.
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(ULIB_OBJS) -lgcc
 
+$(BUILD)/test-programs/%: $(BUILD)/u/tests/programs/%.o $(ULIB_OBJS) src/programs/user.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(ULIB_OBJS) -lgcc
+
 # Disk names are the program names in uppercase (DOS 8.3).
+upper = $(shell echo $(1) | tr a-z A-Z)
+
 $(DISK): $(PROGRAM_BINS) disk/welcome.txt tools/mkdisk.py
 	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt \
-	    $(foreach p,$(PROGRAMS),$(shell echo $(p) | tr a-z A-Z):$(BUILD)/programs/$(p))
+	    $(foreach p,$(PROGRAMS),$(call upper,$(p)):$(BUILD)/programs/$(p))
+
+$(TEST_DISK): $(PROGRAM_BINS) $(TEST_PROGRAM_BINS) disk/welcome.txt tools/mkdisk.py
+	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt \
+	    $(foreach p,$(PROGRAMS),$(call upper,$(p)):$(BUILD)/programs/$(p)) \
+	    $(foreach p,$(TEST_PROGRAMS),$(call upper,$(p)):$(BUILD)/test-programs/$(p))
 
 $(ISO): $(KERNEL)
 	@mkdir -p $(BUILD)/isodir/boot/grub
@@ -92,8 +110,8 @@ test: test-host test-qemu
 test-host:
 	$(MAKE) -C tests run
 
-test-qemu: all
-	$(PYTHON) tests/qemu_test.py --iso $(ISO) --disk $(DISK)
+test-qemu: all $(TEST_DISK)
+	$(PYTHON) tests/qemu_test.py --iso $(ISO) --disk $(TEST_DISK)
 
 clean:
 	rm -rf $(BUILD)

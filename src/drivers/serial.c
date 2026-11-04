@@ -1,7 +1,7 @@
 // COM1 serial port: a second console. Output mirrors the screen;
 // input feeds the same terminal queue as the keyboard, translating
 // what terminals send (CR for Enter, DEL for backspace, ANSI escape
-// sequences for the arrow keys).
+// sequences for the navigation keys).
 #include "kernel.h"
 #include "arch.h"
 #include "interrupt.h"
@@ -14,24 +14,71 @@ static int present;
 
 int serial_present(void) { return present; }
 
+// Escape sequences from the terminal: CSI (ESC [ params final) and
+// SS3 (ESC O final), as xterm sends them for the navigation keys,
+// with an optional modifier parameter (2 Shift, 5 Ctrl, 6 both).
+static int nav_mods(int p) {
+    if (p < 2) return 0;
+    p--;
+    return ((p & 1) ? KEY_MOD_SHIFT : 0) | ((p & 4) ? KEY_MOD_CTRL : 0);
+}
+
+static void csi_key(int final, const int* params, int n) {
+    int nav = -1, mod = n >= 2 ? params[1] : 0;
+    switch (final) {
+    case 'A': nav = NAV_UP; break;
+    case 'B': nav = NAV_DOWN; break;
+    case 'C': nav = NAV_RIGHT; break;
+    case 'D': nav = NAV_LEFT; break;
+    case 'H': nav = NAV_HOME; break;
+    case 'F': nav = NAV_END; break;
+    case '~':
+        switch (n ? params[0] : 0) {
+        case 1: case 7: nav = NAV_HOME; break;
+        case 4: case 8: nav = NAV_END; break;
+        case 2: nav = NAV_INSERT; break;
+        case 3: nav = NAV_DELETE; break;
+        case 5: nav = NAV_PGUP; break;
+        case 6: nav = NAV_PGDN; break;
+        }
+        break;
+    }
+    if (nav >= 0) tty_input(KEY_NAV(nav, nav_mods(mod)));
+}
+
 static void serial_irq(void) {
-    static int esc;       // 0 none, 1 after ESC, 2 after ESC [
+    static int state;     // 0 plain, 1 after ESC, 2 in CSI, 3 after ESC O
+    static int params[4], nparams;
     static int last_cr;
     while (inb(COM1 + 5) & 0x01) {
         int c = inb(COM1);
-        if (esc == 1) {
-            if (c == '[') { esc = 2; continue; }
-            esc = 0;
-            tty_input(0x1B);
-        } else if (esc == 2) {
-            esc = 0;
-            if (c == 'A') tty_input(KEY_UP);
-            else if (c == 'B') tty_input(KEY_DOWN);
-            else if (c == 'C') tty_input(KEY_RIGHT);
-            else if (c == 'D') tty_input(KEY_LEFT);
+        if (state == 1) {
+            if (c == '[') { state = 2; nparams = 0; params[0] = 0; continue; }
+            if (c == 'O') { state = 3; continue; }
+            state = 0;
+            tty_input(0x1B);  // a lone Escape, then this byte as usual
+        } else if (state == 2) {
+            if (c >= '0' && c <= '9') {
+                if (nparams == 0) nparams = 1;
+                if (nparams <= 4 && params[nparams - 1] < 1000)
+                    params[nparams - 1] = params[nparams - 1] * 10 + (c - '0');
+            } else if (c == ';') {
+                if (nparams == 0) nparams = 1;
+                if (nparams < 4) params[nparams++] = 0; else nparams = 5;
+            } else if (c >= 0x40 && c <= 0x7E) {
+                state = 0;
+                csi_key(c, params, nparams > 4 ? 4 : nparams);
+            } else if (c < 0x20 || c > 0x3F) {
+                state = 0;  // not a sequence we understand: drop it
+            }
+            continue;
+        } else if (state == 3) {
+            state = 0;
+            csi_key(c, params, 0);
             continue;
         }
-        if (c == 0x1B) { esc = 1; continue; }
+        if (c == 0x1B) { state = 1; continue; }
+        if (c >= 0x80) continue;  // ASCII only; high bytes would look like keys
         if (c == '\n' && last_cr) { last_cr = 0; continue; }
         last_cr = (c == '\r');
         if (c == '\r') c = '\n';

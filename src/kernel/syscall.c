@@ -208,16 +208,62 @@ static int sys_list(uint32_t index, uint32_t ubuf, uint32_t size) {
     return copy_to_user((void*)ubuf, name, len);
 }
 
-static int sys_spawn(uint32_t uname, uint32_t b, uint32_t c) {
-    (void)b; (void)c;
+// argv from user memory: up to ARGV_MAX strings, ARGS_MAX_BYTES in
+// all, NULL-terminated. A NULL argv means just the program name.
+#define SPAWN_ARGS_BYTES 2048
+
+static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t c) {
+    (void)c;
     char name[FS_NAME_MAX];
     int n = copy_name(name, uname);
     if (n < 0) return n;
     // While the caller holds the display the child could not print
     // anything visible, and could not take the display either.
     if (is_owner()) return -EBUSY;
-    const char* argv[1] = { name };
-    return loader_spawn(name, 1, argv, current->job);
+    if (!uargv) {
+        const char* argv[1] = { name };
+        return loader_spawn(name, 1, argv, current->job);
+    }
+    char* strings = kmalloc(SPAWN_ARGS_BYTES);
+    if (!strings) return -ENOMEM;
+    const char* argv[ARGV_MAX];
+    int argc = 0, r = 0;
+    uint32_t used = 0;
+    for (;;) {
+        uint32_t up;
+        if (copy_from_user(&up, (const void*)(uargv + (uint32_t)argc * 4), 4)) { r = -EFAULT; break; }
+        if (!up) break;
+        if (argc == ARGV_MAX) { r = -E2BIG; break; }
+        int len = strncpy_from_user(strings + used, (const char*)up, SPAWN_ARGS_BYTES - used);
+        if (len == -ENAMETOOLONG) { r = -E2BIG; break; }
+        if (len < 0) { r = len; break; }
+        argv[argc++] = strings + used;
+        used += (uint32_t)len + 1;
+    }
+    if (!r && argc == 0) r = -EINVAL;
+    if (!r) r = loader_spawn(name, argc, argv, current->job);
+    kfree(strings);
+    return r;
+}
+
+// Move the program break. The pages between the old and new break
+// are mapped at once, so the heap never takes a page fault. Shrinking
+// moves the break but keeps the pages, which a later grow reuses.
+static int sys_sbrk(uint32_t incr, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    uint32_t old = current->brk;
+    int64_t want = (int64_t)old + (int32_t)incr;
+    if (want < (int64_t)current->brk_start || want > (int64_t)USER_IMAGE_LIMIT) return -ENOMEM;
+    uint32_t nb = (uint32_t)want;
+    for (uint32_t va = ALIGN_UP(old, PAGE_SIZE); va < ALIGN_UP(nb, PAGE_SIZE); va += PAGE_SIZE)
+        if (!as_map(current->cr3, va, 1)) return -ENOMEM;
+    current->brk = nb;
+    return (int)old;
+}
+
+static int sys_tty_mode(uint32_t mode, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    return tty_set_mode((int)mode);
 }
 
 static int sys_ticks(uint32_t a, uint32_t b, uint32_t c) {
@@ -262,6 +308,8 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_JOIN] = sys_join,
     [SYS_GFX_BLIT] = sys_gfx_blit,
     [SYS_GFX_FONT] = sys_gfx_font,
+    [SYS_SBRK] = sys_sbrk,
+    [SYS_TTY_MODE] = sys_tty_mode,
 };
 
 void syscall_handle(regs_t* r) {

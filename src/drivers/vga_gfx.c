@@ -268,19 +268,6 @@ void gfx_rect(int x, int y, int w, int h, uint8_t color, int filled) {
         if (x1 > x0) memset((void*)(FB + yy * W + x0), color, (size_t)(x1 - x0));
 }
 
-void gfx_circle(int cx, int cy, int r, uint8_t color) {
-    int x = 0, y = r, d = 1 - r;
-    while (x <= y) {
-        gfx_pixel(cx + x, cy + y, color); gfx_pixel(cx - x, cy + y, color);
-        gfx_pixel(cx + x, cy - y, color); gfx_pixel(cx - x, cy - y, color);
-        gfx_pixel(cx + y, cy + x, color); gfx_pixel(cx - y, cy + x, color);
-        gfx_pixel(cx + y, cy - x, color); gfx_pixel(cx - y, cy - x, color);
-        if (d < 0) d += 2 * x + 3;
-        else { d += 2 * (x - y) + 5; y--; }
-        x++;
-    }
-}
-
 void gfx_text(int x, int y, const char* s, uint8_t color) {
     for (; *s && x < W; s++, x += 9) {
         const uint8_t* g = &font16[(uint8_t)*s * 16];
@@ -288,73 +275,4 @@ void gfx_text(int x, int y, const char* s, uint8_t color) {
             for (int col = 0; col < 8; col++)
                 if (g[row] & (0x80 >> col)) gfx_pixel(x + col, y + row, color);
     }
-}
-
-// ---- The shell's graphics demo ----
-
-#define CUR_W 12
-#define CUR_H 16
-static const uint16_t cursor_shape[CUR_H] = {
-    0x800, 0xC00, 0xE00, 0xF00, 0xF80, 0xFC0, 0xFE0, 0xFF0,
-    0xF80, 0xEC0, 0xC60, 0x830, 0x018, 0x000, 0x000, 0x000
-};
-static uint8_t under_cursor[CUR_W * CUR_H];
-
-static void cursor_show(int x, int y) {
-    for (int r = 0; r < CUR_H; r++)
-        for (int c = 0; c < CUR_W; c++) {
-            int px = x + c, py = y + r;
-            if (px < W && py < H) under_cursor[r * CUR_W + c] = FB[py * W + px];
-        }
-    for (int r = 0; r < CUR_H; r++)
-        for (int c = 0; c < CUR_W; c++)
-            if (cursor_shape[r] & (0x800 >> c)) gfx_pixel(x + c, y + r, 15);
-}
-
-static void cursor_hide(int x, int y) {
-    for (int r = 0; r < CUR_H; r++)
-        for (int c = 0; c < CUR_W; c++) {
-            int px = x + c, py = y + r;
-            if (px < W && py < H) FB[py * W + px] = under_cursor[r * CUR_W + c];
-        }
-}
-
-void gfx_demo(void) {
-    if (gfx_acquire(current->id)) {
-        kprintf_color(COLOR_ERROR, "Graphics busy: task %d owns the display\n", gfx_owner());
-        return;
-    }
-    gfx_text(10, 8, "RINGTAIL GRAPHICS", 15);
-    gfx_rect(20, 35, 70, 40, 4, 1);
-    gfx_rect(110, 35, 70, 40, 14, 0);
-    gfx_line(20, 90, 300, 90, 10);
-    gfx_circle(230, 55, 25, 12);
-    gfx_text(10, 105, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", 15);
-    gfx_text(10, 125, "0123456789", 15);
-    gfx_text(10, 150, "MOVE MOUSE - CLICK DRAWS", 11);
-
-    int x, y, b, lx, ly, lb;
-    mouse_get(&lx, &ly, &lb);
-    char coords[32];
-    snprintf(coords, sizeof(coords), "X=%3d Y=%3d %c%c%c", lx, ly, (lb & 1) ? 'L' : '-', (lb & 4) ? 'M' : '-', (lb & 2) ? 'R' : '-');
-    gfx_text(10, 170, coords, 15);
-    cursor_show(lx, ly);
-    for (;;) {
-        int sc, done = 0;
-        while ((sc = keyboard_raw_get()) >= 0)
-            if (sc != 0xE0 && !(sc & 0x80)) done = 1;  // any key press
-        if (done || current->killed) break;
-        mouse_get(&x, &y, &b);
-        if (x != lx || y != ly || b != lb) {
-            cursor_hide(lx, ly);
-            gfx_rect(10, 170, 200, 16, 1, 1);
-            snprintf(coords, sizeof(coords), "X=%3d Y=%3d %c%c%c", x, y, (b & 1) ? 'L' : '-', (b & 4) ? 'M' : '-', (b & 2) ? 'R' : '-');
-            gfx_text(10, 170, coords, 15);
-            if ((b & 1) && !(lb & 1)) gfx_rect(x, y, 4, 4, 14, 1);
-            cursor_show(x, y);
-            lx = x; ly = y; lb = b;
-        }
-        task_sleep_ticks(1);
-    }
-    gfx_release(current->id);
 }

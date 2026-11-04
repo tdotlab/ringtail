@@ -92,14 +92,26 @@ class Machine:
         return out[first_nl + 1:] if first_nl >= 0 else ""
 
     def monitor_cmd(self, cmd):
+        """Run a monitor command and return what the monitor printed."""
         self.monitor.sendall((cmd + "\n").encode())
         time.sleep(0.15)
         self.monitor.settimeout(0.2)
+        out = b""
         try:
-            while self.monitor.recv(65536):
-                pass
+            while True:
+                data = self.monitor.recv(65536)
+                if not data:
+                    break
+                out += data
         except socket.timeout:
             pass
+        return out.decode(errors="replace")
+
+    def screen_row(self, row):
+        """One row of the VGA text screen as (text, attributes)."""
+        out = self.monitor_cmd(f"xp /80hx {0xb8000 + row * 160:#x}")
+        cells = [int(v, 16) for v in re.findall(r"0x([0-9a-f]{4})\b", out.split("\n", 1)[-1])][:80]
+        return "".join(chr(c & 0xFF) for c in cells), [c >> 8 for c in cells]
 
     def screen_size(self):
         path = os.path.join(self.dir, "screen.ppm")
@@ -157,7 +169,7 @@ def tests(m, t):
     out = m.run("run args one two three")
     t.check("arguments reach the program", "argc=4" in out and "argv[3]=three" in out, out)
 
-    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack"]:
+    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")
@@ -193,13 +205,13 @@ def tests(m, t):
     t.check("tasks lists it", "count" in out and "user" in out, out)
     m.expect(rb"count done", 10)
 
-    # A kernel task that never yields cannot freeze the shell.
-    out = m.run("spawn busy")
-    busy = re.search(r"Started task (\d+)", out)
-    t.check("spawn busy", busy, out)
+    # A program that never yields cannot freeze the shell.
+    out = m.run("run spin &")
+    busy = re.search(r"\[(\d+)\] started", out)
+    t.check("a spinning program starts in the background", busy, out)
     start = time.time()
     out = m.run("uptime")
-    t.check("the shell stays responsive next to a busy task", "Up " in out and time.time() - start < 3, out)
+    t.check("the shell stays responsive next to it", "Up " in out and time.time() - start < 3, out)
     if busy:
         out = m.run("kill " + busy.group(1))
         t.check("kill stops it", "Killed task" in out, out)
@@ -226,10 +238,10 @@ def tests(m, t):
     t.check("mouse movement wakes a waiting program", "Woke up on input." in out, out)
 
     # Timer: 100 ticks per second of wall time.
-    a = int(re.search(r"(\d+) ticks", m.run("tick")).group(1))
+    a = int(re.search(r"(\d+) ticks", m.run("uptime")).group(1))
     t0 = time.time()
     time.sleep(3)
-    b = int(re.search(r"(\d+) ticks", m.run("tick")).group(1))
+    b = int(re.search(r"(\d+) ticks", m.run("uptime")).group(1))
     rate = (b - a) / (time.time() - t0)
     t.check(f"timer runs at 100 Hz (measured {rate:.0f})", 80 <= rate <= 120)
 
@@ -246,17 +258,47 @@ def tests(m, t):
     t.check("rm deletes", "no such file" in out, out)
     m.run("write keep.txt this survives a power cycle")
 
-    # Shell heap commands.
-    out = m.run("malloc 100")
-    addr = re.search(r"at (0x[0-9a-f]+)", out)
-    t.check("malloc", addr, out)
-    if addr:
-        out = m.run("free " + addr.group(1))
-        t.check("free", "Freed" in out, out)
-        out = m.run("free " + addr.group(1))
-        t.check("double free is refused", "not a live" in out, out)
-    out = m.run("free 0x100000")
-    t.check("free of a kernel address is refused", "not a live" in out, out)
+    # Raw mode: keys arrive as bytes, arrows as xterm sequences.
+    m.send("run rawkeys\r")
+    m.expect(rb"raw mode on", 5)
+    m.send("a")
+    out = m.expect(rb"keys: [^\n]*\n", 5)
+    t.check("raw mode delivers a key at once, unechoed", "keys: 61" in out, out)
+    m.send("\x1b[A")
+    out = m.expect(rb"keys: [^\n]*\n", 5)
+    t.check("Up arrives as ESC [ A", "keys: 1b 5b 41" in out, out)
+    m.send("\x1b[1;5D")
+    out = m.expect(rb"keys: [^\n]*\n", 5)
+    t.check("Ctrl+Left arrives as ESC [ 1 ; 5 D", "keys: 1b 5b 31 3b 35 44" in out, out)
+    m.send("\x7f")
+    out = m.expect(rb"keys: [^\n]*\n", 5)
+    t.check("Backspace arrives as DEL", "keys: 7f" in out, out)
+    m.send("\x03")
+    out = m.expect(re.escape(PROMPT), 5)
+    t.check("Ctrl+C still kills a raw program", "^C" in out, out)
+    out = m.run("echo cooked")
+    t.check("the terminal is cooked again afterwards", "cooked" in out, out)
+
+    m.send("run rawkeys nosig\r")
+    m.expect(rb"raw mode on", 5)
+    m.send("\x03")
+    out = m.expect(rb"keys: [^\n]*\n", 5)
+    t.check("with TTY_NOSIG, Ctrl+C is a byte", "keys: 03" in out, out)
+    time.sleep(1.3)
+    m.send("\x03\x03\x03")
+    out = m.expect(re.escape(PROMPT), 5)
+    t.check("three quick Ctrl+C still kill it", "^C" in out, out)
+
+    # ANSI escapes position and colour text on the VGA screen.
+    m.run("run ansi")
+    row4, attr4 = m.screen_row(4)
+    t.check("ESC [ row ; col H positions the cursor", row4[9:16] == "AT-5-10", repr(row4))
+    t.check("SGR sets colours", row4[16:19] == "RED" and attr4[16] == 0x14 and attr4[19] != 0x14,
+            f"{row4!r} {attr4[15:20]}")
+    row6, _ = m.screen_row(6)
+    t.check("cursor back and erase to end of line", row6.rstrip() == "abcX", repr(row6))
+    row7, _ = m.screen_row(7)
+    t.check("save and restore the cursor", row7.rstrip() == "!AVE", repr(row7))
 
     # History recall with the Up arrow.
     m.run("echo first")
@@ -294,7 +336,7 @@ def tests(m, t):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iso", default="build/ringtail.iso")
-    ap.add_argument("--disk", default="build/disk.img")
+    ap.add_argument("--disk", default="build/test-disk.img")
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     args = ap.parse_args()
 

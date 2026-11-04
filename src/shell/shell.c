@@ -142,39 +142,6 @@ static void cmd_mem(int argc, char** argv, char* rest) {
     kprintf("Heap:   %u KB free of %u KB\n", h.free / 1024, h.total / 1024);
 }
 
-// Allocations made from the shell, so free cannot be pointed at
-// kernel structures.
-#define TRACKED 16
-static void* tracked[TRACKED];
-
-static void cmd_malloc(int argc, char** argv, char* rest) {
-    (void)argc; (void)rest;
-    uint32_t n;
-    if (parse_uint(argv[1], &n) || n == 0) { usage("malloc <bytes>"); return; }
-    int slot = -1;
-    for (int i = 0; i < TRACKED; i++) if (!tracked[i]) { slot = i; break; }
-    if (slot < 0) { kprintf_color(COLOR_ERROR, "Too many shell allocations; free some first\n"); return; }
-    void* p = kmalloc(n);
-    if (!p) { err("malloc", -ENOMEM); return; }
-    tracked[slot] = p;
-    kprintf("Allocated %u bytes at %p\n", n, p);
-}
-
-static void cmd_free(int argc, char** argv, char* rest) {
-    (void)argc; (void)rest;
-    uint32_t a;
-    if (parse_uint(argv[1], &a)) { usage("free <address from malloc, e.g. 0x10500c>"); return; }
-    for (int i = 0; i < TRACKED; i++) {
-        if (tracked[i] && (uint32_t)tracked[i] == a) {
-            kfree(tracked[i]);
-            tracked[i] = 0;
-            kprintf("Freed %p\n", (void*)a);
-            return;
-        }
-    }
-    kprintf_color(COLOR_ERROR, "%p is not a live shell allocation\n", (void*)a);
-}
-
 static void cmd_history(int argc, char** argv, char* rest) {
     (void)argc; (void)argv; (void)rest;
     int oldest = hist_count > HISTORY ? hist_count - HISTORY : 0;
@@ -251,24 +218,15 @@ static void cmd_color(int argc, char** argv, char* rest) {
             return;
         }
     }
-    kprintf_color(COLOR_ERROR, "Unknown color; see 'colors'\n");
-}
-
-static void cmd_colors(int argc, char** argv, char* rest) {
-    (void)argc; (void)argv; (void)rest;
-    for (uint32_t i = 0; i < ARRAY_SIZE(palette); i++)
-        kprintf_color(palette[i].color, "%s\n", palette[i].name);
+    kprintf_color(COLOR_ERROR, "Unknown color. Try one of:");
+    for (uint32_t i = 0; i < ARRAY_SIZE(palette); i++) kprintf(" %s", palette[i].name);
+    kprintf("\n");
 }
 
 static void cmd_uptime(int argc, char** argv, char* rest) {
     (void)argc; (void)argv; (void)rest;
     uint32_t t = timer_ticks();
-    kprintf("Up %u.%02u seconds\n", t / TIMER_HZ, t % TIMER_HZ);
-}
-
-static void cmd_tick(int argc, char** argv, char* rest) {
-    (void)argc; (void)argv; (void)rest;
-    kprintf("%u ticks (%d per second)\n", timer_ticks(), TIMER_HZ);
+    kprintf("Up %u.%02u seconds (%u ticks at %d Hz)\n", t / TIMER_HZ, t % TIMER_HZ, t, TIMER_HZ);
 }
 
 static void cmd_sleep(int argc, char** argv, char* rest) {
@@ -296,32 +254,6 @@ static void cmd_mmap(int argc, char** argv, char* rest) {
         kprintf("  %08x-%08x  %s\n", (uint32_t)e->base, (uint32_t)(end - 1),
                 e->type == 1 ? "usable" : "reserved");
     }
-}
-
-// Demo kernel tasks for 'spawn'.
-static void counter_task(void* arg) {
-    (void)arg;
-    for (uint32_t n = 1; !current->killed; n++) {
-        if (task_sleep_ticks(5 * TIMER_HZ)) break;
-        kprintf_color(COLOR_DIM, "[counter %d: %u]\n", current->id, n);
-    }
-}
-
-static void busy_task(void* arg) {
-    (void)arg;
-    // Never yields: only the timer can take the CPU away.
-    volatile uint32_t spins = 0;
-    while (!current->killed) spins++;
-}
-
-static void cmd_spawn(int argc, char** argv, char* rest) {
-    (void)argc; (void)rest;
-    int id;
-    if (strcmp(argv[1], "counter") == 0) id = task_create_kernel("counter", counter_task, 0);
-    else if (strcmp(argv[1], "busy") == 0) id = task_create_kernel("busy", busy_task, 0);
-    else { usage("spawn counter|busy"); return; }
-    if (id < 0) err("spawn", id);
-    else kprintf("Started task %d\n", id);
 }
 
 static void cmd_kill(int argc, char** argv, char* rest) {
@@ -358,19 +290,6 @@ static void cmd_run(int argc, char** argv, char* rest) {
     else if (status != 0 && status != EXIT_FAULTED) kprintf_color(COLOR_DIM, "[exit status %d]\n", status);
 }
 
-static void cmd_mouse(int argc, char** argv, char* rest) {
-    (void)argc; (void)argv; (void)rest;
-    if (!mouse_found()) { kprintf("Mouse: not found\n"); return; }
-    int x, y, b;
-    mouse_get(&x, &y, &b);
-    kprintf("Mouse: x=%d y=%d buttons=%d packets=%u\n", x, y, b, mouse_packets());
-}
-
-static void cmd_gfx(int argc, char** argv, char* rest) {
-    (void)argc; (void)argv; (void)rest;
-    gfx_demo();
-}
-
 static void cmd_reboot(int argc, char** argv, char* rest) {
     (void)argc; (void)argv; (void)rest;
     kprintf("Rebooting...\n");
@@ -396,22 +315,14 @@ static const command_t commands[] = {
     { "rm", 1, "<file>", "delete a file", cmd_rm },
     { "run", 1, "<prog> [args] [&]", "run a program from disk", cmd_run },
     { "tasks", 0, "", "list tasks", cmd_tasks },
-    { "ps", 0, "", "same as tasks", cmd_tasks },
     { "kill", 1, "<id>", "stop a task", cmd_kill },
-    { "spawn", 1, "counter|busy", "start a demo kernel task", cmd_spawn },
     { "faults", 0, "", "recent faults", cmd_faults },
     { "mem", 0, "", "memory summary", cmd_mem },
     { "heap", 0, "", "kernel heap details", cmd_heap },
-    { "malloc", 1, "<bytes>", "allocate from the kernel heap", cmd_malloc },
-    { "free", 1, "<addr>", "free a malloc'd block", cmd_free },
     { "mmap", 0, "", "boot memory map", cmd_mmap },
     { "uptime", 0, "", "time since boot", cmd_uptime },
-    { "tick", 0, "", "raw timer ticks", cmd_tick },
     { "sleep", 1, "<seconds>", "wait", cmd_sleep },
     { "color", 1, "<name>", "set the text color", cmd_color },
-    { "colors", 0, "", "show the color names", cmd_colors },
-    { "mouse", 0, "", "mouse state", cmd_mouse },
-    { "gfx", 0, "", "graphics demo (any key exits)", cmd_gfx },
     { "reboot", 0, "", "restart the machine", cmd_reboot },
     { "poweroff", 0, "", "turn the machine off", cmd_poweroff },
 };

@@ -5,6 +5,9 @@
 // segments must lie inside the user image range, and file offsets
 // must lie inside the file. Anything else is -ENOEXEC.
 //
+// The program break starts at the first page after the image, so the
+// heap grows up from there toward the stack's guard gap.
+//
 // Initial user stack, from the top down: the argument strings, the
 // argv array (NULL terminated), then argc and argv for _start, laid
 // out as if _start(argc, argv) had been called normally, with argc
@@ -64,7 +67,7 @@ static int load_segment(int node, uint32_t pd, const elf_phdr_t* ph, uint32_t fi
     return 0;
 }
 
-static int load_image(int node, uint32_t pd, uint32_t* entry) {
+static int load_image(int node, uint32_t pd, uint32_t* entry, uint32_t* end) {
     elf_header_t h;
     uint32_t size = diskfs_size(node);
     int r = read_exact(node, &h, sizeof h, 0);
@@ -79,14 +82,17 @@ static int load_image(int node, uint32_t pd, uint32_t* entry) {
     r = read_exact(node, ph, h.phnum * sizeof(elf_phdr_t), h.phoff);
     if (r) return r;
     int loaded = 0;
+    uint32_t top = 0;
     for (int i = 0; i < h.phnum; i++) {
         if (ph[i].type != PT_LOAD || ph[i].memsz == 0) continue;
         r = load_segment(node, pd, &ph[i], size);
         if (r) return r;
         loaded++;
+        if (ph[i].vaddr + ph[i].memsz > top) top = ph[i].vaddr + ph[i].memsz;
     }
     if (!loaded) return -ENOEXEC;
     *entry = h.entry;
+    *end = ALIGN_UP(top, PAGE_SIZE);
     return 0;
 }
 
@@ -126,13 +132,13 @@ int loader_spawn(const char* name, int argc, const char* const* argv, int job) {
     diskfs_ref(node);  // nobody deletes it while we read it
 
     int r;
-    uint32_t entry = 0, esp = 0;
+    uint32_t entry = 0, esp = 0, end = 0;
     uint32_t pd = as_create();
     if (!pd) { r = -ENOMEM; goto out; }
-    r = load_image(node, pd, &entry);
+    r = load_image(node, pd, &entry, &end);
     if (!r) r = setup_stack(pd, argc, argv, &esp);
     if (r) { as_destroy(pd); goto out; }
-    r = task_create_user(argv[0], pd, entry, esp, job);  // owns pd from here
+    r = task_create_user(argv[0], pd, entry, esp, end, job);  // owns pd from here
 out:
     diskfs_unref(node);
     return r;

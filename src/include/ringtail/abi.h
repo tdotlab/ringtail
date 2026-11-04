@@ -27,17 +27,33 @@
 #define SYS_KEY_GET     17  // ()                      -> scancode, or -EAGAIN
 #define SYS_SEEK        18  // (fd, offset, whence)    -> new offset
 #define SYS_LIST        19  // (index, buf, size)      -> 0, -ENOENT past the end
-#define SYS_SPAWN       20  // (name)                  -> task id
+#define SYS_SPAWN       20  // (name, argv or NULL)    -> task id; argv is NULL-terminated, argv[0] is the name
 #define SYS_WAIT        21  // (last_x, last_y, last_buttons) -> 0 on new input
 #define SYS_TICKS       22  // ()                      -> timer ticks since boot (100 Hz)
 #define SYS_GETPID      23  // ()                      -> caller's task id
 #define SYS_JOIN        24  // (task id)               -> exit status of that task
 #define SYS_GFX_BLIT    25  // (const uint8_t* 320x200 pixels) -> 0
 #define SYS_GFX_FONT    26  // (uint8_t* 4096 bytes)   -> 0, 256 glyphs of 8x16, one byte per row
-#define NUM_SYSCALLS    27
+#define SYS_SBRK        27  // (increment)             -> old program break, or -ENOMEM
+#define SYS_TTY_MODE    28  // (TTY_* flags)           -> previous flags; foreground only
+#define NUM_SYSCALLS    29
+
+// Values from -4095 to -1 are errors. Anything else is a result,
+// including addresses above 2 GB that look negative as an int.
+#define IS_ERR(r) ((unsigned)(r) >= (unsigned)-4095)
+
+// Terminal modes for SYS_TTY_MODE. TTY_RAW: reads return keys as
+// they arrive, without echo or line editing; Backspace reads as 0x7F
+// and the navigation keys as xterm escape sequences (ESC [ A,
+// ESC [ 1 ; 5 C for Ctrl+Right, ESC [ 3 ~ for Delete). TTY_NOSIG:
+// Ctrl+C is delivered as byte 3 instead of killing the job; pressing
+// it three times within a second still kills it. The mode returns
+// to 0 (cooked) when the program's job leaves the foreground.
+#define TTY_RAW   1
+#define TTY_NOSIG 2
 
 // Standard descriptors. Every program starts with these open.
-#define STDIN_FILENO  0     // console input, line-buffered, foreground only
+#define STDIN_FILENO  0     // console input, foreground only; line at a time unless TTY_RAW
 #define STDOUT_FILENO 1     // console output
 
 // open() flags. Values match Linux so they look familiar.

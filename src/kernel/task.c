@@ -242,13 +242,15 @@ int task_create_kernel(const char* name, void (*entry)(void*), void* arg) {
     return task_start(t);  // a kernel task is its own job
 }
 
-int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp, int job) {
+int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
+                     uint32_t brk, int job) {
     task_t* t = task_alloc(name);
     if (!t) { as_destroy(pd); return -ENOMEM; }
     t->user = 1;
     t->cr3 = pd;
     t->user_eip = eip;
     t->user_esp = esp;
+    t->brk_start = t->brk = brk;
     t->job = job;
     files_init_std(t);
     return task_start(t);

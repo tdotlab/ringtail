@@ -1,4 +1,4 @@
-// List the disk through LIST, then spawn a program and wait for it.
+// List the disk through LIST, then spawn programs and wait for them.
 #include "ulib.h"
 
 int main(int argc, char** argv) {
@@ -16,5 +16,11 @@ int main(int argc, char** argv) {
     int id = sys_spawn("HELLO");
     check(id > 0, "spawn HELLO");
     check(sys_join(id) == 0, "HELLO exited with status 0");
+    const char* argv2[] = { "ARGS", "one", "two words", 0 };
+    id = sys_spawn_args("ARGS", argv2);
+    check(id > 0 && sys_join(id) == 0, "spawn ARGS with arguments");
+    const char* bad[] = { "ARGS", (const char*)0x10, 0 };
+    check(sys_spawn_args("ARGS", bad) == -EFAULT, "a bad argument pointer gives EFAULT");
+    check(sys_spawn_args("ARGS", (const char* const*)0xC0000000) == -EFAULT, "a kernel argv gives EFAULT");
     return check_summary("listdemo");
 }

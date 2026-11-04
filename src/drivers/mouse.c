@@ -14,9 +14,7 @@
 #define KBC_DATA   0x60
 #define KBC_TIMEOUT 100000
 
-static int found;
 static volatile int mx = GFX_WIDTH / 2, my = GFX_HEIGHT / 2, mbuttons;
-static volatile uint32_t packets;
 static uint8_t pkt[3];
 static int pkt_idx;
 static uint32_t last_byte_tick;
@@ -72,7 +70,6 @@ static void mouse_irq(void) {
     pkt[pkt_idx++] = b;
     if (pkt_idx < 3) return;
     pkt_idx = 0;
-    packets++;
     mbuttons = pkt[0] & 0x07;
     if (!(pkt[0] & 0x40)) {  // skip overflowed movement
         int dx = pkt[1] - ((pkt[0] & 0x10) ? 256 : 0);
@@ -97,15 +94,12 @@ int mouse_init(void) {
     if (read_byte(&b, 1) || b != 0xAA) goto fail; // self-test passed
     if (read_byte(&b, 1) || b != 0x00) goto fail; // device id: plain mouse
     if (mouse_write(0xF6) || mouse_write(0xF4)) goto fail;  // defaults, streaming on
-    found = 1;
     irq_register(IRQ_MOUSE, mouse_irq);
     return 0;
 fail:
     drain();
     return -1;
 }
-
-int mouse_found(void) { return found; }
 
 void mouse_get(int* x, int* y, int* buttons) {
     uint32_t f = irq_save();
@@ -114,5 +108,3 @@ void mouse_get(int* x, int* y, int* buttons) {
     *buttons = mbuttons;
     irq_restore(f);
 }
-
-uint32_t mouse_packets(void) { return packets; }

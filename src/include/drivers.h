@@ -26,9 +26,7 @@ void keyboard_raw_flush(void);
 
 // ---- PS/2 mouse ----
 int mouse_init(void);
-int mouse_found(void);
 void mouse_get(int* x, int* y, int* buttons);
-uint32_t mouse_packets(void);
 
 // ---- ATA disk (primary master, PIO) ----
 int ata_init(void);
@@ -50,11 +48,9 @@ void gfx_pixel(int x, int y, uint8_t color);
 void gfx_clear(uint8_t color);
 void gfx_line(int x0, int y0, int x1, int y1, uint8_t color);
 void gfx_rect(int x, int y, int w, int h, uint8_t color, int filled);
-void gfx_circle(int cx, int cy, int r, uint8_t color);
 void gfx_text(int x, int y, const char* s, uint8_t color);
 void gfx_blit(const uint8_t* pixels);
 const uint8_t* gfx_font(void);  // 256 glyphs x 16 rows
 void gfx_init_font(void);       // read the BIOS font, while still in text mode
-void gfx_demo(void);
 
 #endif
