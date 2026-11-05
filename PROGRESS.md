@@ -2164,3 +2164,33 @@ descriptor before cleaning up (an open file cannot be deleted, so a
 stray dup2 left its scratch directory behind), and its own verdict must
 not use the check() counters, since a legitimate stray write can land
 on them. Host 244, QEMU 220.
+
+## Other CPUs and another emulator
+
+No code change, only findings (and `Machine` in `tests/qemu_test.py` now
+takes `cpu`, `mem` and `machine`). The ISO was booted outside the default
+QEMU setup to get closer to what real hardware will do.
+
+QEMU: pentium2 and newer CPUs, 4 MB to 1 GB of RAM and the i440fx machine
+all boot and run the suite. Three things do not work:
+
+- 486 and pentium CPUs print nothing. Cause (confirmed): the build uses
+  `-march=i686`, so the compiler emits `cmov` (92 of them in the kernel,
+  first hit in `strlcpy`), which is an invalid opcode before the IDT
+  exists, so the CPU triple-faults and resets. Rebuilding with
+  `-march=i586` or `-march=i486` removes every `cmov` and the kernel
+  boots and passes the fuzzer on Bochs' pentium model. Not applied.
+- q35 boots the kernel but sees no disk: its disk is AHCI and the driver
+  only speaks legacy ATA PIO at 0x1F0. A real fix is an AHCI driver.
+- Above about 1 GB of RAM is unused, since user space starts at 0x40000000.
+
+Bochs 2.7, a separate x86 implementation, with `BIOS-bochs-legacy` (the
+newer Bochs BIOS triple-faults inside itself before reaching GRUB, so that
+one is Bochs' problem): boots to the prompt and runs `version`, `mem`,
+`run hello`, `gauge -1` and `run fuzz 1 1500` on p2_klamath, p3_katmai,
+core2_penryn_t9600 and corei7_haswell_4770, all clean, `mem` unchanged
+afterwards. The Debian Bochs is a debugger build: it sits at a prompt
+until it is sent `c` on stdin, and with stdin closed it quits at time 0.
+
+None of this is real hardware: no ACPI quirks, no real PS/2 or VGA
+timing, no SMM. It rules out "only works in QEMU", not "works on my board".

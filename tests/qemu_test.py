@@ -26,14 +26,15 @@ PROMPT = rb"ringtail:/[^>\n]*> "
 
 
 class Machine:
-    def __init__(self, iso, disk, workdir):
+    def __init__(self, iso, disk, workdir, cpu=None, mem=64, machine=None):
         self.dir = workdir
         self.serial_path = os.path.join(workdir, "serial.sock")
         self.monitor_path = os.path.join(workdir, "monitor.sock")
         self.qemu = subprocess.Popen(
             ["qemu-system-i386", "-cdrom", iso,
              "-drive", f"file={disk},format=raw,if=ide,index=0",
-             "-boot", "d", "-m", "64", "-display", "none",
+             "-boot", "d", "-m", str(mem), "-display", "none",
+             *(["-cpu", cpu] if cpu else []), *(["-machine", machine] if machine else []),
              "-chardev", f"socket,id=ser,path={self.serial_path},server=on,wait=on",
              "-serial", "chardev:ser",
              "-monitor", f"unix:{self.monitor_path},server=on,wait=off",
