@@ -9,8 +9,10 @@ root, 1-sector clusters), so mtools and fsck.fat read it too. The
 default 16 MB is large enough for a FAT16 cluster count.
 """
 import argparse
+import os
 import struct
 import sys
+import time
 
 SECTOR = 512
 SPC = 1  # sectors per cluster in our images; the kernel accepts more
@@ -131,10 +133,17 @@ def main():
     vol_off = root_start * SECTOR
     image[vol_off:vol_off + 11] = b"RINGTAIL   "
     image[vol_off + 11] = 0x08  # volume label
+    # Stamp every file with the build time (SOURCE_DATE_EPOCH if set,
+    # for reproducible images), as FAT date and time words.
+    t = time.gmtime(int(os.environ.get("SOURCE_DATE_EPOCH", time.time())))
+    fat_date = (max(t.tm_year, 1980) - 1980) << 9 | t.tm_mon << 5 | t.tm_mday
+    fat_time = t.tm_hour << 11 | t.tm_min << 5 | t.tm_sec // 2
     for i, (raw, first, size) in enumerate(entries):
         off = root_start * SECTOR + (i + 1) * 32
         image[off:off + 11] = raw
         image[off + 11] = 0x20  # archive, regular file
+        for field, value in ((14, fat_time), (16, fat_date), (18, fat_date), (22, fat_time), (24, fat_date)):
+            struct.pack_into("<H", image, off + field, value)
         struct.pack_into("<H", image, off + 26, first)
         struct.pack_into("<I", image, off + 28, size)
     for lba, chunk in data_blobs:

@@ -3,11 +3,15 @@
 #define RINGTAIL_DRIVERS_H
 
 #include <stdint.h>
+#include "ringtail/abi.h"  // rtc_time_t
 
 // ---- PIT timer ----
 #define TIMER_HZ 100
 void timer_init(void);
 uint32_t timer_ticks(void);
+
+// ---- Real-time clock (CMOS) ----
+void rtc_read(rtc_time_t* t);
 
 // ---- Serial port (COM1) ----
 void serial_init(void);

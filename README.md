@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.18.0 "Tabby"**. See PROGRESS.md for the history.
+Current version: **v0.19.0 "Timekeeper"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -114,7 +114,9 @@ path is at most 255 characters. Each task has
 its own current directory, inherited by the programs it starts. The FAT
 and the root directory are kept in memory, subdirectory sectors go
 through a small cache, and all of it is written back after each
-operation, FAT first. A new directory's cluster is zeroed on disk before
+operation, FAT first. Files and directories are stamped with the CMOS clock when they are made and
+when their contents change (`ls` shows it, `date` prints the clock; a rename
+keeps it). A new directory's cluster is zeroed on disk before
 anything points at it.
 File data is always written before the metadata that points at it.
 Replacing a file builds the new contents in fresh clusters before
@@ -160,8 +162,8 @@ and `rm` work on files, and `cd`, `pwd`, `mkdir` and `rmdir` on
 directories. `mv` renames or moves a file or a whole directory (into a
 directory if the target is one), and the `cp` program copies files. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
-`/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `uptime` the
-time and timer ticks, and `faults` the fault log. `color <name>` sets
+`/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `date` the clock, `uptime` the
+time since boot and timer ticks, and `faults` the fault log. `color <name>` sets
 the text colour, and `reboot` and `poweroff` do what they say. `exit`
 ends the shell, and init starts a new one.
 
@@ -211,8 +213,8 @@ are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 
 These are deliberate, or simply not done yet. Programs get the x87 FPU
 (its state is saved per task) but not SSE. Long names are ASCII only (a name
-with other characters shows as its short alias), and files carry no
-timestamps. There is no
+with other characters shows as its short alias). The clock is the CMOS
+one, with no time zone (UTC under QEMU) and no changes for summer time. There is no
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and

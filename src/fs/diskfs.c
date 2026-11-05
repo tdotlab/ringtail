@@ -57,6 +57,11 @@ static mutex_t fs_lock = MUTEX_INIT;
 #define DIR_FIRST_HIGH 20
 #define DIR_FIRST_LOW 26
 #define DIR_SIZE 28
+#define DIR_CTIME 14   // created: time, then date
+#define DIR_CDATE 16
+#define DIR_ADATE 18   // last accessed: a date only
+#define DIR_MTIME 22   // last written: time, then date
+#define DIR_MDATE 24
 #define MAX_FATS 4
 #define PER_SECTOR 16       // directory entries in a sector
 #define MAX_DIR_ENTRIES 65536u  // FAT's limit; bounds a walk on a looped chain
@@ -334,11 +339,31 @@ static uint32_t entry_size(const uint8_t* e) { return rd32(e + DIR_SIZE); }
 static void set_first(uint8_t* e, uint32_t c) { wr16(e + DIR_FIRST_LOW, (uint16_t)c); }
 static void set_size(uint8_t* e, uint32_t s) { wr32(e + DIR_SIZE, s); }
 
+// Stamp an entry with the clock: when it was made, or when its contents
+// last changed.
+static void stamp_new(uint8_t* e) {
+    uint16_t date, time;
+    fs_clock(&date, &time);
+    wr16(e + DIR_CTIME, time);
+    wr16(e + DIR_CDATE, date);
+    wr16(e + DIR_ADATE, date);
+    wr16(e + DIR_MTIME, time);
+    wr16(e + DIR_MDATE, date);
+}
+
+static void stamp_write(uint8_t* e) {
+    uint16_t date, time;
+    fs_clock(&date, &time);
+    wr16(e + DIR_MTIME, time);
+    wr16(e + DIR_MDATE, date);
+}
+
 static void make_entry(uint8_t* e, const uint8_t raw[11], uint8_t attr, uint32_t first) {
     memset(e, 0, 32);
     memcpy(e, raw, 11);
     e[DIR_ATTR] = attr;
     set_first(e, first);
+    stamp_new(e);
 }
 
 static int ent_end(const uint8_t* e) { return e[0] == 0x00; }  // nothing after it is used
@@ -1005,6 +1030,7 @@ static void tmpl_entry(uint8_t e[32], uint8_t attr, uint32_t first, uint32_t siz
     e[DIR_ATTR] = attr;
     set_first(e, first);
     set_size(e, size);
+    stamp_new(e);
 }
 
 static int create_locked(int at, const char* path) {
@@ -1198,6 +1224,8 @@ static int stat_locked(int at, const char* path, dirent_t* d) {
         d->size = entry_size(de.e);
         d->id = de.loc;
     }
+    d->mdate = rd16(de.e + DIR_MDATE);
+    d->mtime = rd16(de.e + DIR_MTIME);
     return 0;
 }
 
@@ -1256,6 +1284,7 @@ int diskfs_pwrite(int node, const void* buf, uint32_t len, uint32_t off) {
     else if (ent_get(file_loc(node), e)) r = -EIO;
     else {
         r = write_range(e, buf, len, off);
+        if (r > 0) stamp_write(e);
         int err = ent_put(file_loc(node), e);
         int c = commit();
         if (!err) err = c;
@@ -1298,6 +1327,7 @@ int diskfs_truncate(int node, uint32_t len) {
     else if (ent_get(file_loc(node), e)) r = -EIO;
     else {
         r = truncate_locked(e, len);
+        if (!r) stamp_write(e);
         int err = ent_put(file_loc(node), e);
         int c = commit();
         if (!err) err = c;
@@ -1338,6 +1368,7 @@ static int write_file_locked(int at, const char* path, const void* buf, uint32_t
         uint32_t old = entry_first(d.e);
         set_first(d.e, entry_first(tmp));
         set_size(d.e, len);
+        stamp_write(d.e);
         r = ent_put(d.loc, d.e);
         free_chain(r ? entry_first(tmp) : old);
     }
@@ -1374,6 +1405,8 @@ int diskfs_readdir(int dir, int* cursor, dirent_t* d) {
             d->flags = ent_is_dir(de.e) ? DIRENT_DIR : 0;
             d->size = ent_is_dir(de.e) ? 0 : entry_size(de.e);
             d->id = ent_is_dir(de.e) ? DIR_ID | entry_first(de.e) : de.loc;
+            d->mdate = rd16(de.e + DIR_MDATE);
+            d->mtime = rd16(de.e + DIR_MTIME);
             *cursor = (int)it.n;
         }
     }

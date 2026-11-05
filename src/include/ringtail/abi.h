@@ -52,7 +52,8 @@
 #define SYS_GETCWD      42  // (buf, size)             -> length of the absolute path put in buf
 #define SYS_RENAME      43  // (from, to)              -> 0; moves too; to must not exist
 #define SYS_STAT        44  // (path, dirent_t*)       -> 0
-#define NUM_SYSCALLS    45
+#define SYS_TIME        45  // (rtc_time_t*)           -> 0; the clock, as the CMOS keeps it
+#define NUM_SYSCALLS    46
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -98,7 +99,14 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 // dirent_t.id tells files and directories apart while they exist: two
 // paths with the same id are the same thing. A rename can change it.
 #define DIRENT_DIR 1  // dirent_t.flags: a directory (size is 0)
-typedef struct { char name[NAME_MAX + 1]; unsigned size; unsigned flags; unsigned id; } dirent_t;
+// mdate and mtime are when the file was last written, in the FAT's own
+// packing: date = (year - 1980) << 9 | month << 5 | day, time = hour << 11 |
+// minute << 5 | second / 2. Both are 0 for an entry nothing ever stamped.
+typedef struct { char name[NAME_MAX + 1]; unsigned size; unsigned flags; unsigned id; unsigned mdate, mtime; } dirent_t;
+
+// SYS_TIME: the wall clock, in whatever zone the CMOS was set to (UTC
+// under QEMU).
+typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 
 // Values from -4095 to -1 are errors. Anything else is a result,
 // including addresses above 2 GB that look negative as an int.

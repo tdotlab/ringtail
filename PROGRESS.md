@@ -2036,3 +2036,33 @@ Tests: 11 new QEMU checks (files, quoted names across directories,
 programs, built-ins, `run`, `cd`, redirection targets, the listing).
 It first failed on a loop that treated the readdir result as 0 for
 success; readdir returns 1 per entry.
+
+## v0.19.0 "Timekeeper"
+
+File timestamps from the CMOS clock.
+
+Kernel:
+- `src/drivers/rtc.c` reads the CMOS clock (BCD or binary, 12 or 24
+  hour, waiting out the once-a-second update and re-reading until two
+  reads agree). The year is 2000 plus the chip's. `fs_clock` turns it
+  into FAT date and time words for the filesystem.
+- diskfs stamps created, modified and accessed fields when an entry is
+  made (file, directory, `.` and `..`, and `save` creating a file), and
+  the modified fields when contents change (pwrite, truncate, replace).
+  Rename keeps them. The filesystem takes the clock through `fs_clock`,
+  so the host tests supply their own.
+- `dirent_t` gained `mdate` and `mtime` (FAT packing; 0 if never
+  stamped). New syscall `SYS_TIME` (45) returns the clock as `rtc_time_t`.
+- mkdisk.py stamps every file with the build time (`SOURCE_DATE_EPOCH`
+  if set).
+
+Shell: `ls` shows "YYYY-MM-DD HH:MM" after the size ("-" for an
+unstamped entry); new `date` command.
+
+Limits: no time zone (QEMU's CMOS is UTC), no daylight saving, no
+access-date updates on read, no setting the clock.
+
+Tests: 15 new host checks (stamps on create, write, truncate, replace,
+mkdir, readdir, rename; unstamped entries; raw created/accessed fields)
+and 4 QEMU checks (date against the host's UTC, ls on a new file, the
+image's files, and mdir reading the guest's stamps). Host 244, QEMU 163.

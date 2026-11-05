@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.18.0"
-#define RINGTAIL_CODENAME "Tabby"
+#define RINGTAIL_VERSION "0.19.0"
+#define RINGTAIL_CODENAME "Timekeeper"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08

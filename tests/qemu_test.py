@@ -10,6 +10,7 @@ installed), which proves the kernel left a consistent FAT16 volume
 that other systems can read.
 """
 import argparse
+import datetime
 import os
 import re
 import select
@@ -178,6 +179,10 @@ class Runner:
                 print("        " + detail.strip().replace("\n", "\n        ")[:1500])
 
 
+def utcnow():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
 HOST_FILE = False  # whether mtools put a long-named file on the disk
 
 
@@ -188,7 +193,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.18.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.19.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -217,7 +222,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.18.0" in out, out)
+    t.check("and the new shell works", "0.19.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
         out = m.run("run " + prog, timeout=30)
@@ -484,7 +489,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.18.0" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.19.0" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -510,6 +515,21 @@ def tests(m, t):
     for f in ("Alpha One.txt", "alpha two.txt", "Beta.txt"):
         m.run('rm "Tab Test/%s"' % f)
     m.run('rmdir "Tab Test"')
+
+    # The clock and file timestamps. QEMU's RTC starts on the host's UTC.
+    out = plain(m.run("date"))
+    mt = re.match(r"(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)", out.strip())
+    guest = datetime.datetime(*map(int, mt.groups())) if mt else None
+    skew = abs((utcnow() - guest).total_seconds()) if guest else 1e9
+    t.check("date shows the host's clock", skew < 120, "%s (skew %s s)" % (out, skew))
+    m.run("write stamped.txt now")
+    out = plain(m.run("ls"))
+    row = re.search(r"STAMPED\.TXT|stamped\.txt", out) and re.search(r"stamped\.txt\s+\d+\s+(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)", out)
+    when = datetime.datetime(*map(int, row.groups())) if row else None
+    skew = abs((utcnow() - when).total_seconds()) if when else 1e9
+    t.check("a new file's ls line has the time it was written", skew < 180, out)
+    t.check("files on the image carry the build time", re.search(r"HELLO\s+\d+\s+20\d\d-\d\d-\d\d ", out), out)
+    m.run("rm stamped.txt")
 
     # Raw mode: keys arrive as bytes, arrows as xterm sequences.
     m.send("run rawkeys\r")
@@ -702,6 +722,10 @@ def main():
         t.check("and our subdirectory", "nested and kept" in r.stdout, r.stdout + r.stderr)
         r = subprocess.run(["mtype", "-i", disk, "::My Docs/Back To A Long One.txt"], capture_output=True, text=True)
         t.check("and our long names", "long names work" in r.stdout, r.stdout + r.stderr)
+        r = subprocess.run(["mdir", "-i", disk, "::My Docs"], capture_output=True, text=True)
+        now = utcnow()
+        days = {(now - datetime.timedelta(days=k)).strftime("%Y-%m-%d") for k in (0, 1)}
+        t.check("and our timestamps", any(d in r.stdout for d in days), r.stdout + r.stderr)
 
     print(f"\n{t.passed} passed, {len(t.failed)} failed")
     print(f"serial log: {os.path.join(work, 'serial.log')}")

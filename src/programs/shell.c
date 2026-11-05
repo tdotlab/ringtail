@@ -295,6 +295,14 @@ static void cmd_history(cmd_t* c) {
 #define LS_NARROW 13
 #define LS_WIDE 32
 
+// "2026-11-05 14:32" from the FAT words in a dirent, or dashes for an
+// entry nothing ever stamped.
+static void fmt_stamp(char* buf, size_t size, unsigned date, unsigned time) {
+    if (!date) { strlcpy(buf, "-", size); return; }
+    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u", 1980 + (date >> 9), (date >> 5) & 15, date & 31,
+             time >> 11, (time >> 5) & 63);
+}
+
 static void cmd_ls(cmd_t* c) {
     const char* dir = c->argc > 1 ? c->argv[1] : ".";
     int cursor = 0, files = 0, dirs = 0, width = LS_NARROW, r;
@@ -305,13 +313,15 @@ static void cmd_ls(cmd_t* c) {
     }
     cursor = 0;
     while (r >= 0 && (r = sys_readdir(dir, &cursor, &d)) > 0) {
+        char stamp[24];
+        fmt_stamp(stamp, sizeof stamp, d.mdate, d.mtime);
         if (d.flags & DIRENT_DIR) {
             char name[sizeof d.name + 1];
             snprintf(name, sizeof name, "%s/", d.name);
-            printf("  %s%-*s%s %8s\n", tty_out ? BLU : "", width, name, tty_out ? NORM : "", "<dir>");
+            printf("  %s%-*s%s %8s  %s\n", tty_out ? BLU : "", width, name, tty_out ? NORM : "", "<dir>", stamp);
             dirs++;
         } else {
-            printf("  %-*s %8u\n", width, d.name, d.size);
+            printf("  %-*s %8u  %s\n", width, d.name, d.size, stamp);
             files++;
         }
     }
@@ -432,6 +442,14 @@ static void cmd_uptime(cmd_t* c) {
     printf("Up %u.%02u seconds (%u ticks at 100 Hz)\n", t / 100, t % 100, t);
 }
 
+static void cmd_date(cmd_t* c) {
+    (void)c;
+    rtc_time_t t;
+    int r = sys_time(&t);
+    if (r < 0) { err("date", r); return; }
+    printf("%04u-%02u-%02u %02u:%02u:%02u\n", t.year, t.month, t.day, t.hour, t.min, t.sec);
+}
+
 static void cmd_kill(cmd_t* c) {
     uint32_t id;
     if (parse_uint(c->argv[1], &id)) { complain("Usage: kill <task id>"); return; }
@@ -477,6 +495,7 @@ static const builtin_t builtins[] = {
     { "heap", 0, "", "kernel heap details", cmd_heap },
     { "mmap", 0, "", "boot memory map", cmd_mmap },
     { "uptime", 0, "", "time since boot", cmd_uptime },
+    { "date", 0, "", "the date and time", cmd_date },
     { "color", 1, "<name>", "set the text color", cmd_color },
     { "exit", 0, "", "end this shell (init starts a fresh one)", cmd_exit },
     { "reboot", 0, "", "restart the machine", cmd_reboot },

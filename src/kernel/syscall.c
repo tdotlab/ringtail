@@ -125,6 +125,12 @@ static int sys_stat(uint32_t upath, uint32_t uent, uint32_t c) {
     if (n < 0) return n;
     return copy_to_user((void*)uent, &d, sizeof d) ? -EFAULT : 0;
 }
+static int sys_time(uint32_t ut, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    rtc_time_t t;
+    rtc_read(&t);
+    return copy_to_user((void*)ut, &t, sizeof t) ? -EFAULT : 0;
+}
 static int sys_save(uint32_t upath, uint32_t ubuf, uint32_t len) {
     char path[PATH_MAX];
     int n = copy_path(path, upath);
@@ -481,6 +487,7 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_GETCWD] = sys_getcwd,
     [SYS_RENAME] = sys_rename,
     [SYS_STAT] = sys_stat,
+    [SYS_TIME] = sys_time,
 };
 
 void syscall_handle(regs_t* r) {

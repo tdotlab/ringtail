@@ -31,6 +31,13 @@ static uint32_t disk_sectors;
 static int writes_left = -1;  // -1: never fail
 static uint32_t flushes;
 
+// The clock diskfs stamps with, set by the tests.
+static uint16_t clock_date = (45 << 9) | (11 << 5) | 5;     // 2025-11-05
+static uint16_t clock_time = (14 << 11) | (32 << 5) | (6 / 2);  // 14:32:06
+void fs_clock(uint16_t* date, uint16_t* time) { *date = clock_date; *time = clock_time; }
+#define SET_CLOCK(y, mo, d, h, mi, s) \
+    (clock_date = (uint16_t)(((y) - 1980) << 9 | (mo) << 5 | (d)), clock_time = (uint16_t)((h) << 11 | (mi) << 5 | (s) / 2))
+
 int ata_present(void) { return disk_sectors != 0; }
 uint32_t ata_sectors(void) { return disk_sectors; }
 int ata_flush(void) { flushes++; return 0; }
@@ -586,6 +593,75 @@ static int stat_name(const char* path, char* out) {
     return r;
 }
 
+// The words of the last-written and created stamps, straight from the
+// root entry that holds short name raw.
+static uint16_t raw_u16(const char* raw, int off) {
+    uint8_t* e = root_slot(find_short(raw));
+    return (uint16_t)(e[off] | e[off + 1] << 8);
+}
+
+static void test_timestamps(void) {
+    char buf[600];
+    dirent_t d;
+    format(16384, 1);
+    diskfs_init();
+
+    SET_CLOCK(2025, 11, 5, 14, 32, 6);
+    CHECK(touch("A.TXT") == 0 && diskfs_stat(DISKFS_ROOT, "a.txt", &d) == 0 &&
+          d.mdate == clock_date && d.mtime == clock_time, "a new file is stamped with the clock");
+    CHECK(raw_u16("A       TXT", 14) == clock_time && raw_u16("A       TXT", 16) == clock_date &&
+          raw_u16("A       TXT", 18) == clock_date, "and so are its created and accessed fields");
+
+    SET_CLOCK(2026, 1, 2, 3, 4, 5);
+    int node = diskfs_lookup(DISKFS_ROOT, "A.TXT");
+    CHECK(node > 0 && diskfs_pwrite(node, "hi", 2, 0) == 2, "write to it later");
+    CHECK(diskfs_stat(DISKFS_ROOT, "A.TXT", &d) == 0 && d.mdate == clock_date && d.mtime == clock_time &&
+          raw_u16("A       TXT", 16) == (uint16_t)(((2025 - 1980) << 9) | (11 << 5) | 5),
+          "a write moves the modified stamp but not the created one");
+
+    SET_CLOCK(2026, 1, 3, 4, 5, 6);
+    CHECK(diskfs_truncate(node, 1) == 0 && diskfs_stat(DISKFS_ROOT, "A.TXT", &d) == 0 && d.mdate == clock_date &&
+          d.mtime == clock_time, "truncate stamps");
+    SET_CLOCK(2026, 1, 4, 5, 6, 8);
+    CHECK(diskfs_pwrite(node, "", 0, 0) == 0 && diskfs_stat(DISKFS_ROOT, "A.TXT", &d) == 0 &&
+          d.mdate != clock_date, "a write of nothing leaves the stamp alone");
+    diskfs_unref(node);
+
+    SET_CLOCK(2026, 2, 3, 4, 5, 6);
+    CHECK(diskfs_write_file(DISKFS_ROOT, "A.TXT", "replaced", 8) == 0 && diskfs_stat(DISKFS_ROOT, "A.TXT", &d) == 0 &&
+          d.mdate == clock_date && d.size == 8, "replacing a file stamps it");
+    SET_CLOCK(2026, 3, 4, 5, 6, 8);
+    CHECK(diskfs_write_file(DISKFS_ROOT, "New.TXT", "x", 1) == 0 && diskfs_stat(DISKFS_ROOT, "NEW.TXT", &d) == 0 &&
+          d.mdate == clock_date && d.mtime == clock_time, "and so does creating one that way");
+
+    SET_CLOCK(2026, 4, 5, 6, 7, 8);
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "Some Folder") == 0 && diskfs_stat(DISKFS_ROOT, "some folder", &d) == 0 &&
+          d.mdate == clock_date && (d.flags & DIRENT_DIR), "a directory is stamped");
+    int dir = diskfs_opendir(DISKFS_ROOT, "Some Folder");
+    CHECK(dir >= 0 && diskfs_stat(dir, ".", &d) == 0, "stat of '.' works");
+    SET_CLOCK(2026, 5, 6, 7, 8, 10);
+    int cursor = 0, ok = 0;
+    strcpy(buf, "");
+    while (diskfs_readdir(DISKFS_ROOT, &cursor, &d) == 0) {
+        if (strcmp(d.name, "A.TXT") == 0 || strcmp(d.name, "Some Folder") == 0) ok += d.mdate != 0;
+    }
+    CHECK(ok == 2, "readdir carries the stamps too");
+    diskfs_unref(dir);
+
+    CHECK(diskfs_stat(DISKFS_ROOT, "Some Folder", &d) == 0, "stat the folder");
+    uint16_t before = d.mdate;
+    CHECK(diskfs_rename(DISKFS_ROOT, "A.TXT", "Renamed to something long.txt") == 0 &&
+          diskfs_stat(DISKFS_ROOT, "renamed to something long.txt", &d) == 0 && d.mdate != clock_date,
+          "a rename keeps the modified stamp");
+    CHECK(before == (uint16_t)(((2026 - 1980) << 9) | (4 << 5) | 5), "and the folder kept its own");
+    // Entries made by tools that never stamped them read as 0.
+    uint8_t* e = root_slot(find_short("NEW     TXT"));
+    memset(e + 14, 0, 12);
+    diskfs_init();  // the root is kept in memory: remount to see the edit
+    CHECK(diskfs_stat(DISKFS_ROOT, "new.txt", &d) == 0 && d.mdate == 0 && d.mtime == 0,
+          "an unstamped entry reads back as 0");
+}
+
 static void test_long_names(void) {
     char buf[300], name[300];
     dirent_t d;
@@ -781,6 +857,7 @@ int main(void) {
     test_dirs();
     test_rename();
     test_long_names();
+    test_timestamps();
     test_big_clusters();  // last: its image is what fsck checks
 
     FILE* img = fopen("test_disk.img", "wb");

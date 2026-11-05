@@ -14,6 +14,10 @@
 // node `at` (DISKFS_ROOT, or one from diskfs_opendir) unless they
 // start with '/'. Names are long and case-insensitive (abi.h has the
 // rules); "." and ".." work as usual.
+// The platform supplies the clock: the date and time as FAT words
+// (abi.h, dirent_t). Entries are stamped when they are made and when
+// their contents change.
+void fs_clock(uint16_t* date, uint16_t* time);
 int diskfs_init(void);           // 0, or -errno when there is no usable disk
 int diskfs_ready(void);
 int diskfs_lookup(int at, const char* path);   // file node; -EISDIR for a directory
