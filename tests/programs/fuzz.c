@@ -190,6 +190,18 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     default: break;
     }
 
+    // A huge length over memory that is mapped would print megabytes to
+    // the console (or fill the disk). Those only go with a pointer that
+    // must fail anyway.
+    if (n == SYS_PRINT || n == SYS_WRITE) {
+        uint32_t* len = (n == SYS_PRINT) ? &b : &d;
+        uint32_t* ptr = (n == SYS_PRINT) ? &a : &b;
+        if (*len > 300) {
+            if (rnd() & 1) *len %= 300;
+            else *ptr = (rnd() & 1) ? 0xC0000000u + (rnd() & 0xFFF) : (interesting() | 0x80000000u);
+        }
+    }
+
     if (iter >= verbose_from) out("  #%u %s(%x, %x, %x)\n", iter, c->name, a, b, d);
     int r = syscall3(n, a, b, d);
 
