@@ -20,7 +20,8 @@ import sys
 import tempfile
 import time
 
-PROMPT = b"ringtail> "
+# The prompt carries the current directory: "ringtail:/> ", "ringtail:/DOCS> ".
+PROMPT = rb"ringtail:/[^>\s]*> "
 
 
 class Machine:
@@ -90,8 +91,8 @@ class Machine:
     def run(self, line, timeout=15):
         """Type a command and return its output (without the echo and prompt)."""
         self.send(line + "\r")
-        out = self.expect(re.escape(PROMPT), timeout)
-        out = out[:-len(PROMPT)].replace("\r\n", "\n")
+        out = self.expect(PROMPT, timeout)
+        out = re.sub(PROMPT.decode() + "$", "", out).replace("\r\n", "\n")
         first_nl = out.find("\n")
         return out[first_nl + 1:] if first_nl >= 0 else ""
 
@@ -177,9 +178,14 @@ class Runner:
                 print("        " + detail.strip().replace("\n", "\n        ")[:1500])
 
 
+def plain(out):
+    """Output without colour codes or surrounding whitespace."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", out).strip()
+
+
 def tests(m, t):
-    boot = m.expect(re.escape(PROMPT), 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.14.0" in boot, boot)
+    boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
+    t.check("boots to the shell", "RingTail OS v0.15.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -208,7 +214,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.14.0" in out, out)
+    t.check("and the new shell works", "0.15.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
         out = m.run("run " + prog, timeout=30)
@@ -236,7 +242,7 @@ def tests(m, t):
     m.expect(rb"count: 2", 10)
     start = time.time()
     m.send("\x03")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     t.check("Ctrl+C stops a running program", "^C" in out and time.time() - start < 2, out)
 
     # Pipes and redirection.
@@ -275,7 +281,7 @@ def tests(m, t):
     time.sleep(1)
     start = time.time()
     m.send("\x03")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     t.check("Ctrl+C stops the whole pipeline", "^C" in out and time.time() - start < 2, out)
     out = m.run("tasks")
     t.check("and leaves nothing behind", "sleep" not in out and "wc" not in out, out)
@@ -316,7 +322,7 @@ def tests(m, t):
     t.check("a program reads a line from the terminal", 'got "abc def"' in out, out)
     m.expect(rb"> ", 5)
     m.send("\x04")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     t.check("Ctrl+D is end of file", "readline: 1 lines" in out, out)
 
     # Mouse input wakes a waiting program.
@@ -324,7 +330,7 @@ def tests(m, t):
     m.expect(rb"Waiting for input", 5)
     time.sleep(0.3)
     m.monitor_cmd("mouse_move 5 5")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     t.check("mouse movement wakes a waiting program", "Woke up on input." in out, out)
 
     # Timer: 100 ticks per second of wall time.
@@ -348,6 +354,57 @@ def tests(m, t):
     t.check("rm deletes", "no such file" in out, out)
     m.run("write keep.txt this survives a power cycle")
 
+    # Directories.
+    out = m.run("mkdir docs")
+    t.check("mkdir", plain(out) == "", out)
+    out = m.run("mkdir docs")
+    t.check("mkdir of a taken name is an error", "already exists" in out, out)
+    out = m.run("ls")
+    t.check("ls marks directories", re.search(r"DOCS/\s+<dir>", plain(out)) and "1 directory" in out, out)
+    m.run("write docs/a.txt in a directory")
+    out = m.run("cat DOCS/A.TXT")
+    t.check("a file in a directory, by path", "in a directory" in out, out)
+    m.send("cd docs\r")
+    out = m.expect(PROMPT, 5)
+    t.check("cd changes the prompt", "ringtail:/DOCS> " in out, out)
+    out = m.run("pwd")
+    t.check("pwd", plain(out) == "/DOCS", out)
+    out = m.run("cat a.txt")
+    t.check("relative paths start at the current directory", "in a directory" in out, out)
+    out = m.run("cat ../keep.txt")
+    t.check(".. is the parent", "survives" in out, out)
+    out = m.run("cat /welcome.txt")
+    t.check("a leading / starts at the root", "Welcome to RingTail." in out, out)
+    out = m.run("hello")
+    t.check("programs still come from / in a directory", "Hello from disk!" in out, out)
+    out = m.run("run filedemo", timeout=30)
+    t.check("a program works in the current directory", "filedemo: all" in out and "FAIL" not in out, out)
+    m.run("mkdir sub")
+    m.run("cd sub")
+    out = m.run("pwd")
+    t.check("nested directories", plain(out) == "/DOCS/SUB", out)
+    out = m.run("cd nothere")
+    t.check("cd to a missing directory", "no such file" in out, out)
+    out = m.run("cd /keep.txt")
+    t.check("cd to a file", "not a directory" in out, out)
+    out = m.run("cat /docs")
+    t.check("cat of a directory", "is a directory" in out, out)
+    out = m.run("rmdir /docs/sub")
+    t.check("rmdir of the current directory is refused", "in use" in out, out)
+    m.send("cd\r")
+    out = m.expect(PROMPT, 5)
+    t.check("cd alone goes to the root", out.rstrip().endswith("ringtail:/>"), out)
+    out = m.run("rmdir docs")
+    t.check("rmdir of a non-empty directory is refused", "not empty" in out, out)
+    out = m.run("rm docs")
+    t.check("rm of a directory points at rmdir", "rmdir" in out, out)
+    out = m.run("rmdir docs/sub")
+    t.check("rmdir", plain(out) == "", out)
+    out = m.run("ls docs")
+    t.check("ls of a directory", "A.TXT" in out and "SUB" not in out, out)
+    m.run("mkdir keepdir")
+    m.run("write keepdir/deep.txt nested and kept")
+
     # Raw mode: keys arrive as bytes, arrows as xterm sequences.
     m.send("run rawkeys\r")
     m.expect(rb"raw mode on", 5)
@@ -364,7 +421,7 @@ def tests(m, t):
     out = m.expect(rb"keys: [^\n]*\n", 5)
     t.check("Backspace arrives as DEL", "keys: 7f" in out, out)
     m.send("\x03")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     t.check("Ctrl+C still kills a raw program", "^C" in out, out)
     out = m.run("echo cooked")
     t.check("the terminal is cooked again afterwards", "cooked" in out, out)
@@ -378,7 +435,7 @@ def tests(m, t):
     out = m.expect(rb"keys: [^\n]*\n", 5)
     t.check("three quick Ctrl+C are just bytes too", "03" in out and "^C" not in out, out)
     m.send("\x1c")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     t.check("Ctrl+\\ kills a TTY_NOSIG program", "^C" in out, out)
 
     # ANSI escapes position and colour text on the VGA screen.
@@ -423,7 +480,7 @@ def tests(m, t):
     m.send("\x11")
     t.check("quitting with changes asks first", "Save changes before closing" in m.wait_row(23, "Save changes"))
     m.send("y")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     out = m.run("cat notes.txt")
     t.check("the saved file has every edit", out.replace("\r", "") ==
             "hello there\nsecond line\nhello there\nsecond line\n" or
@@ -440,14 +497,14 @@ def tests(m, t):
     m.send("zoo\r")
     t.check("an untitled document is saved as a lemur", "Saved zoo.LEM" in m.wait_row(23, "Saved"))
     m.send("\x11")
-    m.expect(re.escape(PROMPT), 5)
+    m.expect(PROMPT, 5)
     out = m.run("cat zoo.lem")
     t.check("and the file is there", out.count("lemur") == 20, repr(out))
 
     # History recall with the Up arrow.
     m.run("echo first")
     m.send("\x1b[A\r")
-    out = m.expect(re.escape(PROMPT), 5)
+    out = m.expect(PROMPT, 5)
     t.check("Up arrow recalls the last command", out.count("first") >= 2, out)
 
     # The desktop: graphics mode, then Esc back to text.
@@ -479,17 +536,19 @@ def tests(m, t):
             break
     t.check("closing Octavo goes straight back to the desktop", size == (640, 400), f"screen is {size}")
     m.monitor_cmd("sendkey esc")
-    m.expect(re.escape(PROMPT), 5)
+    m.expect(PROMPT, 5)
     t.check("Esc leaves the gui and text mode returns", m.screen_size() == (720, 400))
 
     out = m.run("mem")
     t.check("mem", "Frames:" in out and "Heap:" in out, out)
 
     m.send("reboot\r")
-    out = m.expect(re.escape(PROMPT), 30)
+    out = m.expect(PROMPT, 30)
     t.check("reboot comes back up", "RingTail OS" in out, out)
     out = m.run("cat keep.txt")
     t.check("files survive a reboot", "survives a power cycle" in out, out)
+    out = m.run("cat keepdir/deep.txt")
+    t.check("directories survive a reboot", "nested and kept" in out, out)
     m.send("poweroff\r")
     m.close()
     t.check("poweroff stops the machine", m.qemu.returncode is not None)
@@ -525,6 +584,9 @@ def main():
         r = subprocess.run(["mtype", "-i", disk, "::KEEP.TXT"], capture_output=True, text=True)
         t.check("another FAT implementation reads our file", "survives a power cycle" in r.stdout,
                 r.stdout + r.stderr)
+
+        r = subprocess.run(["mtype", "-i", disk, "::KEEPDIR/DEEP.TXT"], capture_output=True, text=True)
+        t.check("and our subdirectory", "nested and kept" in r.stdout, r.stdout + r.stderr)
 
     print(f"\n{t.passed} passed, {len(t.failed)} failed")
     print(f"serial log: {os.path.join(work, 'serial.log')}")

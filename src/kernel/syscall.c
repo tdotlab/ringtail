@@ -64,31 +64,60 @@ static int sys_close(uint32_t fd, uint32_t b, uint32_t c) {
     return file_close((int)fd);
 }
 
-static int copy_name(char name[FS_NAME_MAX], uint32_t uname) {
-    int n = strncpy_from_user(name, (const char*)uname, FS_NAME_MAX);
-    return n == -ENAMETOOLONG ? -EINVAL : n;
+static int copy_path(char path[PATH_MAX], uint32_t upath) {
+    return strncpy_from_user(path, (const char*)upath, PATH_MAX);
 }
 
-static int sys_delete(uint32_t uname, uint32_t b, uint32_t c) {
+static int sys_delete(uint32_t upath, uint32_t b, uint32_t c) {
     (void)b; (void)c;
-    char name[FS_NAME_MAX];
-    int n = copy_name(name, uname);
-    return n < 0 ? n : diskfs_unlink(name);
+    char path[PATH_MAX];
+    int n = copy_path(path, upath);
+    return n < 0 ? n : diskfs_unlink(file_cwd(), path);
+}
+
+static int sys_mkdir(uint32_t upath, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    char path[PATH_MAX];
+    int n = copy_path(path, upath);
+    return n < 0 ? n : diskfs_mkdir(file_cwd(), path);
+}
+
+static int sys_rmdir(uint32_t upath, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    char path[PATH_MAX];
+    int n = copy_path(path, upath);
+    return n < 0 ? n : diskfs_rmdir(file_cwd(), path);
+}
+
+static int sys_chdir(uint32_t upath, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    char path[PATH_MAX];
+    int n = copy_path(path, upath);
+    return n < 0 ? n : file_chdir(path);
+}
+
+static int sys_getcwd(uint32_t ubuf, uint32_t size, uint32_t c) {
+    (void)c;
+    char path[PATH_MAX];
+    int n = diskfs_getcwd(file_cwd(), path, sizeof path);
+    if (n < 0) return n;
+    if ((uint32_t)n + 1 > size) return -ENAMETOOLONG;
+    return copy_to_user((void*)ubuf, path, (uint32_t)n + 1) ? -EFAULT : n;
 }
 
 // Replace a whole file in one step: the new contents go to fresh
 // clusters and the directory entry switches only once they are all
 // written, so a full disk or an I/O error leaves the old file intact.
 #define SAVE_MAX (1024u * 1024u)
-static int sys_save(uint32_t uname, uint32_t ubuf, uint32_t len) {
-    char name[FS_NAME_MAX];
-    int n = copy_name(name, uname);
+static int sys_save(uint32_t upath, uint32_t ubuf, uint32_t len) {
+    char path[PATH_MAX];
+    int n = copy_path(path, upath);
     if (n < 0) return n;
     if (len > SAVE_MAX) return -EFBIG;
     if (user_range_ok(ubuf, len, 0)) return -EFAULT;
     void* buf = kmalloc(len ? len : 1);
     if (!buf) return -ENOMEM;
-    int r = copy_from_user(buf, (const void*)ubuf, len) ? -EFAULT : diskfs_write_file(name, buf, len);
+    int r = copy_from_user(buf, (const void*)ubuf, len) ? -EFAULT : diskfs_write_file(file_cwd(), path, buf, len);
     kfree(buf);
     return r;
 }
@@ -211,18 +240,21 @@ static int sys_seek(uint32_t fd, uint32_t off, uint32_t whence) {
     return file_seek((int)fd, (int32_t)off, (int)whence);
 }
 
-// Name of the index-th file. Restarts from the top on every call:
-// slow for a big directory, but stateless.
+// Name of the index-th file (not directory) in the current directory.
+// Restarts from the top on every call: slow for a big directory, but
+// stateless.
 static int sys_list(uint32_t index, uint32_t ubuf, uint32_t size) {
-    char name[FS_NAME_MAX];
+    dirent_t d;
     int cursor = 0;
     for (uint32_t i = 0;; i++) {
-        if (diskfs_readdir(&cursor, name, 0) < 0) return -ENOENT;
+        do {
+            if (diskfs_readdir(file_cwd(), &cursor, &d) < 0) return -ENOENT;
+        } while (d.flags & DIRENT_DIR);
         if (i == index) break;
     }
-    uint32_t len = strlen(name) + 1;
+    uint32_t len = strlen(d.name) + 1;
     if (size < len) return -EINVAL;
-    return copy_to_user((void*)ubuf, name, len);
+    return copy_to_user((void*)ubuf, d.name, len);
 }
 
 // argv from user memory: up to ARGV_MAX strings, ARGS_MAX_BYTES in
@@ -238,8 +270,8 @@ static int spawn_job(const spawn_opts_t* o) {
 }
 
 static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t uopts) {
-    char name[FS_NAME_MAX];
-    int n = copy_name(name, uname);
+    char name[PATH_MAX];
+    int n = copy_path(name, uname);
     if (n < 0) return n;
     // While the caller holds the display the child could not print
     // anything visible, and could not take the display either.
@@ -272,7 +304,9 @@ static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t uopts) {
         used += (uint32_t)len + 1;
     }
     if (!r && argc == 0) r = -EINVAL;
-    if (!r) r = loader_spawn(name, argc, argv, job, std);
+    // A bare name is a program in the root; a path is taken as it is.
+    int at = strchr(name, '/') ? file_cwd() : DISKFS_ROOT;
+    if (!r) r = loader_spawn(at, name, argc, argv, job, std);
     kfree(strings);
     return r;
 }
@@ -294,16 +328,22 @@ static int sys_kill(uint32_t id, uint32_t b, uint32_t c) {
     return task_kill_user((int)id);
 }
 
-static int sys_readdir(uint32_t ucursor, uint32_t uent, uint32_t c) {
-    (void)c;
+static int sys_readdir(uint32_t upath, uint32_t ucursor, uint32_t uent) {
+    char path[PATH_MAX];
+    int n = copy_path(path, upath);
+    if (n < 0) return n;
     int cursor;
     if (copy_from_user(&cursor, (const void*)ucursor, sizeof cursor)) return -EFAULT;
+    int dir = diskfs_opendir(file_cwd(), path);
+    if (dir < 0) return dir;
     dirent_t d;
     memset(&d, 0, sizeof d);
-    int r = diskfs_readdir(&cursor, d.name, &d.size);
+    int r = diskfs_readdir(dir, &cursor, &d);
+    diskfs_unref(dir);
+    if (r == -ENOENT) return 0;  // the end; a missing directory failed above
     if (r < 0) return r;
     if (copy_to_user((void*)uent, &d, sizeof d)) return -EFAULT;
-    return copy_to_user((void*)ucursor, &cursor, sizeof cursor);
+    return copy_to_user((void*)ucursor, &cursor, sizeof cursor) ? -EFAULT : 1;
 }
 
 #define KINFO_MAX 4096
@@ -419,6 +459,10 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_POWER] = sys_power,
     [SYS_PIPE] = sys_pipe,
     [SYS_DUP2] = sys_dup2,
+    [SYS_MKDIR] = sys_mkdir,
+    [SYS_RMDIR] = sys_rmdir,
+    [SYS_CHDIR] = sys_chdir,
+    [SYS_GETCWD] = sys_getcwd,
 };
 
 void syscall_handle(regs_t* r) {

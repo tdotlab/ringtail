@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.14.0 "Plumbing"**. See PROGRESS.md for the history.
+Current version: **v0.15.0 "Burrow"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -38,7 +38,9 @@ code as a 32-bit Linux program, on top of a RAM disk that can be told to
 fail writes. It covers allocation and coalescing, double frees and bad
 pointers, 8.3 name rules, sparse writes, truncation, full disks, root
 directory exhaustion, an I/O error during a replace (the old contents
-must survive), a non-default cluster size and malformed volumes. At the
+must survive), subdirectories (paths, growth past one cluster, rmdir
+rules, remounts, the depth limit), a non-default cluster size and
+malformed volumes. At the
 end, fsck.fat checks the image the run left behind.
 
 `tests/qemu_test.py` boots the real ISO in QEMU and drives the shell
@@ -48,7 +50,8 @@ banner and runs every program, including the ones that are supposed to
 crash. It covers bad pointers handed to syscalls, stack growth and
 overflow, malloc, Ctrl+C on foreground jobs, background jobs, raw
 terminal mode, ANSI output (read back from VGA memory through the QEMU
-monitor), an editing session in Octavo, file commands, the timer rate,
+monitor), an editing session in Octavo, file and directory commands,
+the timer rate,
 the switch into graphics mode and back, reboot persistence and poweroff.
 Afterwards it runs fsck.fat and mtools against the disk. Pass `--keep`
 to keep the serial log and the disk.
@@ -96,13 +99,20 @@ disk) and `kill`. Pipes are 4 KB kernel buffers: a reader waits for data
 and sees end of file once every writer has closed, and a writer waits
 for room. `dup2` copies a descriptor onto another number.
 
-Filesystem: FAT16, root directory only, DOS 8.3 names. The FAT and the
-directory are cached in memory and written back after each operation.
+Filesystem: FAT16 with subdirectories and DOS 8.3 names. Paths use `/`,
+start at the task's current directory unless they begin with `/`, and
+know `.` and `..`; a full path is at most 127 characters. Each task has
+its own current directory, inherited by the programs it starts. The FAT
+and the root directory are kept in memory, subdirectory sectors go
+through a small cache, and all of it is written back after each
+operation, FAT first. A new directory's cluster is zeroed on disk before
+anything points at it.
 File data is always written before the metadata that points at it.
 Replacing a file builds the new contents in fresh clusters before
 switching the directory entry, so a failure leaves the old file intact;
 programs get that through the `save` syscall.
-An open file cannot be deleted.
+An open file cannot be deleted, and a directory that is some task's
+current directory cannot be removed.
 
 ## Source layout
 
@@ -121,7 +131,7 @@ tests          host unit tests, the QEMU integration suite, test programs
 
 ## Using it
 
-Type `help` at the `ringtail>` prompt for the command list. The editor
+Type `help` at the `ringtail:/>` prompt (it shows the current directory) for the command list. The editor
 keeps the last 10 lines (Up and Down), Ctrl+C cancels a line or kills the
 foreground program, and Ctrl+L clears the screen.
 
@@ -132,8 +142,11 @@ first command a file, and `> FILE` or `>> FILE` writes or appends the
 last command's output. A built-in can start a pipeline (`ls | grep TXT`,
 `help | grep file`) or be redirected (`echo hi > NOTE.TXT`), but not
 come after a `|`. Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
-`kill <id>` stops it. `ls`, `cat`, `touch`, `write <file> <text>` and
-`rm` work on files. `mem`, `heap` and `mmap` show memory, `uptime` the
+`kill <id>` stops it. `ls [dir]`, `cat`, `touch`, `write <file> <text>`
+and `rm` work on files, and `cd`, `pwd`, `mkdir` and `rmdir` on
+directories. Every file argument can be a path (`DOCS/A.TXT`,
+`../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
+`/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `uptime` the
 time and timer ticks, and `faults` the fault log. `color <name>` sets
 the text colour, and `reboot` and `poweroff` do what they say. `exit`
 ends the shell, and init starts a new one.
@@ -183,7 +196,7 @@ are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 ## Limits
 
 These are deliberate, or simply not done yet. Programs get the x87 FPU
-(its state is saved per task) but not SSE. There are no subdirectories or long file names, no
+(its state is saved per task) but not SSE. There are no long file names, no rename or move, no
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and

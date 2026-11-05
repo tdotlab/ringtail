@@ -1,6 +1,7 @@
-// Per-task file descriptors. A program starts with console input on
-// fd 0 and console output on 1 and 2, or with copies of its parent's
-// descriptors; the rest are diskfs files and pipe ends. Copies of a
+// Per-task file descriptors and current directory. A program starts
+// with console input on fd 0 and console output on 1 and 2, or with
+// copies of its parent's descriptors; the rest are diskfs files and
+// pipe ends. It starts in its parent's directory. Copies of a
 // file descriptor each keep their own offset. All buffers passed in are user
 // pointers; data moves through a kernel bounce buffer, so the disk
 // code never touches user memory.
@@ -15,6 +16,8 @@
 #define BOUNCE 4096u
 
 void files_init_std(task_t* t) {
+    t->cwd = current ? current->cwd : DISKFS_ROOT;
+    diskfs_ref(t->cwd);
     memset(t->fds, 0, sizeof t->fds);
     t->fds[STDIN_FILENO].kind = FD_CONSOLE_IN;
     t->fds[STDIN_FILENO].flags = O_RDONLY;
@@ -49,6 +52,18 @@ void files_inherit(task_t* child, task_t* parent, const int std[3]) {
 
 void files_close_all(task_t* t) {
     for (int i = 0; i < MAX_FDS; i++) fd_release(&t->fds[i]);
+    diskfs_unref(t->cwd);
+    t->cwd = DISKFS_ROOT;
+}
+
+int file_cwd(void) { return current->cwd; }
+
+int file_chdir(const char* path) {
+    int node = diskfs_opendir(current->cwd, path);
+    if (node < 0) return node;
+    diskfs_unref(current->cwd);
+    current->cwd = node;
+    return 0;
 }
 
 static int free_fd(int from) {
@@ -63,9 +78,9 @@ static fd_t* get_fd(int fd) {
 }
 
 int file_open(const char* uname, int flags) {
-    char name[FS_NAME_MAX];
+    char name[PATH_MAX];
     int n = strncpy_from_user(name, uname, sizeof name);
-    if (n < 0) return n == -ENAMETOOLONG ? -EINVAL : n;
+    if (n < 0) return n;
     int acc = flags & O_ACCMODE;
     if (acc == O_ACCMODE) return -EINVAL;
     if (flags & ~(O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND)) return -EINVAL;
@@ -74,14 +89,17 @@ int file_open(const char* uname, int flags) {
     int fd = free_fd(0);
     if (fd < 0) return fd;
 
-    int node = diskfs_lookup(name);
-    if (node >= 0 && (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) return -EEXIST;
+    // The node comes referenced, so nobody can delete it under us.
+    int node = diskfs_lookup(current->cwd, name);
+    if (node >= 0 && (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
+        diskfs_unref(node);
+        return -EEXIST;
+    }
     if (node == -ENOENT && (flags & O_CREAT)) {
-        node = diskfs_create(name);
-        if (node == -EEXIST && !(flags & O_EXCL)) node = diskfs_lookup(name);  // lost a race
+        node = diskfs_create(current->cwd, name);
+        if (node == -EEXIST && !(flags & O_EXCL)) node = diskfs_lookup(current->cwd, name);  // lost a race
     }
     if (node < 0) return node;
-    diskfs_ref(node);  // before truncating, so nobody can delete it under us
     if (flags & O_TRUNC) {
         int r = diskfs_truncate(node, 0);
         if (r < 0) { diskfs_unref(node); return r; }

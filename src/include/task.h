@@ -45,6 +45,7 @@ typedef struct task {
 
     char name[TASK_NAME_MAX];
     fd_t fds[MAX_FDS];
+    int cwd;               // current directory, a diskfs node (0 is the root)
     uint8_t fpu[108];      // x87 state, fnsave format
 
     struct task* next;

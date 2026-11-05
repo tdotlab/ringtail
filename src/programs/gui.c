@@ -135,7 +135,7 @@ static void draw_about(void) {
     text(w->x + 5, w->y + 2, "About", 15);
     rect(w->x + w->w - 20, w->y + 2, 18, 16, 4);
     text(w->x + w->w - 14, w->y + 2, "X", 15);
-    text(w->x + 10, w->y + 30, "RingTail v0.14", 0);
+    text(w->x + 10, w->y + 30, "RingTail v0.15", 0);
     text(w->x + 10, w->y + 50, "Bare-metal x86 OS", 0);
     text(w->x + 10, w->y + 70, "C + NASM, no libc", 0);
 }
@@ -237,6 +237,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     sys_gfx_font(font);
+    sys_chdir("/");  // the desktop shows the root, where the programs are
     load_programs();
 
     mouse_state_t m, prev;

@@ -60,6 +60,14 @@ char* strchr(const char* s, int c) {
     }
 }
 
+char* strrchr(const char* s, int c) {
+    const char* last = 0;
+    do {
+        if (*s == (char)c) last = s;
+    } while (*s++);
+    return (char*)last;
+}
+
 size_t strlcpy(char* dst, const char* src, size_t size) {
     size_t len = strlen(src);
     if (size) {
@@ -92,7 +100,7 @@ const char* strerror(int err) {
     switch (err) {
     case 0: return "success";
     case EPERM: return "not permitted";
-    case ENOENT: return "no such file";
+    case ENOENT: return "no such file or directory";
     case ESRCH: return "no such task";
     case EINTR: return "interrupted";
     case EIO: return "I/O error";
@@ -104,13 +112,17 @@ const char* strerror(int err) {
     case EFAULT: return "bad address";
     case EBUSY: return "busy";
     case EEXIST: return "already exists";
+    case ENOTDIR: return "not a directory";
+    case EISDIR: return "is a directory";
     case EINVAL: return "invalid argument";
+    case ENFILE: return "too many files in use";
     case EMFILE: return "too many open files";
     case EFBIG: return "file too large";
     case ENOSPC: return "disk full";
     case EPIPE: return "broken pipe";
     case ENAMETOOLONG: return "name too long";
     case ENOSYS: return "no such system call";
+    case ENOTEMPTY: return "directory not empty";
     }
     return "unknown error";
 }

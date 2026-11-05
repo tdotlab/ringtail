@@ -1899,3 +1899,47 @@ pipelines, every redirection, the error messages, and Ctrl+C on a
 pipeline leaving no tasks behind.
 
 Next idea: subdirectories.
+
+## v0.15.0 "Burrow"
+
+Subdirectories. `mkdir`, `rmdir`, `cd` and `pwd` in the shell, paths
+everywhere a file name went before (`DOCS/A.TXT`, `../X`, `/WELCOME.TXT`),
+and a prompt that shows where you are: `ringtail:/DOCS> `.
+
+Kernel:
+- diskfs rewritten around directory nodes. The root stays in memory;
+  subdirectory sectors go through an 8-sector write-back cache, flushed
+  after the FAT and the root. Every path call takes the directory to
+  start from, so a task's current directory is just a node it holds a
+  reference to. Anything referenced (an open file, someone's cwd) can't
+  be deleted; rmdir gets EBUSY.
+- Directories grow a cluster at a time; the root still has its fixed
+  512 entries. `..` comes from the on-disk entry, and getcwd climbs it,
+  finding each directory's name in its parent.
+- A new directory's cluster, with `.` and `..`, is written straight to
+  disk before the FAT and the parent's entry point at it, and freed
+  clusters are dropped from the cache, so a crash can't leave a
+  directory full of stale sectors.
+- mkdir refuses a directory whose full path couldn't fit PATH_MAX (128),
+  so getcwd can always answer.
+- New syscalls: mkdir, rmdir, chdir, getcwd. readdir now takes a path
+  and returns 1 per entry and 0 at the end, so a missing directory and
+  the end of a listing are different answers. delete, save, open and
+  spawn take paths. `list` (the old flat call) shows only files.
+- New errnos: ENOTDIR, EISDIR, ENFILE, ENOTEMPTY.
+- Bare program names are looked up in `/` whatever the cwd; a name
+  with a `/` in it is resolved from the cwd.
+
+Shell: `ls [dir]` shows directories first-class (blue `NAME/ <dir>` on
+the terminal) and counts them in the summary. `rm` on a directory points
+at rmdir. Octavo takes paths in Open and Save as, and the desktop always
+lists programs from `/`.
+
+Tests: 152 host checks (mkdir and rmdir rules, every path form, a
+directory growing past one cluster, a full disk and a full root, an I/O
+error during mkdir, a tree surviving a remount, the depth limit, and a
+70-file directory for fsck), 123 QEMU checks (every new command and
+error, programs run from inside a directory, a nested file surviving a
+reboot, and mtools reading it afterwards).
+
+Next ideas: rename/mv and cp, then long file names or a second disk.

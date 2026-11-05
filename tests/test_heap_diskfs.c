@@ -156,9 +156,19 @@ static void test_heap(void) {
 // ---- Filesystem ----
 
 static int read_all(const char* name, char* buf, uint32_t max) {
-    int node = diskfs_lookup(name);
+    int node = diskfs_lookup(DISKFS_ROOT, name);
     if (node < 0) return node;
-    return diskfs_pread(node, buf, max, 0);
+    int r = diskfs_pread(node, buf, max, 0);
+    diskfs_unref(node);
+    return r;
+}
+
+// Create a file (or fail) without keeping it open.
+static int touch(const char* path) {
+    int node = diskfs_create(DISKFS_ROOT, path);
+    if (node < 0) return node;
+    diskfs_unref(node);
+    return 0;
 }
 
 static void test_names(void) {
@@ -186,14 +196,17 @@ static void test_basic(void) {
     CHECK(clusters >= 4085 && free0 == clusters && cb == 512, "stats show an empty disk");
 
     int cursor = 0;
-    CHECK(diskfs_readdir(&cursor, buf, 0) == -ENOENT, "the volume label is not listed as a file");
-    CHECK(diskfs_lookup("HELLO.TXT") == -ENOENT, "missing file is not found");
-    CHECK(diskfs_lookup("BAD NAME") == -EINVAL, "lookup of an invalid name is -EINVAL");
+    dirent_t d;
+    CHECK(diskfs_readdir(DISKFS_ROOT, &cursor, &d) == -ENOENT, "the volume label is not listed as a file");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "HELLO.TXT") == -ENOENT, "missing file is not found");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "BAD NAME") == -EINVAL, "lookup of an invalid name is -EINVAL");
 
-    int node = diskfs_create("hello.txt");
+    int node = diskfs_create(DISKFS_ROOT, "hello.txt");
     CHECK(node >= 0, "create succeeds");
-    CHECK(diskfs_create("HELLO.TXT") == -EEXIST, "create is case-insensitive and refuses duplicates");
-    CHECK(diskfs_lookup("Hello.Txt") == node, "lookup is case-insensitive");
+    CHECK(diskfs_create(DISKFS_ROOT, "HELLO.TXT") == -EEXIST, "create is case-insensitive and refuses duplicates");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "Hello.Txt") == node, "lookup is case-insensitive");
+    CHECK(diskfs_refs(node) == 2, "and a lookup of an open file shares its node");
+    diskfs_unref(node);
     CHECK(diskfs_size(node) == 0, "new file is empty");
     CHECK(diskfs_pread(node, buf, sizeof buf, 0) == 0, "reading an empty file gives 0 bytes");
 
@@ -230,33 +243,30 @@ static void test_basic(void) {
     diskfs_stats(&clusters, &f, &cb);
     CHECK(f == free0, "an empty file owns no clusters");
 
-    CHECK(diskfs_write_file("notes.txt", "first", 5) == 0, "write_file creates a file");
-    CHECK(diskfs_write_file("notes.txt", "second version", 14) == 0, "write_file replaces it");
+    CHECK(diskfs_write_file(DISKFS_ROOT, "notes.txt", "first", 5) == 0, "write_file creates a file");
+    CHECK(diskfs_write_file(DISKFS_ROOT, "notes.txt", "second version", 14) == 0, "write_file replaces it");
     memset(buf, 0, sizeof buf);
     CHECK(read_all("NOTES.TXT", buf, sizeof buf) == 14 && strcmp(buf, "second version") == 0, "the new contents are there");
-    CHECK(diskfs_write_file("notes.txt", "", 0) == 0 && read_all("NOTES.TXT", buf, sizeof buf) == 0,
+    CHECK(diskfs_write_file(DISKFS_ROOT, "notes.txt", "", 0) == 0 && read_all("NOTES.TXT", buf, sizeof buf) == 0,
           "write_file with no data empties the file");
 
     // Open files cannot be deleted.
-    int n2 = diskfs_lookup("NOTES.TXT");
-    diskfs_ref(n2);
-    CHECK(diskfs_refs(n2) == 1, "ref counts");
-    CHECK(diskfs_unlink("NOTES.TXT") == -EBUSY, "unlink of an open file is -EBUSY");
+    int n2 = diskfs_lookup(DISKFS_ROOT, "NOTES.TXT");
+    CHECK(diskfs_refs(n2) == 1, "a lookup holds a reference");
+    CHECK(diskfs_unlink(DISKFS_ROOT, "NOTES.TXT") == -EBUSY, "unlink of an open file is -EBUSY");
     diskfs_unref(n2);
-    CHECK(diskfs_unlink("NOTES.TXT") == 0, "unlink once closed");
-    CHECK(diskfs_lookup("NOTES.TXT") == -ENOENT, "it is gone");
-    CHECK(diskfs_unlink("NOTES.TXT") == -ENOENT, "second unlink is -ENOENT");
+    CHECK(diskfs_unlink(DISKFS_ROOT, "NOTES.TXT") == 0, "unlink once closed");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "NOTES.TXT") == -ENOENT, "it is gone");
+    CHECK(diskfs_unlink(DISKFS_ROOT, "NOTES.TXT") == -ENOENT, "second unlink is -ENOENT");
 
     // Directory listing.
-    diskfs_write_file("A.TXT", "a", 1);
-    diskfs_write_file("B.TXT", "bb", 2);
+    diskfs_write_file(DISKFS_ROOT, "A.TXT", "a", 1);
+    diskfs_write_file(DISKFS_ROOT, "B.TXT", "bb", 2);
     int count = 0, saw_b = 0;
-    char name[FS_NAME_MAX];
-    uint32_t size;
     cursor = 0;
-    while (diskfs_readdir(&cursor, name, &size) == 0) {
+    while (diskfs_readdir(DISKFS_ROOT, &cursor, &d) == 0) {
         count++;
-        if (strcmp(name, "B.TXT") == 0 && size == 2) saw_b = 1;
+        if (strcmp(d.name, "B.TXT") == 0 && d.size == 2 && d.flags == 0) saw_b = 1;
     }
     CHECK(count == 3 && saw_b, "readdir lists every file with its size");
 
@@ -275,25 +285,28 @@ static void test_full_disk(void) {
     diskfs_init();
     uint32_t clusters, free0, f, cb;
     diskfs_stats(&clusters, &free0, &cb);
-    diskfs_write_file("KEEP.TXT", "keep me", 7);
+    diskfs_write_file(DISKFS_ROOT, "KEEP.TXT", "keep me", 7);
     diskfs_stats(&clusters, &free0, &cb);
 
     static uint8_t huge[9 * 1024 * 1024];
     memset(huge, 'Z', sizeof huge);
-    CHECK(diskfs_write_file("HUGE.BIN", huge, sizeof huge) == -ENOSPC, "write bigger than the disk is -ENOSPC");
+    CHECK(diskfs_write_file(DISKFS_ROOT, "HUGE.BIN", huge, sizeof huge) == -ENOSPC, "write bigger than the disk is -ENOSPC");
     diskfs_stats(&clusters, &f, &cb);
     CHECK(f == free0, "a failed write_file gives back every cluster it took");
-    CHECK(diskfs_lookup("HUGE.BIN") == -ENOENT, "and leaves no half-made file");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "HUGE.BIN") == -ENOENT, "and leaves no half-made file");
 
-    int node = diskfs_create("FILL.BIN");
+    int node = diskfs_create(DISKFS_ROOT, "FILL.BIN");
     int r = diskfs_pwrite(node, huge, sizeof huge, 0);
     CHECK(r > 0 && (uint32_t)r < sizeof huge, "pwrite to a full disk writes what fits");
     CHECK(diskfs_size(node) == (uint32_t)r, "and the size says how much");
     diskfs_stats(&clusters, &f, &cb);
     CHECK(f == 0, "the disk is now full");
     CHECK(diskfs_pwrite(node, "more", 4, (uint32_t)r) == -ENOSPC, "further growth is -ENOSPC");
-    CHECK(diskfs_create("EMPTY.TXT") >= 0, "empty files still fit on a full disk");
-    CHECK(diskfs_unlink("FILL.BIN") == 0, "deleting the filler");
+    CHECK(touch("EMPTY.TXT") == 0, "empty files still fit on a full disk");
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "NOROOM") == -ENOSPC, "a directory needs a cluster, so it does not");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "NOROOM") == -ENOENT, "and leaves no entry behind");
+    diskfs_unref(node);
+    CHECK(diskfs_unlink(DISKFS_ROOT, "FILL.BIN") == 0, "deleting the filler");
     diskfs_stats(&clusters, &f, &cb);
     CHECK(f == free0, "frees all of it");
     char buf[16] = {0};
@@ -304,12 +317,12 @@ static void test_io_errors(void) {
     char buf[64];
     format(16384, 1);
     diskfs_init();
-    diskfs_write_file("SAFE.TXT", "original", 8);
+    diskfs_write_file(DISKFS_ROOT, "SAFE.TXT", "original", 8);
 
     // Fail the very first write: the new data never lands, so the
     // directory must still point at the old data.
     writes_left = 0;
-    CHECK(diskfs_write_file("SAFE.TXT", "replacement", 11) == -EIO, "disk error is reported");
+    CHECK(diskfs_write_file(DISKFS_ROOT, "SAFE.TXT", "replacement", 11) == -EIO, "disk error is reported");
     writes_left = -1;
     CHECK(diskfs_init() == 0, "remount after the error");
     memset(buf, 0, sizeof buf);
@@ -321,10 +334,139 @@ static void test_io_errors(void) {
     for (int i = 0; i < 600; i++) {
         char name[16];
         snprintf(name, sizeof name, "F%d.TXT", i);
-        if (diskfs_create(name) >= 0) made++;
+        if (touch(name) == 0) made++;
     }
     CHECK(made == 512 - 2, "the root directory fills at its entry count");
-    CHECK(diskfs_create("ONEMORE.TXT") == -ENOSPC, "and then create is -ENOSPC");
+    CHECK(diskfs_create(DISKFS_ROOT, "ONEMORE.TXT") == -ENOSPC, "and then create is -ENOSPC");
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "ONEMORE") == -ENOSPC, "and so is mkdir");
+}
+
+static int count_entries(int dir) {
+    dirent_t d;
+    int cursor = 0, n = 0;
+    while (diskfs_readdir(dir, &cursor, &d) == 0) n++;
+    return n;
+}
+
+static void test_dirs(void) {
+    char buf[256];
+    format(16384, 1);  // 512-byte clusters hold 16 entries, so directories grow often
+    diskfs_init();
+    uint32_t clusters, free0, f, cb;
+    diskfs_stats(&clusters, &free0, &cb);
+
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "docs") == 0, "mkdir makes a directory");
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "DOCS") == -EEXIST, "a second mkdir of the name is -EEXIST");
+    CHECK(touch("DOCS") == -EEXIST, "a file cannot take a directory's name");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "DOCS") == -EISDIR, "a directory does not open as a file");
+    CHECK(diskfs_unlink(DISKFS_ROOT, "DOCS") == -EISDIR, "unlink refuses a directory");
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "/") == -EEXIST && diskfs_mkdir(DISKFS_ROOT, "..") == -EEXIST,
+          "mkdir of / or .. is -EEXIST");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0 - 1, "an empty directory takes one cluster");
+    dirent_t d;
+    int cursor = 0;
+    CHECK(diskfs_readdir(DISKFS_ROOT, &cursor, &d) == 0 && strcmp(d.name, "DOCS") == 0 &&
+          d.flags == DIRENT_DIR && d.size == 0, "readdir marks it as a directory");
+
+    CHECK(diskfs_write_file(DISKFS_ROOT, "docs/a.txt", "inside", 6) == 0, "write a file inside it");
+    memset(buf, 0, sizeof buf);
+    CHECK(read_all("DOCS/A.TXT", buf, sizeof buf) == 6 && strcmp(buf, "inside") == 0, "read it back by path");
+    CHECK(read_all("/docs//a.txt/", buf, sizeof buf) == 6, "leading, doubled and trailing slashes are fine");
+    CHECK(read_all("DOCS/./../DOCS/A.TXT", buf, sizeof buf) == 6, ". and .. work");
+    CHECK(read_all("A.TXT", buf, sizeof buf) == -ENOENT, "it is not in the root");
+    CHECK(read_all("DOCS/A.TXT/X", buf, sizeof buf) == -ENOTDIR, "a file in the middle is -ENOTDIR");
+    CHECK(read_all("NOPE/A.TXT", buf, sizeof buf) == -ENOENT, "a missing directory in the middle is -ENOENT");
+    CHECK(read_all("DOCS/TOOLONGNAME.TXT", buf, sizeof buf) == -EINVAL, "a bad name in a path is -EINVAL");
+    CHECK(read_all("", buf, sizeof buf) == -ENOENT, "an empty path is -ENOENT");
+
+    int dn = diskfs_opendir(DISKFS_ROOT, "DOCS");
+    CHECK(dn > 0 && diskfs_refs(dn) == 1, "opendir gives a referenced node");
+    CHECK(diskfs_opendir(DISKFS_ROOT, "DOCS/A.TXT") == -ENOTDIR, "opendir of a file is -ENOTDIR");
+    int fn = diskfs_lookup(dn, "a.txt");
+    CHECK(fn > 0, "lookup relative to a directory node");
+    diskfs_unref(fn);
+    CHECK(diskfs_opendir(dn, "..") == DISKFS_ROOT && diskfs_opendir(DISKFS_ROOT, "..") == DISKFS_ROOT,
+          ".. of a top directory and of the root is the root");
+    CHECK(diskfs_getcwd(dn, buf, sizeof buf) == 5 && strcmp(buf, "/DOCS") == 0, "getcwd names it");
+    CHECK(diskfs_getcwd(DISKFS_ROOT, buf, sizeof buf) == 1 && strcmp(buf, "/") == 0, "and the root");
+    CHECK(diskfs_getcwd(dn, buf, 5) == -ENAMETOOLONG, "getcwd into a short buffer is -ENAMETOOLONG");
+
+    // A directory grows past its first cluster.
+    CHECK(diskfs_mkdir(dn, "SUB") == 0, "mkdir relative to a directory node");
+    int sub = diskfs_opendir(DISKFS_ROOT, "/DOCS/SUB");
+    CHECK(sub > 0 && diskfs_getcwd(sub, buf, sizeof buf) == 9 && strcmp(buf, "/DOCS/SUB") == 0,
+          "a nested directory knows its path");
+    int made = 0;
+    for (int i = 0; i < 40; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "DOCS/SUB/F%d.TXT", i);
+        if (diskfs_write_file(DISKFS_ROOT, name, name, (uint32_t)strlen(name)) == 0) made++;
+    }
+    CHECK(made == 40, "40 files go into a directory that began with room for 14");
+    CHECK(count_entries(sub) == 40, "readdir lists all 40, without . and ..");
+    memset(buf, 0, sizeof buf);
+    CHECK(read_all("DOCS/SUB/F39.TXT", buf, sizeof buf) == 16 && strcmp(buf, "DOCS/SUB/F39.TXT") == 0,
+          "the last one reads back");
+
+    CHECK(diskfs_rmdir(DISKFS_ROOT, "DOCS/SUB") == -EBUSY, "rmdir of a directory in use is -EBUSY");
+    diskfs_unref(sub);
+    CHECK(diskfs_rmdir(DISKFS_ROOT, "DOCS/SUB") == -ENOTEMPTY, "rmdir of a full one is -ENOTEMPTY");
+    CHECK(diskfs_rmdir(DISKFS_ROOT, "DOCS/A.TXT") == -ENOTDIR, "rmdir of a file is -ENOTDIR");
+    CHECK(diskfs_rmdir(DISKFS_ROOT, "/") == -EBUSY && diskfs_rmdir(dn, ".") == -EBUSY, "/ and . cannot go");
+    CHECK(diskfs_rmdir(DISKFS_ROOT, "NOPE") == -ENOENT, "rmdir of nothing is -ENOENT");
+    for (int i = 0; i < 40; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "F%d.TXT", i);
+        int sd = diskfs_opendir(dn, "SUB");
+        diskfs_unlink(sd, name);
+        diskfs_unref(sd);
+    }
+    CHECK(diskfs_rmdir(dn, "SUB") == 0, "rmdir once it is empty");
+    CHECK(diskfs_opendir(DISKFS_ROOT, "DOCS/SUB") == -ENOENT, "and it is gone");
+    fn = diskfs_lookup(DISKFS_ROOT, "DOCS/A.TXT");
+    CHECK(diskfs_unlink(dn, "A.TXT") == -EBUSY, "an open file in a directory cannot be deleted");
+    diskfs_unref(fn);
+    CHECK(diskfs_unlink(dn, "A.TXT") == 0, "until it is closed");
+    diskfs_unref(dn);
+    CHECK(diskfs_refs(dn) == 0 && diskfs_rmdir(DISKFS_ROOT, "DOCS") == 0, "the last reference goes, and so can DOCS");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0, "every cluster comes back, the grown directory's too");
+    CHECK(count_entries(DISKFS_ROOT) == 0, "the root is empty again");
+
+    // A failed write of the new directory's cluster leaves nothing.
+    writes_left = 0;
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "BROKEN") == -EIO, "mkdir reports a disk error");
+    writes_left = -1;
+    CHECK(diskfs_init() == 0 && diskfs_opendir(DISKFS_ROOT, "BROKEN") == -ENOENT, "and leaves no entry");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0, "and no cluster");
+
+    // A tree survives a remount.
+    diskfs_mkdir(DISKFS_ROOT, "KEEP");
+    diskfs_mkdir(DISKFS_ROOT, "KEEP/INNER");
+    diskfs_write_file(DISKFS_ROOT, "KEEP/INNER/NOTE.TXT", "deep", 4);
+    CHECK(diskfs_init() == 0, "remount");
+    memset(buf, 0, sizeof buf);
+    CHECK(read_all("KEEP/INNER/NOTE.TXT", buf, sizeof buf) == 4 && strcmp(buf, "deep") == 0,
+          "a file two directories down reads back");
+    int inner = diskfs_opendir(DISKFS_ROOT, "KEEP/INNER");
+    CHECK(diskfs_getcwd(inner, buf, sizeof buf) > 0 && strcmp(buf, "/KEEP/INNER") == 0, "and its directory's path");
+    diskfs_unref(inner);
+
+    // Nesting stops before a directory's path would not fit PATH_MAX.
+    char path[512] = "DEEP";
+    int depth = 0;
+    while (diskfs_mkdir(DISKFS_ROOT, path) == 0 && depth < 40) {
+        depth++;
+        strcat(path, "/DDDDDDDD");
+    }
+    CHECK(diskfs_mkdir(DISKFS_ROOT, path) == -ENAMETOOLONG, "mkdir too deep is -ENAMETOOLONG");
+    *strrchr(path, '/') = 0;
+    int deepest = diskfs_opendir(DISKFS_ROOT, path);
+    int len = diskfs_getcwd(deepest, buf, sizeof buf);
+    CHECK(depth > 5 && len > 100 && len < PATH_MAX, "the deepest directory's path still fits");
+    diskfs_unref(deepest);
 }
 
 static void test_big_clusters(void) {
@@ -336,10 +478,23 @@ static void test_big_clusters(void) {
     CHECK(cb == 2048, "cluster size is 2 KB");
     static char data[10000];
     for (int i = 0; i < 10000; i++) data[i] = (char)(i * 7);
-    CHECK(diskfs_write_file("DATA.BIN", data, sizeof data) == 0, "10000 bytes over 5 clusters");
+    CHECK(diskfs_write_file(DISKFS_ROOT, "DATA.BIN", data, sizeof data) == 0, "10000 bytes over 5 clusters");
     CHECK(diskfs_init() == 0 && read_all("DATA.BIN", buf, sizeof buf) == 10000 && memcmp(buf, data, 10000) == 0,
           "reads back after a remount");
-    diskfs_write_file("KEEP.TXT", "kept\n", 5);
+    diskfs_write_file(DISKFS_ROOT, "KEEP.TXT", "kept\n", 5);
+
+    // Directories on 2 KB clusters, one grown past a cluster, for fsck.
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "TREE") == 0 && diskfs_mkdir(DISKFS_ROOT, "TREE/LEAF") == 0,
+          "directories on 2 KB clusters");
+    int made = 0;
+    for (int i = 0; i < 70; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "TREE/LEAF/F%d.TXT", i);
+        if (diskfs_write_file(DISKFS_ROOT, name, "leaf\n", 5) == 0) made++;
+    }
+    int leaf = diskfs_init() == 0 ? diskfs_opendir(DISKFS_ROOT, "TREE/LEAF") : -1;
+    CHECK(made == 70 && leaf > 0 && count_entries(leaf) == 70, "70 files in one, past its first 64 slots");
+    diskfs_unref(leaf);
 }
 
 static void test_bad_volumes(void) {
@@ -370,6 +525,7 @@ int main(void) {
     test_full_disk();
     test_io_errors();
     test_bad_volumes();
+    test_dirs();
     test_big_clusters();  // last: its image is what fsck checks
 
     FILE* img = fopen("test_disk.img", "wb");

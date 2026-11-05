@@ -21,7 +21,7 @@ void init_main(void* arg) {
     for (;;) {
         const char* argv[] = { "shell" };
         uint32_t start = timer_ticks();
-        int id = loader_spawn(SHELL, 1, argv, 0, 0);
+        int id = loader_spawn(DISKFS_ROOT, SHELL, 1, argv, 0, 0);
         if (id < 0) {
             kprintf_color(COLOR_ERROR, "init: cannot start %s: %s\n", SHELL, strerror(id));
             task_sleep_ticks(5 * TIMER_HZ);

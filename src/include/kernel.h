@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.14.0"
-#define RINGTAIL_CODENAME "Plumbing"
+#define RINGTAIL_VERSION "0.15.0"
+#define RINGTAIL_CODENAME "Burrow"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08
@@ -50,12 +50,12 @@ void faultlog_format(sbuf_t* sb);
 struct regs;
 void syscall_handle(struct regs* r);
 
-// Program loader (loader.c). Loads an ELF program from the disk and
-// starts it in job (0 for a new job of its own), with descriptors 0-2
+// Program loader (loader.c). Loads an ELF program from the disk (path
+// resolved from directory node at) and starts it in job (0 for a new job of its own), with descriptors 0-2
 // copied from the current task's std[0..2], or the console when std
 // is NULL. Returns the new task id or -errno.
 #define ARGV_MAX 16
-int loader_spawn(const char* name, int argc, const char* const* argv, int job, const int std[3]);
+int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[3]);
 
 // SYS_KINFO's reports (kinfo.c): 0, or -EINVAL for an unknown one.
 int kinfo_format(int what, sbuf_t* sb);

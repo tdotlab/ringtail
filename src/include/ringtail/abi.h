@@ -15,7 +15,7 @@
 #define SYS_READ        5   // (fd, buf, len)          -> bytes read, 0 at EOF
 #define SYS_WRITE       6   // (fd, buf, len)          -> bytes written
 #define SYS_CLOSE       7   // (fd)                    -> 0
-#define SYS_DELETE      8   // (name)                  -> 0
+#define SYS_DELETE      8   // (path)                  -> 0; files only, rmdir takes directories
 #define SYS_GFX_BEGIN   9   // ()                      -> 0, caller owns the display
 #define SYS_GFX_END     10  // ()                      -> 0
 #define SYS_GFX_PIXEL   11  // (x, y, color)
@@ -26,7 +26,7 @@
 #define SYS_MOUSE_STATE 16  // (mouse_state_t*)
 #define SYS_KEY_GET     17  // ()                      -> scancode, or -EAGAIN
 #define SYS_SEEK        18  // (fd, offset, whence)    -> new offset
-#define SYS_LIST        19  // (index, buf, size)      -> 0, -ENOENT past the end
+#define SYS_LIST        19  // (index, buf, size)      -> name of a file in the current directory, -ENOENT past the end
 #define SYS_SPAWN       20  // (name, argv or NULL, spawn_opts_t* or NULL) -> task id; argv is NULL-terminated, argv[0] is the name
 #define SYS_WAIT        21  // (last_x, last_y, last_buttons) -> 0 on new input
 #define SYS_TICKS       22  // ()                      -> timer ticks since boot (100 Hz)
@@ -40,13 +40,17 @@
 #define SYS_TTY_FG      30  // (job)                   -> 0; hand the terminal to a job, or take it back
 #define SYS_WAIT_JOB    31  // (job)                   -> 0 once no task of the job is alive
 #define SYS_KILL        32  // (task id)               -> 0; kernel tasks cannot be killed
-#define SYS_READDIR     33  // (int* cursor, dirent_t*) -> 0, -ENOENT after the last file
+#define SYS_READDIR     33  // (path, int* cursor, dirent_t*) -> 1 with an entry, 0 after the last; *cursor starts at 0
 #define SYS_KINFO       34  // (KINFO_*, buf, size)    -> length of the full text; buf gets as much as fits, NUL-terminated
 #define SYS_SET_COLOR   35  // (VGA attribute)         -> 0; the console's default colour
 #define SYS_POWER       36  // (POWER_*)               -> does not return
 #define SYS_PIPE        37  // (int fds[2])            -> 0; fds[0] reads, fds[1] writes
 #define SYS_DUP2        38  // (oldfd, newfd)          -> newfd, now a copy of oldfd (closed first if open)
-#define NUM_SYSCALLS    39
+#define SYS_MKDIR       39  // (path)                  -> 0
+#define SYS_RMDIR       40  // (path)                  -> 0; the directory must be empty and nobody's current one
+#define SYS_CHDIR       41  // (path)                  -> 0
+#define SYS_GETCWD      42  // (buf, size)             -> length of the absolute path put in buf
+#define NUM_SYSCALLS    43
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -78,7 +82,14 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 #define POWER_REBOOT 0
 #define POWER_OFF    1
 
-typedef struct { char name[16]; unsigned size; } dirent_t;
+// Paths: names separated by '/', each a DOS 8.3 name, "." or "..".
+// One starting with '/' begins at the root, any other at the caller's
+// current directory, which a spawned program inherits. SYS_SPAWN
+// looks for a name without a '/' in the root, where programs live.
+#define PATH_MAX 128  // including the NUL
+
+#define DIRENT_DIR 1  // dirent_t.flags: a directory (size is 0)
+typedef struct { char name[16]; unsigned size; unsigned flags; } dirent_t;
 
 // Values from -4095 to -1 are errors. Anything else is a result,
 // including addresses above 2 GB that look negative as an int.
@@ -127,13 +138,17 @@ typedef struct { char name[16]; unsigned size; } dirent_t;
 #define EFAULT        14
 #define EBUSY         16
 #define EEXIST        17
+#define ENOTDIR       20
+#define EISDIR        21
 #define EINVAL        22
+#define ENFILE        23
 #define EMFILE        24
 #define EFBIG         27
 #define ENOSPC        28
 #define EPIPE         32
 #define ENAMETOOLONG  36
 #define ENOSYS        38
+#define ENOTEMPTY     39
 
 #define GFX_WIDTH  320
 #define GFX_HEIGHT 200

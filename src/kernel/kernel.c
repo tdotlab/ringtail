@@ -85,8 +85,8 @@ static void start_disk(void) {
         return;
     }
     int cursor = 0, files = 0;
-    char name[FS_NAME_MAX];
-    while (diskfs_readdir(&cursor, name, 0) == 0) files++;
+    dirent_t d;
+    while (diskfs_readdir(DISKFS_ROOT, &cursor, &d) == 0) files += !(d.flags & DIRENT_DIR);
     kprintf("Disk: %u MB FAT16, %d files\n", ata_sectors() / 2048, files);
 }
 

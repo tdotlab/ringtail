@@ -24,11 +24,15 @@ static inline __attribute__((noreturn)) void sys_exit(int status) {
     for (;;) { }
 }
 static inline int sys_sleep(uint32_t seconds) { return SC1(SYS_SLEEP, seconds); }
-static inline int sys_open(const char* name, int flags) { return SC2(SYS_OPEN, name, flags); }
+static inline int sys_open(const char* path, int flags) { return SC2(SYS_OPEN, path, flags); }
 static inline int sys_read(int fd, void* buf, uint32_t len) { return SC3(SYS_READ, fd, buf, len); }
 static inline int sys_write(int fd, const void* buf, uint32_t len) { return SC3(SYS_WRITE, fd, buf, len); }
 static inline int sys_close(int fd) { return SC1(SYS_CLOSE, fd); }
-static inline int sys_delete(const char* name) { return SC1(SYS_DELETE, name); }
+static inline int sys_delete(const char* path) { return SC1(SYS_DELETE, path); }
+static inline int sys_mkdir(const char* path) { return SC1(SYS_MKDIR, path); }
+static inline int sys_rmdir(const char* path) { return SC1(SYS_RMDIR, path); }
+static inline int sys_chdir(const char* path) { return SC1(SYS_CHDIR, path); }
+static inline int sys_getcwd(char* buf, uint32_t size) { return SC2(SYS_GETCWD, buf, size); }
 static inline int sys_seek(int fd, int32_t off, int whence) { return SC3(SYS_SEEK, fd, off, whence); }
 static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS_LIST, index, buf, size); }
 static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }
@@ -40,14 +44,14 @@ static inline int sys_spawn_opts(const char* name, const char* const* argv, cons
 static inline int sys_tty_fg(int job) { return SC1(SYS_TTY_FG, job); }
 static inline int sys_wait_job(int job) { return SC1(SYS_WAIT_JOB, job); }
 static inline int sys_kill(int id) { return SC1(SYS_KILL, id); }
-static inline int sys_readdir(int* cursor, dirent_t* d) { return SC2(SYS_READDIR, cursor, d); }
+static inline int sys_readdir(const char* path, int* cursor, dirent_t* d) { return SC3(SYS_READDIR, path, cursor, d); }
 static inline int sys_kinfo(int what, char* buf, uint32_t size) { return SC3(SYS_KINFO, what, buf, size); }
 static inline int sys_set_color(int attr) { return SC1(SYS_SET_COLOR, attr); }
 static inline int sys_power(int what) { return SC1(SYS_POWER, what); }
 static inline int sys_pipe(int fds[2]) { return SC1(SYS_PIPE, fds); }
 static inline int sys_dup2(int oldfd, int newfd) { return SC2(SYS_DUP2, oldfd, newfd); }
 static inline int sys_tty_mode(int mode) { return SC1(SYS_TTY_MODE, mode); }
-static inline int sys_save(const char* name, const void* buf, uint32_t len) { return SC3(SYS_SAVE, name, buf, len); }
+static inline int sys_save(const char* path, const void* buf, uint32_t len) { return SC3(SYS_SAVE, path, buf, len); }
 static inline int sys_join(int id) { return SC1(SYS_JOIN, id); }
 static inline int sys_getpid(void) { return SC0(SYS_GETPID); }
 static inline uint32_t sys_ticks(void) { return (uint32_t)SC0(SYS_TICKS); }

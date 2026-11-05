@@ -56,7 +56,7 @@ static int goal_col = -1;     // column kept by Up and Down
 static int wrap = 1;
 static uint32_t top;          // first visible row
 static int left;              // first visible column, without wrap
-static char filename[16];     // "" until the document has a name
+static char filename[PATH_MAX];  // "" until the document has a name
 static int crlf;              // the file used CR LF; it is saved the same way
 static uint32_t doc_id, saved_id, next_id;
 
@@ -753,14 +753,13 @@ static const char* save_error(int r) {
 
 // Save under a new name. default_ext goes on a name typed without one.
 static int save_as(const char* label, const char* default_ext) {
-    char name[16];
+    char name[PATH_MAX];
     strlcpy(name, filename, sizeof name);
-    if (!prompt(label, name, 13, 0) || !name[0]) return 0;
-    if (!has_dot(name) && strlen(name) <= 8) {
-        char full[16];
-        snprintf(full, sizeof full, "%s%s", name, default_ext);
-        strlcpy(name, full, sizeof name);
-    }
+    if (!prompt(label, name, sizeof name, 0) || !name[0]) return 0;
+    const char* base = strrchr(name, '/');
+    base = base ? base + 1 : name;
+    if (base[0] && !has_dot(base) && strlen(base) <= 8 && strlen(name) + strlen(default_ext) < sizeof name)
+        strlcpy(name + strlen(name), default_ext, sizeof name - strlen(name));
     int r = write_file(name);
     if (r < 0) {
         char m[COLS + 1];
@@ -802,8 +801,8 @@ static int keep_or_discard(const char* question) {
 
 static void open_file(void) {
     if (!keep_or_discard("Save changes before opening another document? y/n, Esc cancels")) return;
-    char name[16] = "";
-    if (!prompt("Open", name, 13, 0) || !name[0]) return;
+    char name[PATH_MAX] = "";
+    if (!prompt("Open", name, sizeof name, 0) || !name[0]) return;
     int r = load(name);
     if (r < 0) {
         char m[COLS + 1];

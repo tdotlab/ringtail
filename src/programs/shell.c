@@ -9,7 +9,8 @@
 // A command line is words separated by blanks. Quotes ("..." or
 // '...') keep blanks and special characters inside a word. The
 // built-in commands come first; any other word names a program on
-// the disk, and `run` says so explicitly.
+// the disk, and `run` says so explicitly. A bare program name is
+// looked up in the root, a path (./PROG, BIN/PROG) as written.
 //
 // `a | b | c` connects programs with pipes, and all of them share one
 // job, so Ctrl+C stops the lot. `< FILE` feeds the first command,
@@ -21,11 +22,11 @@
 #define LINE_MAX 256
 #define HISTORY 10
 #define MAX_WORDS 24
-#define PROMPT "ringtail> "
 
 #define RED  "\x1b[91m"
 #define DIM  "\x1b[90m"
 #define GRN  "\x1b[92m"
+#define BLU  "\x1b[94m"
 #define NORM "\x1b[0m"
 
 static char history[HISTORY][LINE_MAX];
@@ -86,7 +87,12 @@ static void erase(int n) {
     }
 }
 
-static void prompt(void) { print(GRN PROMPT NORM); }
+// "ringtail:/DOCS> ": the current directory, looked up every time.
+static void prompt(void) {
+    char cwd[PATH_MAX];
+    if (sys_getcwd(cwd, sizeof cwd) < 0) strlcpy(cwd, "?", sizeof cwd);
+    printf(GRN "ringtail:%s> " NORM, cwd);
+}
 
 // Returns the line length, -1 if the line was cancelled, -2 when the
 // terminal is gone.
@@ -264,18 +270,52 @@ static void cmd_history(cmd_t* c) {
 }
 
 static void cmd_ls(cmd_t* c) {
-    (void)c;
-    int cursor = 0, n = 0, r;
+    const char* dir = c->argc > 1 ? c->argv[1] : ".";
+    int cursor = 0, files = 0, dirs = 0, r;
     dirent_t d;
-    while ((r = sys_readdir(&cursor, &d)) == 0) {
-        printf("  %-12s %8u\n", d.name, d.size);
-        n++;
+    while ((r = sys_readdir(dir, &cursor, &d)) > 0) {
+        if (d.flags & DIRENT_DIR) {
+            char name[sizeof d.name + 1];
+            snprintf(name, sizeof name, "%s/", d.name);
+            printf("  %s%-13s%s %8s\n", tty_out ? BLU : "", name, tty_out ? NORM : "", "<dir>");
+            dirs++;
+        } else {
+            printf("  %-13s %8u\n", d.name, d.size);
+            files++;
+        }
     }
-    if (r != -ENOENT) { err("ls", r); return; }
-    if (!tty_out) return;  // one line per file, for wc and grep
+    if (r < 0) { err(dir, r); return; }
+    if (!tty_out) return;  // one line per entry, for wc and grep
     char disk[64];
     if (sys_kinfo(KINFO_DISK, disk, sizeof disk) < 0) { err("ls", -EIO); return; }
-    printf(DIM "%d files, %s" NORM, n, disk);
+    printf(DIM "%d file%s, ", files, files == 1 ? "" : "s");
+    if (dirs) printf("%d director%s, ", dirs, dirs == 1 ? "y" : "ies");
+    printf("%s" NORM, disk);
+}
+
+static void cmd_cd(cmd_t* c) {
+    const char* dir = c->argc > 1 ? c->argv[1] : "/";
+    int r = sys_chdir(dir);
+    if (r < 0) err(dir, r);
+}
+
+static void cmd_pwd(cmd_t* c) {
+    (void)c;
+    char cwd[PATH_MAX];
+    int r = sys_getcwd(cwd, sizeof cwd);
+    if (r < 0) err("pwd", r);
+    else puts(cwd);
+}
+
+static void cmd_mkdir(cmd_t* c) {
+    int r = sys_mkdir(c->argv[1]);
+    if (r < 0) err(c->argv[1], r);
+}
+
+static void cmd_rmdir(cmd_t* c) {
+    int r = sys_rmdir(c->argv[1]);
+    if (r == -EBUSY) dprintf(STDERR_FILENO, RED "%s: in use (someone's current directory)" NORM "\n", c->argv[1]);
+    else if (r < 0) err(c->argv[1], r);
 }
 
 static void cmd_cat(cmd_t* c) {
@@ -309,7 +349,8 @@ static void cmd_write(cmd_t* c) {
 
 static void cmd_rm(cmd_t* c) {
     int r = sys_delete(c->argv[1]);
-    if (r < 0) err(c->argv[1], r);
+    if (r == -EISDIR) dprintf(STDERR_FILENO, RED "%s: is a directory (rmdir removes an empty one)" NORM "\n", c->argv[1]);
+    else if (r < 0) err(c->argv[1], r);
 }
 
 static const struct { const char* name; uint8_t color; } palette[] = {
@@ -364,7 +405,11 @@ static const builtin_t builtins[] = {
     { "version", 0, "", "show the version", cmd_version },
     { "echo", 0, "<text>", "print text", cmd_echo },
     { "history", 0, "", "recent commands (Up/Down recall them)", cmd_history },
-    { "ls", 0, "", "list files", cmd_ls },
+    { "ls", 0, "[dir]", "list a directory", cmd_ls },
+    { "cd", 0, "[dir]", "change directory (alone: the root)", cmd_cd },
+    { "pwd", 0, "", "show the current directory", cmd_pwd },
+    { "mkdir", 1, "<dir>", "make a directory", cmd_mkdir },
+    { "rmdir", 1, "<dir>", "remove an empty directory", cmd_rmdir },
     { "cat", 1, "<file>", "show a file", cmd_cat },
     { "touch", 1, "<file>", "create an empty file", cmd_touch },
     { "write", 2, "<file> <text>", "replace a file's contents", cmd_write },
@@ -391,7 +436,8 @@ static void cmd_help(cmd_t* c) {
         printf("  %-26s %s\n", left, builtins[i].help);
     }
     if (!tty_out) return;
-    print(DIM "a | b pipes a's output into b; < FILE, > FILE and >> FILE redirect.\n"
+    print(DIM "Paths: DOCS/A.TXT, /ROOT.TXT, .. for the parent. Programs come from /.\n"
+              "a | b pipes a's output into b; < FILE, > FILE and >> FILE redirect.\n"
               "Ctrl+C stops the running program; Ctrl+\\ stops one that ignores Ctrl+C.\n" NORM);
 }
 
@@ -524,7 +570,7 @@ static void run_builtin(stage_t* st, int fd) {
 }
 
 static void spawn_error(const char* name, int e, int explicit_run) {
-    if ((e == -ENOENT || e == -EINVAL) && !explicit_run && !strchr(name, '.'))
+    if ((e == -ENOENT || e == -EINVAL) && !explicit_run && !strchr(name, '.') && !strchr(name, '/'))
         dprintf(STDERR_FILENO, RED "Unknown command '%s'; try 'help'" NORM "\n", name);
     else
         err(name, e);
