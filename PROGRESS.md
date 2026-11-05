@@ -2194,3 +2194,93 @@ until it is sent `c` on stdin, and with stdin closed it quits at time 0.
 
 None of this is real hardware: no ACPI quirks, no real PS/2 or VGA
 timing, no SMM. It rules out "only works in QEMU", not "works on my board".
+
+## v0.22.0 "Sonar"
+
+The network, first milestone: a card driver and enough of IPv4 to ping
+and be pinged.
+
+- **PCI** (`src/drivers/pci.c`): configuration mechanism #1, a brute-force
+  scan of every bus, device and function at boot, up to 64 devices with
+  their ids, class, interrupt line and BARs. The `pci` built-in lists them
+  with a vendor and class name.
+- **Device window**: a 4 MB range at 0xC0000000 for memory-mapped
+  registers, one page table shared by every address space, supervisor
+  only and uncached. `mmio_map` hands out pieces of it; nothing is ever
+  unmapped, since cards do not go away.
+- **e1000** (`src/drivers/e1000.c`): the 82540EM that QEMU gives by default,
+  plus the 82545EM, 82544GC and 82543GC, which cover VMware's and
+  VirtualBox's choices (the 82543GC is untested: QEMU has no model of it).
+  Reset, link up, MAC from the receive address registers or the EEPROM,
+  a 32 x 2 KB receive ring and an 8-buffer transmit ring from the frame
+  pool (about 180 KB), legacy descriptors, and an interrupt that only wakes
+  the net task. Without a usable IRQ line it polls every tick instead.
+- **The stack** (`src/net/net.c`): one kernel task, `net`, drains the ring
+  and handles each frame under `net_lock`. Ethernet, ARP (a 16-entry table,
+  ten-minute lifetime, learned only from requests aimed at us so the
+  table cannot be filled by everyone else's chatter), IPv4 (version,
+  header length, total length against the frame, checksum, fragments
+  dropped, no options read but skipped correctly) and ICMP (echo replies
+  sent straight back to the frame's sender, no answers to broadcast
+  pings, replies and routers' unreachable messages matched to waiting
+  pings). The address is fixed: 10.0.2.15/24, gateway 10.0.2.2.
+- **SYS_PING** (47): sends one echo request and waits for its reply, the
+  timeout, a router's unreachable message or Ctrl+C. Returns the round
+  trip in microseconds and the reply's TTL, or ENETDOWN, EHOSTUNREACH,
+  ENETUNREACH, ETIMEDOUT, EIO (the data came back different) or EINVAL.
+  Those four network errnos are new, with their strerror text.
+- **ping** (`src/programs/ping.c`): `ping [-c COUNT] [-s SIZE] [-W MS] ADDRESS`,
+  a second apart, Linux-style lines and summary, `-c 0` until Ctrl+C. Exit
+  status 0 if anything answered, 1 if nothing did, 2 for a usage error.
+- **net** built-in (KINFO_NET): the card, its IRQ and interrupt count, link
+  state, address, frame counters (in, out, dropped, for others,
+  fragments, bad at the card), pings answered and the ARP table.
+- **Timing**: the PIT now runs in mode 2 (rate generator) instead of
+  mode 3, the same 100 Hz, but its counter runs down once per tick, so
+  `timer_micros()` can read it. A rollover whose interrupt has not been
+  taken yet (interrupts are off while reading) is caught from the PIC's
+  request register. `task_block_timeout` lets a task wait on a channel
+  with a deadline; the ARP and ping waits use it.
+
+Wrinkles. The first ping after boot failed, every time. The cause was
+QEMU's e1000, which holds received frames for a second after the receiver
+is switched on, and ARP, which then asked three times in one second and
+gave up. ARP now waits a second between its three requests, as Linux does
+(real cards take that long to negotiate a link anyway), and a ping's
+reply timeout starts when the request goes out, not before the ARP lookup.
+The flood test wedged the network once, but in QEMU, not the kernel: its
+socket backend takes a zero-length datagram as the far end closing and
+stops reading, so the fuzzer never sends an empty frame. Frames shorter
+than an Ethernet header do reach the driver (QEMU pads only some of them)
+and are counted as bad at the card.
+
+A race that was not the network's. init started the shell and then gave
+it the terminal; when a timer tick let the new shell run first, it
+printed its prompt, read the terminal as a background job (-EIO), took
+that as having no terminal, and ended, so init started another one. The
+suite caught it once, on the no-card boot, as every later command's output
+arriving one command late. The shell had the same race with every
+program it ran in the foreground. Now a task can be created held, and
+`SPAWN_FOREGROUND` hands the child's job the terminal before releasing
+it; init does the same for the shell. Only the terminal's owner may use
+the flag. `tests/programs/fgspawn.c` checks the child owns the terminal
+at its first instruction twenty times running, that the parent gets it
+back, and that a background job is refused.
+
+Tests. In the main session: the banner and `pci`, `ping` to the slirp
+gateway (counts, TTL and round-trip format, 0 and 1472 bytes), `net`,
+host unreachable for a silent neighbour after about three seconds, no
+loopback, usage errors and bad addresses, multicast refused, Ctrl+C on an
+endless ping, and `mem` unchanged. Then a second boot on a socket network
+whose only other host is `tests/net_peer.py`, which writes frames byte by
+byte. It checks the ARP reply field by field, pings of 0, 1, 33, 56 and
+1472 bytes with their data and both checksums, IP options skipped, frame
+padding not taken for data, and ten packets that must be ignored, with
+the counters showing which way each went. It answers the guest's pings to
+a host and through a router, then stays silent, sends a host unreachable
+and damages the data, each with its own message. Last, 3000 frames of
+generated garbage (noise, flipped bytes, truncations, IP headers with
+lying lengths but good checksums, every ICMP type) fast enough to overrun
+the ring, after which it still answers, the shell works and no memory is
+gone. Short boots cover the 82545EM, the 82544GC and no card at all.
+Host 244, QEMU 293.

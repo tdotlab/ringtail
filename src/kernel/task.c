@@ -124,7 +124,8 @@ void schedule(void) {
     task_t* t = task_list_head->next;
     while (t != task_list_head) {
         task_t* nx = t->next;
-        if (t->state == TASK_SLEEPING && (int32_t)(now - t->wake_tick) >= 0) t->state = TASK_READY;
+        if ((t->state == TASK_SLEEPING || (t->state == TASK_BLOCKED && t->timed))
+            && (int32_t)(now - t->wake_tick) >= 0) t->state = TASK_READY;
         if (t->state == TASK_DEAD && t != prev && t->joiners == 0) reap(t);
         t = nx;
     }
@@ -163,6 +164,16 @@ void task_block(void* chan) {
     current->state = TASK_BLOCKED;
     current->wait_chan = chan;
     schedule();
+    current->wait_chan = 0;
+}
+
+void task_block_timeout(void* chan, uint32_t until) {
+    current->state = TASK_BLOCKED;
+    current->wait_chan = chan;
+    current->wake_tick = until;
+    current->timed = 1;
+    schedule();
+    current->timed = 0;
     current->wait_chan = 0;
 }
 
@@ -227,11 +238,14 @@ static task_t* task_alloc(const char* name) {
     return t;
 }
 
-static int task_start(task_t* t) {
+static int held_chan;  // where held tasks wait for task_release
+
+static int task_start(task_t* t, int held) {
     uint32_t f = irq_save();
     t->id = next_id++;
     if (!t->job) t->job = t->id;
-    t->state = TASK_READY;
+    t->state = held ? TASK_BLOCKED : TASK_READY;
+    t->wait_chan = held ? &held_chan : 0;
     t->next = task_list_head->next;
     task_list_head->next = t;
     irq_restore(f);
@@ -243,11 +257,11 @@ int task_create_kernel(const char* name, void (*entry)(void*), void* arg) {
     if (!t) return -ENOMEM;
     t->entry = entry;
     t->arg = arg;
-    return task_start(t);  // a kernel task is its own job
+    return task_start(t, 0);  // a kernel task is its own job
 }
 
 int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
-                     uint32_t brk, int job, const int std[3]) {
+                     uint32_t brk, int job, const int std[3], int held) {
     task_t* t = task_alloc(name);
     if (!t) { as_destroy(pd); return -ENOMEM; }
     t->user = 1;
@@ -258,7 +272,17 @@ int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
     t->job = job;
     files_init_std(t);
     if (std) files_inherit(t, current, std);
-    return task_start(t);
+    return task_start(t, held);
+}
+
+void task_release(int id) {
+    uint32_t f = irq_save();
+    task_t* t = task_find(id);
+    if (t && t->state == TASK_BLOCKED && t->wait_chan == &held_chan) {
+        t->wait_chan = 0;
+        t->state = TASK_READY;
+    }
+    irq_restore(f);
 }
 
 void task_exit(int status) {

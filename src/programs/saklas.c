@@ -371,6 +371,8 @@ static void cmd_faults(cmd_t* c) { (void)c; show_kinfo(KINFO_FAULTS); }
 static void cmd_mem(cmd_t* c) { (void)c; show_kinfo(KINFO_MEM); }
 static void cmd_heap(cmd_t* c) { (void)c; show_kinfo(KINFO_HEAP); }
 static void cmd_mmap(cmd_t* c) { (void)c; show_kinfo(KINFO_MMAP); }
+static void cmd_net(cmd_t* c) { (void)c; show_kinfo(KINFO_NET); }
+static void cmd_pci(cmd_t* c) { (void)c; show_kinfo(KINFO_PCI); }
 
 static void cmd_echo(cmd_t* c) {
     char buf[LINE_MAX];
@@ -588,6 +590,8 @@ static const builtin_t builtins[] = {
     { "mem", 0, "", "memory summary", cmd_mem },
     { "heap", 0, "", "kernel heap details", cmd_heap },
     { "mmap", 0, "", "boot memory map", cmd_mmap },
+    { "pci", 0, "", "PCI devices", cmd_pci },
+    { "net", 0, "", "network card, address and traffic", cmd_net },
     { "uptime", 0, "", "time since boot", cmd_uptime },
     { "date", 0, "", "the date and time", cmd_date },
     { "color", 1, "<name>", "set the text color", cmd_color },
@@ -972,7 +976,12 @@ static void run(void) {
         int last = s == pl.n - 1;
         int p[2] = { -1, -1 };
         if (!last && (r = sys_pipe(p)) < 0) { err("pipe", r); goto fail; }
-        spawn_opts_t o = { lead ? SPAWN_JOIN : SPAWN_NEW_JOB, lead, { prev, last ? out : p[1], -1 } };
+        // The first program leads the job. Unless it runs in the
+        // background, it has the terminal from its first instruction
+        // until every program in the job, and everything they started,
+        // is gone.
+        int flags = lead ? SPAWN_JOIN : SPAWN_NEW_JOB | (pl.background ? 0 : SPAWN_FOREGROUND);
+        spawn_opts_t o = { flags, lead, { prev, last ? out : p[1], -1 } };
         const char* name = st->cmd.argv[st->first];
         int id = sys_spawn_opts(name, (const char* const*)&st->cmd.argv[st->first], &o);
         close_fd(&prev);
@@ -990,9 +999,6 @@ static void run(void) {
         close_fd(&feed);
         return;
     }
-    // The first program leads the job; it has the terminal until
-    // every program in it, and everything they started, is gone.
-    sys_tty_fg(lead);
     if (b) run_builtin(b, feed);
     close_fd(&feed);
     int status = sys_join(ids[nids - 1]);
@@ -1004,6 +1010,10 @@ static void run(void) {
 
 fail:
     for (int i = 0; i < nids; i++) sys_kill(ids[i]);
+    if (lead && !pl.background) {  // take the terminal back
+        sys_wait_job(lead);
+        sys_tty_fg(0);
+    }
     close_fd(&prev);
     close_fd(&feed);
     close_fd(&out);

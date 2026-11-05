@@ -28,7 +28,7 @@ UCFLAGS := $(COMMON) -mno-sse -mno-mmx -Isrc/include -Isrc/programs/lib
 LDFLAGS := $(ARCH) -nostdlib -static -no-pie -Wl,--build-id=none
 ASFLAGS := -f elf32
 
-KERNEL_C := $(wildcard src/kernel/*.c src/drivers/*.c src/mm/*.c src/fs/*.c src/lib/*.c)
+KERNEL_C := $(wildcard src/kernel/*.c src/drivers/*.c src/mm/*.c src/fs/*.c src/net/*.c src/lib/*.c)
 KERNEL_ASM := src/boot/boot.asm src/kernel/isr.asm src/kernel/switch.asm
 KERNEL_OBJS := $(KERNEL_C:%.c=$(BUILD)/k/%.o) $(KERNEL_ASM:%.asm=$(BUILD)/k/%.o)
 KERNEL := $(BUILD)/ringtail.bin

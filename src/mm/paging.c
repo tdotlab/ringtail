@@ -7,10 +7,13 @@
 //                 kernel code and read-only data write-protected
 //   1 GB - 3 GB   user: program image, then a 1 MB stack region
 //                 just below 3 GB that grows on demand
-//   3 GB - 4 GB   not mapped
+//   3 GB - +4 MB  device registers (mmio_map): kernel only, uncached
+//   the rest      not mapped
 // Kernel entries are the same in every page directory (copied from
 // the kernel directory, and never changed after boot), so the kernel
-// keeps running across address-space switches.
+// keeps running across address-space switches. The device window's
+// page table is shared, so mappings added to it reach every address
+// space.
 #include "kernel.h"
 #include "arch.h"
 #include "mm.h"
@@ -25,6 +28,12 @@
 
 static uint32_t kpd[1024] __attribute__((aligned(4096)));
 static uint32_t kpt0[1024] __attribute__((aligned(4096)));
+static uint32_t kpt_mmio[1024] __attribute__((aligned(4096)));
+static uint32_t mmio_next = MMIO_WINDOW;
+static uint32_t global_flag;
+#define MMIO_PDE PDE_INDEX(MMIO_WINDOW)
+#define PTE_PWT 0x008
+#define PTE_PCD 0x010
 
 uint32_t kernel_pd(void) { return (uint32_t)kpd; }
 
@@ -34,6 +43,7 @@ void paging_init(uint32_t ram_top) {
     if (!(d & (1u << 3))) panic("CPU has no 4 MB pages (PSE); RingTail needs a Pentium or later");
     int pge = (d & (1u << 13)) != 0;
     uint32_t global = pge ? PTE_GLOBAL : 0;
+    global_flag = global;
     cpuid(0, &a, &b, &c, &d);
     int smep = 0;
     if (a >= 7) {
@@ -57,6 +67,7 @@ void paging_init(uint32_t ram_top) {
     uint32_t big = (ram_top + 0x3FFFFF) >> 22;
     for (uint32_t i = 1; i < big && i < (uint32_t)KERNEL_PDES; i++)
         kpd[i] = (i << 22) | PTE_PRESENT | PTE_WRITE | PTE_PS | global;
+    kpd[MMIO_PDE] = (uint32_t)kpt_mmio | PTE_PRESENT | PTE_WRITE;
 
     uint32_t cr4 = read_cr4() | (1u << 4);  // PSE
     if (pge) cr4 |= 1u << 7;
@@ -68,10 +79,25 @@ void paging_init(uint32_t ram_top) {
     write_cr0(read_cr0() | 0x80000000u | (1u << 16));
 }
 
+void* mmio_map(uint32_t phys, uint32_t size) {
+    uint32_t off = phys & (PAGE_SIZE - 1);
+    uint32_t pages = (off + size + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (!size || pages > (MMIO_WINDOW + MMIO_WINDOW_SIZE - mmio_next) / PAGE_SIZE) return 0;
+    uint32_t va = mmio_next;
+    for (uint32_t i = 0; i < pages; i++) {
+        kpt_mmio[PTE_INDEX(va) + i] = (ALIGN_DOWN(phys, PAGE_SIZE) + i * PAGE_SIZE)
+                                      | PTE_PRESENT | PTE_WRITE | PTE_PCD | PTE_PWT | global_flag;
+        invlpg(va + i * PAGE_SIZE);
+    }
+    mmio_next += pages * PAGE_SIZE;
+    return (void*)(va + off);
+}
+
 uint32_t as_create(void) {
     uint32_t* pd = (uint32_t*)frame_alloc();
     if (!pd) return 0;
     for (int i = 0; i < KERNEL_PDES; i++) pd[i] = kpd[i];
+    pd[MMIO_PDE] = kpd[MMIO_PDE];
     return (uint32_t)pd;
 }
 

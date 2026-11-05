@@ -58,6 +58,14 @@ void frame_stats(uint32_t* total, uint32_t* free);
 void paging_init(uint32_t ram_top);
 uint32_t kernel_pd(void);
 
+// Device registers. Kernel only, uncached, mapped at boot before any
+// program starts (the window's page table is shared by every address
+// space). Returns the virtual address of phys, or 0 when the window
+// (MMIO_WINDOW_SIZE in all) is full.
+#define MMIO_WINDOW      0xC0000000u
+#define MMIO_WINDOW_SIZE 0x00400000u
+void* mmio_map(uint32_t phys, uint32_t size);
+
 // Address spaces are identified by their page directory's physical
 // (equal to virtual, below 1 GB) address.
 uint32_t as_create(void);

@@ -15,6 +15,7 @@
 #include "console.h"
 #include "drivers.h"
 #include "arch.h"
+#include "net.h"
 #include "ringtail/abi.h"
 
 typedef int (*syscall_fn)(uint32_t a, uint32_t b, uint32_t c);
@@ -273,6 +274,17 @@ static int sys_poll(uint32_t ticks, uint32_t b, uint32_t c) {
     }
 }
 
+// One ICMP echo request and its reply (net.c does the work).
+static int sys_ping(uint32_t up, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    ping_t p;
+    if (copy_from_user(&p, (const void*)up, sizeof p)) return -EFAULT;
+    if (user_range_ok(up, sizeof p, 1)) return -EFAULT;  // fail before sending, not after
+    int r = net_ping(&p);
+    if (r) return r;
+    return copy_to_user((void*)up, &p, sizeof p);
+}
+
 // ---- Files and tasks ----
 
 static int sys_seek(uint32_t fd, uint32_t off, uint32_t whence) {
@@ -301,8 +313,8 @@ static int sys_list(uint32_t index, uint32_t ubuf, uint32_t size) {
 #define SPAWN_ARGS_BYTES 2048
 
 static int spawn_job(const spawn_opts_t* o) {
-    if (o->flags & ~(SPAWN_NEW_JOB | SPAWN_JOIN)) return -EINVAL;
-    if (o->flags == (SPAWN_NEW_JOB | SPAWN_JOIN)) return -EINVAL;
+    if (o->flags & ~(SPAWN_NEW_JOB | SPAWN_JOIN | SPAWN_FOREGROUND)) return -EINVAL;
+    if ((o->flags & (SPAWN_NEW_JOB | SPAWN_JOIN)) == (SPAWN_NEW_JOB | SPAWN_JOIN)) return -EINVAL;
     if (o->flags & SPAWN_NEW_JOB) return 0;
     if (o->flags & SPAWN_JOIN) return task_job_mine(o->job) ? o->job : -EPERM;
     return current->job;
@@ -345,8 +357,17 @@ static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t uopts) {
     if (!r && argc == 0) r = -EINVAL;
     // A bare name is a program in the root; a path is taken as it is.
     int at = strchr(name, '/') ? file_cwd() : DISKFS_ROOT;
-    if (!r) r = loader_spawn(at, name, argc, argv, job, std);
+    int fg = (o.flags & SPAWN_FOREGROUND) != 0;
+    if (!r && fg && current->job != tty_foreground()) r = -EPERM;  // only the terminal's owner can pass it on
+    if (!r) r = loader_spawn(at, name, argc, argv, job, std, fg);
     kfree(strings);
+    if (r > 0 && fg) {
+        // The child gets the terminal before its first instruction.
+        int h = tty_handover(job ? job : r);
+        if (h) task_kill(r);  // never ran; it ends at once
+        task_release(r);
+        if (h) r = h;
+    }
     return r;
 }
 
@@ -506,6 +527,7 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_STAT] = sys_stat,
     [SYS_TIME] = sys_time,
     [SYS_POLL] = sys_poll,
+    [SYS_PING] = sys_ping,
 };
 
 void syscall_handle(regs_t* r) {

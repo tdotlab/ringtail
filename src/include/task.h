@@ -35,8 +35,9 @@ typedef struct task {
     volatile int killed;
     int exit_status;
     int joiners;           // tasks waiting in task_join; keeps the corpse around
-    uint32_t wake_tick;
+    uint32_t wake_tick;    // for TASK_SLEEPING, and TASK_BLOCKED when timed
     void* wait_chan;
+    int timed;             // blocked with a deadline (task_block_timeout)
 
     void (*entry)(void*);
     void* arg;
@@ -60,9 +61,12 @@ int task_create_kernel(const char* name, void (*entry)(void*), void* arg);
 // given user stack pointer; its heap starts empty at brk. Job 0 makes
 // it the leader of a new job. With std (three of the current task's
 // descriptors, already checked), descriptors 0-2 are copies of those;
-// without, they are the console.
+// without, they are the console. A held task does not run until
+// task_release: that gives its creator time to hand it the terminal,
+// which it would otherwise race to read.
 int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
-                     uint32_t brk, int job, const int std[3]);
+                     uint32_t brk, int job, const int std[3], int held);
+void task_release(int id);
 void task_exit(int status) __attribute__((noreturn));
 
 // Must be called with interrupts disabled.
@@ -74,6 +78,8 @@ void task_yield(void);
 // in between the check and the sleep. Wakeups may be spurious:
 // callers re-check their condition in a loop.
 void task_block(void* chan);
+// The same, but the task also wakes once the tick count reaches until.
+void task_block_timeout(void* chan, uint32_t until);
 void task_wakeup(void* chan);   // safe from interrupt handlers
 
 // Sleep for a number of timer ticks. Returns 0, or -EINTR if the

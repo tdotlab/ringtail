@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.21.0"
-#define RINGTAIL_CODENAME "Gauge"
+#define RINGTAIL_VERSION "0.22.0"
+#define RINGTAIL_CODENAME "Sonar"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08
@@ -55,7 +55,8 @@ void syscall_handle(struct regs* r);
 // copied from the current task's std[0..2], or the console when std
 // is NULL. Returns the new task id or -errno.
 #define ARGV_MAX 16
-int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[3]);
+// held: the task waits for task_release before it runs.
+int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[3], int held);
 
 // SYS_KINFO's reports (kinfo.c): 0, or -EINVAL for an unknown one.
 int kinfo_format(int what, sbuf_t* sb);

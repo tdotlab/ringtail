@@ -8,6 +8,7 @@
 #include "task.h"
 #include "mm.h"
 #include "fs.h"
+#include "net.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002u
 #define MB_FLAG_CMDLINE (1u << 2)
@@ -112,6 +113,8 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     timer_init();
     serial_enable_input();
     start_disk();
+    pci_init();
+    net_init();
 
     if (task_create_kernel("init", init_main, 0) < 0) panic("cannot start init");
     sti();

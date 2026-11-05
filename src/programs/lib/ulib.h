@@ -37,6 +37,7 @@ static inline int sys_rename(const char* from, const char* to) { return SC2(SYS_
 static inline int sys_stat(const char* path, dirent_t* d) { return SC2(SYS_STAT, path, d); }
 static inline int sys_time(rtc_time_t* t) { return SC1(SYS_TIME, t); }
 static inline int sys_poll(uint32_t ticks) { return SC1(SYS_POLL, ticks); }
+static inline int sys_ping(ping_t* p) { return SC1(SYS_PING, p); }
 static inline int sys_seek(int fd, int32_t off, int whence) { return SC3(SYS_SEEK, fd, off, whence); }
 static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS_LIST, index, buf, size); }
 static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }

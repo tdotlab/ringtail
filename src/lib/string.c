@@ -130,6 +130,10 @@ const char* strerror(int err) {
     case ENAMETOOLONG: return "name too long";
     case ENOSYS: return "no such system call";
     case ENOTEMPTY: return "directory not empty";
+    case ENETDOWN: return "network is down";
+    case ENETUNREACH: return "network unreachable";
+    case ETIMEDOUT: return "timed out";
+    case EHOSTUNREACH: return "host unreachable";
     }
     return "unknown error";
 }

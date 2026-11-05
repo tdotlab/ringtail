@@ -26,7 +26,9 @@ PROMPT = rb"ringtail:/[^>\n]*> "
 
 
 class Machine:
-    def __init__(self, iso, disk, workdir, cpu=None, mem=64, machine=None):
+    # net: QEMU arguments for the network card; by default QEMU gives an
+    # e1000 on its user network, where 10.0.2.2 is the gateway.
+    def __init__(self, iso, disk, workdir, cpu=None, mem=64, machine=None, net=()):
         self.dir = workdir
         self.serial_path = os.path.join(workdir, "serial.sock")
         self.monitor_path = os.path.join(workdir, "monitor.sock")
@@ -35,6 +37,7 @@ class Machine:
              "-drive", f"file={disk},format=raw,if=ide,index=0",
              "-boot", "d", "-m", str(mem), "-display", "none",
              *(["-cpu", cpu] if cpu else []), *(["-machine", machine] if machine else []),
+             *net,
              "-chardev", f"socket,id=ser,path={self.serial_path},server=on,wait=on",
              "-serial", "chardev:ser",
              "-monitor", f"unix:{self.monitor_path},server=on,wait=off",
@@ -221,7 +224,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.21.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.22.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -250,13 +253,61 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.21.0" in out, out)
+    t.check("and the new shell works", "0.22.0" in out, out)
 
-    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
+    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")
     t.check("null data segments cannot hurt a syscall", "worked" in out, out)
+
+    # The network, through QEMU's user network: 10.0.2.2 is its gateway
+    # and answers ARP and pings; nobody else on 10.0.2.0/24 does.
+    t.check("finds the network card", "Network: e1000 82540EM 52:54:00:12:34:56, 10.0.2.15" in boot, boot)
+    out = m.run("pci")
+    t.check("pci lists the bus", re.search(r"00:03\.0  8086:100e  Intel ethernet +irq 11", out) and
+            "Intel IDE controller" in out, out)
+    t.check("with nothing trailing off its lines", all(l == l.rstrip() for l in plain(out).splitlines()), repr(out))
+    mem_before = m.run("mem")
+    out = m.run("ping -c 3 10.0.2.2", timeout=30)
+    t.check("ping 10.0.2.2 gets three replies", out.count("bytes from 10.0.2.2") == 3 and
+            "3 sent, 3 received, 0% lost, round trip min/avg/max" in out and "[exit status" not in out, out)
+    t.check("each with its ttl and round trip", re.search(r"64 bytes from 10\.0\.2\.2: seq=1 ttl=\d+ time=\d+\.\d{3} ms", out), out)
+    out = m.run("ping -c 1 -s 1472 10.0.2.2")
+    t.check("the biggest ping that fits a frame", "1480 bytes from 10.0.2.2" in out, out)
+    out = m.run("ping -c 1 -s 0 10.0.2.2")
+    t.check("and an empty one", "8 bytes from 10.0.2.2" in out, out)
+    out = m.run("net")
+    t.check("net shows the card", "e1000 82540EM (8086:100e) at 00:03.0, irq 11" in out and "link up" in out, out)
+    t.check("the address", "10.0.2.15/24, gateway 10.0.2.2" in out, out)
+    t.check("the traffic", (c := re.search(r"Frames:\s+(\d+) in, (\d+) out", out)) and
+            int(c.group(1)) >= 5 and int(c.group(2)) >= 5, out)
+    t.check("and the gateway's MAC, learned by ARP", "10.0.2.2 is 52:55:0a:00:02:02" in out, out)
+    start = time.time()
+    out = m.run("ping -c 1 10.0.2.99", timeout=20)
+    took = time.time() - start
+    t.check("a neighbour nobody answers for is host unreachable", "seq=1: host unreachable" in out and
+            "1 sent, 0 received, 100% lost" in out and "[exit status 1]" in out, out)
+    t.check("after three ARP requests a second apart", 2.5 < took < 6, "%.2f s" % took)
+    out = m.run("ping -c 1 127.0.0.1")
+    t.check("there is no loopback yet", "host unreachable" in out, out)
+    out = m.run("ping -c 1 10.0.2.15")
+    t.check("so our own address is not reachable either", "host unreachable" in out, out)
+    for bad in ["", "-c", "-s 1473 10.0.2.2", "-W 0 10.0.2.2", "-x 10.0.2.2", "10.0.2.2 10.0.2.3"]:
+        out = m.run("ping " + bad)
+        t.check(f"ping {bad or '(nothing)'} is a usage error", "usage: ping" in out and "[exit status 2]" in out, out)
+    for bad in ["10.0.2", "10.0.2.256", "10.0.2.2.", "localhost", "1..2.3"]:
+        out = m.run("ping " + bad)
+        t.check(f"{bad} is not an address", "is not an address" in out and "[exit status 2]" in out, out)
+    out = m.run("ping 224.0.0.1")
+    t.check("multicast cannot be pinged", "ping: invalid argument" in out, out)
+    m.send("ping -c 0 10.0.2.2\r")
+    m.expect(rb"seq=2 ", 10)
+    m.send("\x03")
+    m.expect(PROMPT, 5)
+    out = m.run("echo after ping")
+    t.check("Ctrl+C stops an endless ping", "after ping" in out, out)
+    t.check("pings leave memory as they found it", m.run("mem") == mem_before, mem_before)
 
     # The fuzzer throws hostile arguments at every non-blocking system call.
     # The kernel must come through with its heap and its frames intact.
@@ -527,7 +578,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.21.0" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.22.0" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -729,7 +780,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.21.0" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.22.0" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -746,7 +797,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.21.0"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.22.0"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -844,6 +895,33 @@ def tests(m, t):
     t.check("poweroff stops the machine", m.qemu.returncode is not None)
 
 
+def short_boots(iso, disk, work, t):
+    """The other e1000 models QEMU has, and a machine with no card at all."""
+    for model, banner, script in [
+            ("e1000-82545em", "Network: e1000 82545EM", [("ping -c 1 10.0.2.2", "1 received")]),
+            ("e1000-82544gc", "Network: e1000 82544GC", [("ping -c 1 10.0.2.2", "1 received")]),
+            ("none", "Network: no card", [("net", "No network card."),
+                                          ("ping 10.0.2.2", "ping: network is down")])]:
+        sub = os.path.join(work, model)
+        os.mkdir(sub)
+        shutil.copy(disk, os.path.join(sub, "disk.img"))
+        vm = Machine(iso, os.path.join(sub, "disk.img"), sub,
+                     net=["-nic", "none" if model == "none" else "user,model=" + model])
+        try:
+            boot = vm.expect(PROMPT, 30)
+            t.check(f"[{model}] boots and says so", banner in boot, boot)
+            for cmd, want in script:
+                out = vm.run(cmd, timeout=20)
+                t.check(f"[{model}] {cmd}", want in out, out)
+        except (TimeoutError, EOFError) as e:
+            t.check(f"[{model}] session finished", False, str(e))
+        finally:
+            vm.qemu.kill()
+            vm.qemu.wait()
+            with open(os.path.join(sub, "serial.log"), "wb") as f:
+                f.write(vm.log)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iso", default="build/ringtail.iso")
@@ -890,6 +968,32 @@ def main():
         now = utcnow()
         days = {(now - datetime.timedelta(days=k)).strftime("%Y-%m-%d") for k in (0, 1)}
         t.check("and our timestamps", any(d in r.stdout for d in days), r.stdout + r.stderr)
+
+    # A second boot, on a network whose only other host is this script.
+    import net_peer
+    peer_dir = os.path.join(work, "peer")
+    os.mkdir(peer_dir)
+    peer_disk = os.path.join(peer_dir, "disk.img")
+    shutil.copy(args.disk, peer_disk)
+    pm = None
+
+    def make_machine(net):
+        nonlocal pm
+        pm = Machine(args.iso, peer_disk, peer_dir, net=net)
+        return pm
+    try:
+        net_peer.peer_tests(make_machine, PROMPT, t)
+    except (TimeoutError, EOFError, RuntimeError) as e:
+        t.check("[peer] session finished", False, str(e))
+    finally:
+        if pm:
+            if pm.qemu.poll() is None:
+                pm.qemu.kill()
+                pm.qemu.wait()
+            with open(os.path.join(peer_dir, "serial.log"), "wb") as f:
+                f.write(pm.log)
+
+    short_boots(args.iso, args.disk, work, t)
 
     print(f"\n{t.passed} passed, {len(t.failed)} failed")
     print(f"serial log: {os.path.join(work, 'serial.log')}")

@@ -21,13 +21,16 @@ void init_main(void* arg) {
     for (;;) {
         const char* argv[] = { "saklas" };
         uint32_t start = timer_ticks();
-        int id = loader_spawn(DISKFS_ROOT, SHELL, 1, argv, 0, 0);
+        // Held until it has the terminal: a shell that ran first would
+        // read as a background job, fail, and end at once.
+        int id = loader_spawn(DISKFS_ROOT, SHELL, 1, argv, 0, 0, 1);
         if (id < 0) {
             kprintf_color(COLOR_ERROR, "init: cannot start %s: %s\n", SHELL, strerror(id));
             task_sleep_ticks(5 * TIMER_HZ);
             continue;
         }
         tty_set_foreground(id);
+        task_release(id);
         int status = task_join(id);
         task_wait_job(id);
         tty_set_foreground(current->job);  // clears up after a shell that died in raw mode

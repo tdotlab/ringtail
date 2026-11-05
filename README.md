@@ -4,9 +4,10 @@ A small 32-bit x86 operating system written from scratch in freestanding
 C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
 FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
-13h.
+13h. It is on the network too: an Intel e1000 driver, ARP, IPv4 and
+ICMP, enough to answer pings and send them.
 
-Current version: **v0.21.0 "Gauge"**. See PROGRESS.md for the history.
+Current version: **v0.22.0 "Sonar"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -53,8 +54,15 @@ overflow, malloc, Ctrl+C on foreground jobs, background jobs, raw
 terminal mode, ANSI output (read back from VGA memory through the QEMU
 monitor), an editing session in Octavo, file and directory commands,
 the timer rate,
-the switch into graphics mode and back, reboot persistence and poweroff.
-Afterwards it runs fsck.fat and mtools against the disk. Pass `--keep`
+the switch into graphics mode and back, reboot persistence and poweroff,
+and `ping` through QEMU's user network. Afterwards it runs fsck.fat and
+mtools against the disk. Then it boots again on a socket network whose
+only other host is `tests/net_peer.py`, which puts raw Ethernet frames on
+the wire: ARP and pings of every size and shape, packets that must be
+ignored (bad checksums, fragments, other addresses, broadcasts, short
+headers), the guest's own pings answered, timed out, refused by a router
+or damaged, and 3000 frames of garbage. Short boots check the other two
+e1000 models and a machine with no card. Pass `--keep`
 to keep the serial log and the disk.
 
 ## Design in brief
@@ -76,7 +84,9 @@ point, never in the middle of a kernel operation. The tty belongs to one
 foreground job, which receives keyboard input, Ctrl+C and Ctrl+\. A job
 can lend the terminal to a job it started and take it back once that job
 is gone, getting its own terminal mode back with it; that is how the
-shell runs a program in the foreground.
+shell runs a program in the foreground. It lends it as part of the spawn
+(`SPAWN_FOREGROUND`), so the program has the terminal before its first
+instruction rather than racing its parent for it.
 
 Terminal: programs read the keyboard (or the serial port) through
 standard input, a line at a time by default. Raw mode hands over every
@@ -129,13 +139,29 @@ open through it, and a directory cannot be moved inside itself. An open
 file cannot be deleted, and a directory that is some task's
 current directory cannot be removed.
 
+Network: PCI devices are found by scanning configuration space at boot
+(`pci` lists them). The e1000 driver maps the card's registers into a
+4 MB device window at 0xC0000000, above user space and in every address
+space but supervisor only, and runs a 32-buffer receive ring and an
+8-buffer transmit ring. Its interrupt only wakes the `net` kernel task,
+which takes frames off the ring and handles them under one lock, so the
+stack never runs in interrupt context. The address is fixed at
+10.0.2.15/24 with the gateway at 10.0.2.2, which is QEMU's user network.
+ARP learns neighbours from requests aimed at us and asks three times, a
+second apart, before giving up; IPv4 checks lengths and checksums and
+drops fragments; ICMP answers echo requests (not broadcast ones) and
+matches replies and routers' unreachable messages to the `ping` syscall
+waiting for them. Round trips are timed in microseconds from the PIT's
+counter.
+
 ## Source layout
 
 ```
 src/boot       Multiboot header, entry, kernel linker script
 src/kernel     kernel_main, GDT/IDT/interrupts, tasks, syscalls, ELF loader, faults, power
 src/mm         heap, physical frames, paging and checked user copies
-src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics
+src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000
+src/net        ARP, IPv4 and ICMP (net.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
 src/lib        string and printf subset, shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
@@ -168,7 +194,8 @@ directories. `mv` renames or moves a file or a whole directory (into a
 directory if the target is one), and the `cp` program copies files. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
 `/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `date` the clock, `uptime` the
-time since boot and timer ticks, and `faults` the fault log. `color <name>` sets
+time since boot and timer ticks, and `faults` the fault log. `pci` lists the PCI devices, and `net` shows
+the network card, the address, traffic counts and the ARP table. `color <name>` sets
 the text colour, and `reboot` and `poweroff` do what they say. `exit`
 ends the shell, and init starts a new one.
 
@@ -180,6 +207,7 @@ Programs on the disk:
 | kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
 | saklas | The command line (the shell). init starts it at boot and again whenever it ends. |
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
+| ping | `ping [-c COUNT] [-s SIZE] [-W MS] ADDRESS`: ICMP echo, a second apart, with round trips and a summary. Addresses only (10.0.2.2), no names yet. |
 | sleep | `sleep <seconds>`, up to an hour. |
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
 | wc | Counts lines, words and bytes of files, or of its input. |
@@ -224,4 +252,5 @@ one, with no time zone (UTC under QEMU) and no changes for summer time. There is
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and
-mode 13h.
+mode 13h. The network has a fixed address (no DHCP), no loopback, no
+UDP or TCP yet, and the e1000 is the only card it drives.

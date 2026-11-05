@@ -54,7 +54,8 @@
 #define SYS_STAT        44  // (path, dirent_t*)       -> 0
 #define SYS_TIME        45  // (rtc_time_t*)           -> 0; the clock, as the CMOS keeps it
 #define SYS_POLL        46  // (ticks)                 -> 1 once terminal input is waiting, 0 if the ticks run out first
-#define NUM_SYSCALLS    47
+#define SYS_PING        47  // (ping_t*)               -> 0 with the reply's rtt_us and ttl filled in
+#define NUM_SYSCALLS    48
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -65,8 +66,12 @@
 // SPAWN_JOIN puts it in job `job` instead, which must be the caller's
 // own or one the caller started. fd[i] >= 0 gives the child a copy of
 // the caller's fd[i] as its descriptor i; -1 keeps the default.
-#define SPAWN_NEW_JOB 1
-#define SPAWN_JOIN    2
+// SPAWN_FOREGROUND hands the terminal to the child's job, as SYS_TTY_FG
+// would, before the child runs at all, so it never reads as a
+// background job; only the terminal's current owner may use it.
+#define SPAWN_NEW_JOB    1
+#define SPAWN_JOIN       2
+#define SPAWN_FOREGROUND 4
 typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 
 // SYS_TTY_FG: the foreground job may hand the terminal to a job it
@@ -82,6 +87,8 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 #define KINFO_FAULTS  4  // the fault log
 #define KINFO_MMAP    5  // the boot memory map
 #define KINFO_DISK    6  // "N KB free of M KB"
+#define KINFO_NET     7  // the network card, the address and the packet counts
+#define KINFO_PCI     8  // every PCI device: bus:dev.fn vendor:device class irq
 
 #define POWER_REBOOT 0
 #define POWER_OFF    1
@@ -167,6 +174,10 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 #define ENAMETOOLONG  36
 #define ENOSYS        38
 #define ENOTEMPTY     39
+#define ENETDOWN      100
+#define ENETUNREACH   101
+#define ETIMEDOUT     110
+#define EHOSTUNREACH  113
 
 #define GFX_WIDTH  320
 #define GFX_HEIGHT 200
@@ -177,5 +188,16 @@ typedef struct { int x, y, w, h, color, filled; } gfx_rect_t;
 typedef struct { int x0, y0, x1, y1, color; } gfx_line_t;
 typedef struct { int x, y; const char* str; int color; } gfx_text_t;
 typedef struct { int x, y, buttons; } mouse_state_t;
+
+// SYS_PING: send one ICMP echo request to ip (host order, so 10.0.2.2
+// is 0x0A000202) carrying `size` bytes of data (0 to PING_MAX_SIZE),
+// and wait up to timeout_ms (at most 10 seconds) for the reply. On
+// success rtt_us is the round trip in microseconds and ttl the reply's
+// time to live. Errors: -ENETDOWN with no network card or no link,
+// -EHOSTUNREACH when nobody answers ARP for the next hop (or a router
+// says so), -ETIMEDOUT when no reply came, -EIO for a reply whose data
+// came back changed, -EINTR if the caller was killed while waiting.
+#define PING_MAX_SIZE 1472
+typedef struct { unsigned ip; int seq, size, timeout_ms; int rtt_us, ttl; } ping_t;
 
 #endif

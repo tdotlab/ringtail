@@ -17,10 +17,28 @@ static void timer_irq(void) {
 }
 
 void timer_init(void) {
-    outb(PIT_CMD, 0x36);  // channel 0, lo/hi byte, square wave
+    // Rate generator rather than square wave: same interrupts, but the
+    // counter runs down once per tick, so timer_micros can read it.
+    outb(PIT_CMD, 0x34);  // channel 0, lo/hi byte, mode 2
     outb(PIT_CH0, PIT_DIVISOR & 0xFF);
     outb(PIT_CH0, PIT_DIVISOR >> 8);
     irq_register(IRQ_TIMER, timer_irq);
 }
 
 uint32_t timer_ticks(void) { return ticks; }
+
+uint32_t timer_micros(void) {
+    uint32_t f = irq_save();
+    outb(PIT_CMD, 0x00);  // latch channel 0's count
+    uint32_t count = inb(PIT_CH0);
+    count |= (uint32_t)inb(PIT_CH0) << 8;
+    uint32_t t = ticks;
+    // The counter may have rolled over with its interrupt not yet
+    // taken (interrupts are off): then the tick count is one behind.
+    outb(0x20, 0x0A);     // master PIC: read the request register
+    int pending = inb(0x20) & 1;
+    irq_restore(f);
+    uint32_t done = count > PIT_DIVISOR ? 0 : PIT_DIVISOR - count;
+    if (pending && done < PIT_DIVISOR / 2) t++;
+    return t * (1000000u / TIMER_HZ) + done * (1000000u / TIMER_HZ) / PIT_DIVISOR;
+}

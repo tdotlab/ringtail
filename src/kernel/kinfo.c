@@ -3,6 +3,8 @@
 #include "task.h"
 #include "mm.h"
 #include "fs.h"
+#include "drivers.h"
+#include "net.h"
 #include "ringtail/abi.h"
 
 int kinfo_format(int what, sbuf_t* sb) {
@@ -47,6 +49,12 @@ int kinfo_format(int what, sbuf_t* sb) {
         sbprintf(sb, "%u KB free of %u KB\n", free * (cb / 512) / 2, clusters * (cb / 512) / 2);
         return 0;
     }
+    case KINFO_NET:
+        net_format(sb);
+        return 0;
+    case KINFO_PCI:
+        pci_format(sb);
+        return 0;
     }
     return -EINVAL;
 }
