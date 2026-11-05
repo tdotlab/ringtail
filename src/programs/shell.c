@@ -353,6 +353,28 @@ static void cmd_rm(cmd_t* c) {
     else if (r < 0) err(c->argv[1], r);
 }
 
+// mv SRC DST, or mv SRC... DIR.
+static void cmd_mv(cmd_t* c) {
+    const char* dst = c->argv[c->argc - 1];
+    if (c->argc > 3) {
+        dirent_t d;
+        if (sys_stat(dst, &d) < 0 || !(d.flags & DIRENT_DIR)) {
+            complain("mv: moving several things needs a directory last");
+            return;
+        }
+    }
+    for (int i = 1; i < c->argc - 1; i++) {
+        const char* src = c->argv[i];
+        char to[PATH_MAX];
+        int r = dest_path(src, dst, to, sizeof to);
+        if (!r) r = sys_rename(src, to);
+        if (r == -EINVAL) dprintf(STDERR_FILENO, RED "%s: cannot go inside itself" NORM "\n", src);
+        else if (r == -EBUSY) dprintf(STDERR_FILENO, RED "%s: give it by name to move it" NORM "\n", src);
+        else if (r == -EEXIST) dprintf(STDERR_FILENO, RED "%s: already exists (rm it first)" NORM "\n", to);
+        else if (r < 0) err(src, r);
+    }
+}
+
 static const struct { const char* name; uint8_t color; } palette[] = {
     { "blue", 0x01 }, { "green", 0x02 }, { "cyan", 0x03 }, { "red", 0x04 },
     { "magenta", 0x05 }, { "yellow", 0x0E }, { "gray", 0x07 }, { "lightgreen", 0x0A },
@@ -414,6 +436,7 @@ static const builtin_t builtins[] = {
     { "touch", 1, "<file>", "create an empty file", cmd_touch },
     { "write", 2, "<file> <text>", "replace a file's contents", cmd_write },
     { "rm", 1, "<file>", "delete a file", cmd_rm },
+    { "mv", 2, "<from> <to>", "move or rename (to a directory: into it)", cmd_mv },
     { "run", 1, "<prog> [args] [&]", "run a program (or just type its name)", 0 },
     { "tasks", 0, "", "list tasks", cmd_tasks },
     { "kill", 1, "<id>", "stop a task", cmd_kill },

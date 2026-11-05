@@ -185,7 +185,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.15.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.16.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -214,7 +214,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.15.0" in out, out)
+    t.check("and the new shell works", "0.16.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
         out = m.run("run " + prog, timeout=30)
@@ -402,6 +402,42 @@ def tests(m, t):
     t.check("rmdir", plain(out) == "", out)
     out = m.run("ls docs")
     t.check("ls of a directory", "A.TXT" in out and "SUB" not in out, out)
+
+    # mv and cp.
+    m.run("write m1.txt moving text")
+    out = m.run("mv m1.txt m2.txt")
+    t.check("mv renames", plain(out) == "" and "moving text" in m.run("cat m2.txt"), out)
+    out = m.run("mv m2.txt docs")
+    t.check("mv into a directory", "moving text" in m.run("cat docs/m2.txt"), out)
+    out = m.run("mv docs/m2.txt docs/a.txt")
+    t.check("mv onto an existing file is refused", "already exists" in out, out)
+    m.run("mkdir docs/in")
+    out = m.run("mv docs docs/in")
+    t.check("mv of a directory into itself is refused", "inside itself" in out, out)
+    m.run("mkdir moved")
+    out = m.run("mv docs moved")
+    t.check("mv moves a whole directory", "in a directory" in m.run("cat moved/docs/a.txt"), out)
+    m.run("cd moved/docs/in")
+    out = m.run("cat ../../../keep.txt")
+    t.check("and .. inside it leads back up", "survives" in out, out)
+    m.run("cd /")
+    out = m.run("cp keep.txt copy.txt")
+    t.check("cp copies a file", "survives" in m.run("cat copy.txt"), out)
+    out = m.run("cp copy.txt moved/docs/in")
+    t.check("cp into a directory", "survives" in m.run("cat moved/docs/in/copy.txt"), out)
+    out = m.run("cp hello moved")
+    t.check("cp copies a program", "Hello from disk!" in m.run("moved/hello"), out)
+    out = m.run("cp copy.txt copy.txt")
+    t.check("cp onto itself is refused", "same file" in out and "survives" in m.run("cat copy.txt"), out)
+    out = m.run("cp moved x")
+    t.check("cp of a directory is refused", "is a directory" in out, out)
+    out = m.run("cp a b c")
+    t.check("cp of several needs a directory", "directory last" in out, out)
+    m.run("write copy.txt replaced")
+    m.run("cp copy.txt moved/docs/in/copy.txt")
+    out = m.run("cat moved/docs/in/copy.txt")
+    t.check("cp replaces an existing file", "replaced" in out and "survives" not in out, out)
+
     m.run("mkdir keepdir")
     m.run("write keepdir/deep.txt nested and kept")
 

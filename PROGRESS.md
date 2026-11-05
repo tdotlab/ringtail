@@ -1943,3 +1943,34 @@ error, programs run from inside a directory, a nested file surviving a
 reboot, and mtools reading it afterwards).
 
 Next ideas: rename/mv and cp, then long file names or a second disk.
+
+## v0.16.0 "Packrat"
+
+Moving things around. `mv` in the shell renames or moves files and
+whole directories, and a new `cp` program copies files.
+
+Kernel:
+- `rename(from, to)`: a new entry goes in, the old one goes away, and a
+  moved directory's `..` is pointed at its new parent, all in one
+  commit. The target must not exist (EEXIST; `mv` says to rm it
+  first). A directory can't be moved into itself or below (EINVAL),
+  and a move is refused when some directory in the moved tree would
+  end up with a path past PATH_MAX, found by an iterative walk of the
+  tree. An open file stays open: its node follows the entry.
+- `stat(path, dirent_t*)`, and dirent_t gained `id`: two paths with the
+  same id are the same file or directory. cp uses it to refuse copying
+  a file onto itself, which would otherwise truncate it to nothing.
+- The subdirectory sector cache grew from 8 to 16 sectors, since a
+  rename dirties more of them.
+
+User side: `mv SRC DST` and `mv SRC... DIR`, into a directory when the
+target is one (`dest_path` in ulib, shared with cp). `cp` streams 4 KB
+at a time, replaces an existing target, refuses directories, and
+removes a target it created if the copy fails partway.
+
+Tests: 188 host checks (rename in place and across directories, an
+open file through a move, directory moves and their `..`, the loop and
+depth checks, stat and ids, and a move on 2 KB clusters for fsck),
+136 QEMU checks (mv and cp, every refusal, a copied program running).
+
+Next: long file names.

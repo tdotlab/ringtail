@@ -33,6 +33,8 @@ static inline int sys_mkdir(const char* path) { return SC1(SYS_MKDIR, path); }
 static inline int sys_rmdir(const char* path) { return SC1(SYS_RMDIR, path); }
 static inline int sys_chdir(const char* path) { return SC1(SYS_CHDIR, path); }
 static inline int sys_getcwd(char* buf, uint32_t size) { return SC2(SYS_GETCWD, buf, size); }
+static inline int sys_rename(const char* from, const char* to) { return SC2(SYS_RENAME, from, to); }
+static inline int sys_stat(const char* path, dirent_t* d) { return SC2(SYS_STAT, path, d); }
 static inline int sys_seek(int fd, int32_t off, int whence) { return SC3(SYS_SEEK, fd, off, whence); }
 static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS_LIST, index, buf, size); }
 static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }
@@ -81,6 +83,11 @@ int print(const char* s);
 int puts(const char* s);  // adds a newline
 int printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 int dprintf(int fd, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+
+// For mv and cp: where src goes when dst is given. If dst is an
+// existing directory, that is dst/NAME with src's last name; else dst
+// itself. 0, or -ENAMETOOLONG if it does not fit out.
+int dest_path(const char* src, const char* dst, char* out, size_t size);
 
 // Self-checking programs: check() prints one result line, and
 // check_summary() prints the total and returns an exit status.

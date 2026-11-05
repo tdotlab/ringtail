@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.15.0"
-#define RINGTAIL_CODENAME "Burrow"
+#define RINGTAIL_VERSION "0.16.0"
+#define RINGTAIL_CODENAME "Packrat"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08

@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.15.0 "Burrow"**. See PROGRESS.md for the history.
+Current version: **v0.16.0 "Packrat"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -111,7 +111,9 @@ File data is always written before the metadata that points at it.
 Replacing a file builds the new contents in fresh clusters before
 switching the directory entry, so a failure leaves the old file intact;
 programs get that through the `save` syscall.
-An open file cannot be deleted, and a directory that is some task's
+Rename moves the entry (and a directory's `..`), so an open file stays
+open through it, and a directory cannot be moved inside itself. An open
+file cannot be deleted, and a directory that is some task's
 current directory cannot be removed.
 
 ## Source layout
@@ -144,7 +146,8 @@ last command's output. A built-in can start a pipeline (`ls | grep TXT`,
 come after a `|`. Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
 `kill <id>` stops it. `ls [dir]`, `cat`, `touch`, `write <file> <text>`
 and `rm` work on files, and `cd`, `pwd`, `mkdir` and `rmdir` on
-directories. Every file argument can be a path (`DOCS/A.TXT`,
+directories. `mv` renames or moves a file or a whole directory (into a
+directory if the target is one), and the `cp` program copies files. Every file argument can be a path (`DOCS/A.TXT`,
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
 `/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `uptime` the
 time and timer ticks, and `faults` the fault log. `color <name>` sets
@@ -159,6 +162,7 @@ Programs on the disk:
 | gui | Desktop: a paged launcher for every program, and page icons for .TXT and .LEM files that open them in Octavo. Esc quits. |
 | shell | The command line. init starts it at boot and again whenever it ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
+| cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
 | wc | Counts lines, words and bytes of files, or of its input. |
 | grep | `grep [-i] TEXT [files]`: the lines containing TEXT (plain text, not patterns). |
 | hello | Hello world, and the starting point for your own |
@@ -196,7 +200,7 @@ are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 ## Limits
 
 These are deliberate, or simply not done yet. Programs get the x87 FPU
-(its state is saved per task) but not SSE. There are no long file names, no rename or move, no
+(its state is saved per task) but not SSE. There are no long file names, no
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and

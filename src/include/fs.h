@@ -22,6 +22,10 @@ int diskfs_create(int at, const char* path);   // new file node, -EEXIST if the 
 int diskfs_unlink(int at, const char* path);   // 0, -EBUSY while open, -EISDIR
 int diskfs_mkdir(int at, const char* path);
 int diskfs_rmdir(int at, const char* path);    // 0, -ENOTEMPTY, -EBUSY while in use
+// Move or rename a file or directory. -EEXIST if `to` is taken,
+// -EINVAL for a directory into itself. An open file stays open.
+int diskfs_rename(int at, const char* from, const char* to);
+int diskfs_stat(int at, const char* path, dirent_t* d);  // d->name is the last name, "/" for the root
 uint32_t diskfs_size(int node);
 int diskfs_pread(int node, void* buf, uint32_t len, uint32_t off);
 int diskfs_pwrite(int node, const void* buf, uint32_t len, uint32_t off);

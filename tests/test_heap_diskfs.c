@@ -469,6 +469,96 @@ static void test_dirs(void) {
     diskfs_unref(deepest);
 }
 
+static void test_rename(void) {
+    char buf[256];
+    format(16384, 1);
+    diskfs_init();
+    uint32_t clusters, free0, f, cb;
+    dirent_t d;
+    diskfs_write_file(DISKFS_ROOT, "A.TXT", "alpha", 5);
+    diskfs_write_file(DISKFS_ROOT, "B.TXT", "beta", 4);
+    diskfs_mkdir(DISKFS_ROOT, "D");
+    diskfs_stats(&clusters, &free0, &cb);
+
+    CHECK(diskfs_rename(DISKFS_ROOT, "a.txt", "c.txt") == 0, "rename a file");
+    memset(buf, 0, sizeof buf);
+    CHECK(read_all("C.TXT", buf, sizeof buf) == 5 && strcmp(buf, "alpha") == 0 &&
+          read_all("A.TXT", buf, sizeof buf) == -ENOENT, "the new name has the data, the old one is gone");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "B.TXT") == -EEXIST, "renaming onto a taken name is -EEXIST");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "D") == -EEXIST, "and onto a directory");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "/C.TXT") == 0, "renaming onto itself is a no-op");
+    CHECK(diskfs_rename(DISKFS_ROOT, "NOPE", "X") == -ENOENT, "renaming nothing is -ENOENT");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "LONGERNAME.TXT") == -EINVAL, "to a bad name is -EINVAL");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "NOPE/C.TXT") == -ENOENT, "into a missing directory is -ENOENT");
+    CHECK(diskfs_rename(DISKFS_ROOT, ".", "X") == -EBUSY && diskfs_rename(DISKFS_ROOT, "/", "X") == -EBUSY,
+          ". and / cannot be renamed");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "..") == -EEXIST, "nothing can be renamed to ..");
+
+    // Moving into a directory, with the file open the whole time.
+    int fn = diskfs_lookup(DISKFS_ROOT, "C.TXT");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "D/MOVED.TXT") == 0, "move an open file into a directory");
+    memset(buf, 0, sizeof buf);
+    CHECK(diskfs_pread(fn, buf, sizeof buf, 0) == 5 && strcmp(buf, "alpha") == 0, "it still reads through its node");
+    CHECK(diskfs_pwrite(fn, "!", 1, 5) == 1, "and writes");
+    CHECK(read_all("D/MOVED.TXT", buf, sizeof buf) == 6 && memcmp(buf, "alpha!", 6) == 0,
+          "and the write lands in the moved file");
+    CHECK(diskfs_unlink(DISKFS_ROOT, "D/MOVED.TXT") == -EBUSY, "it is still known to be open");
+    diskfs_unref(fn);
+    CHECK(count_entries(DISKFS_ROOT) == 2, "the root keeps B.TXT and D");
+
+    // Moving directories: ".." follows, and loops are refused.
+    diskfs_mkdir(DISKFS_ROOT, "D/SUB");
+    diskfs_write_file(DISKFS_ROOT, "D/SUB/IN.TXT", "in", 2);
+    diskfs_mkdir(DISKFS_ROOT, "E");
+    int sub = diskfs_opendir(DISKFS_ROOT, "D/SUB");
+    CHECK(diskfs_rename(DISKFS_ROOT, "D", "D/SUB/D") == -EINVAL, "a directory cannot go inside itself");
+    CHECK(diskfs_rename(DISKFS_ROOT, "D", "D/X") == -EINVAL, "or straight into itself");
+    CHECK(diskfs_rename(DISKFS_ROOT, "D/SUB", "E/SUB2") == 0, "move a directory that is in use");
+    CHECK(diskfs_getcwd(sub, buf, sizeof buf) > 0 && strcmp(buf, "/E/SUB2") == 0, "its node knows the new path");
+    int e = diskfs_opendir(DISKFS_ROOT, "E");
+    CHECK(diskfs_opendir(sub, "..") == e, "its .. points at the new parent");
+    diskfs_unref(e); diskfs_unref(e);
+    CHECK(read_all("E/SUB2/IN.TXT", buf, sizeof buf) == 2, "its files came along");
+    CHECK(diskfs_opendir(DISKFS_ROOT, "D/SUB") == -ENOENT, "and the old place is empty");
+    diskfs_unref(sub);
+    CHECK(diskfs_rename(DISKFS_ROOT, "E/SUB2", "SUB3") == 0, "a directory moves up to the root");
+    sub = diskfs_opendir(DISKFS_ROOT, "SUB3/..");
+    CHECK(sub == DISKFS_ROOT, "and its .. is the root");
+    CHECK(diskfs_init() == 0 && read_all("SUB3/IN.TXT", buf, sizeof buf) == 2, "all of it survives a remount");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == free0 - 3, "renames cost no clusters (only SUB, E and IN.TXT do)");
+
+    // stat.
+    CHECK(diskfs_stat(DISKFS_ROOT, "b.txt", &d) == 0 && strcmp(d.name, "B.TXT") == 0 && d.size == 4 &&
+          d.flags == 0, "stat a file");
+    dirent_t d2;
+    CHECK(diskfs_stat(DISKFS_ROOT, "/SUB3/../B.TXT", &d2) == 0 && d2.id == d.id, "two paths to it share an id");
+    CHECK(diskfs_stat(DISKFS_ROOT, "E", &d) == 0 && d.flags == DIRENT_DIR && strcmp(d.name, "E") == 0,
+          "stat a directory");
+    int en = diskfs_opendir(DISKFS_ROOT, "E");
+    CHECK(diskfs_stat(en, ".", &d2) == 0 && d2.id == d.id && strcmp(d2.name, "E") == 0, "stat . names it");
+    diskfs_unref(en);
+    CHECK(diskfs_stat(DISKFS_ROOT, "/", &d) == 0 && strcmp(d.name, "/") == 0 && d.flags == DIRENT_DIR, "stat /");
+    CHECK(diskfs_stat(DISKFS_ROOT, "NOPE", &d) == -ENOENT, "stat of nothing is -ENOENT");
+
+    // A move that would push a directory's path past PATH_MAX.
+    char path[256] = "DEEP";
+    int depth = 0;
+    while (diskfs_mkdir(DISKFS_ROOT, path) == 0 && depth < 40) {
+        depth++;
+        strcat(path, "/DDDDDDDD");
+    }
+    diskfs_mkdir(DISKFS_ROOT, "T");
+    diskfs_mkdir(DISKFS_ROOT, "T/U");
+    *strrchr(path, '/') = 0;
+    strcat(path, "/X");
+    CHECK(diskfs_rename(DISKFS_ROOT, "T", path) == -ENAMETOOLONG, "moving a tree too deep is -ENAMETOOLONG");
+    *strrchr(path, '/') = 0;
+    *strrchr(path, '/') = 0;
+    strcat(path, "/X");
+    CHECK(diskfs_rename(DISKFS_ROOT, "T/U", path) == 0, "a smaller one fits where the tree did not");
+}
+
 static void test_big_clusters(void) {
     char buf[20000];
     format(32768, 4);
@@ -495,6 +585,9 @@ static void test_big_clusters(void) {
     int leaf = diskfs_init() == 0 ? diskfs_opendir(DISKFS_ROOT, "TREE/LEAF") : -1;
     CHECK(made == 70 && leaf > 0 && count_entries(leaf) == 70, "70 files in one, past its first 64 slots");
     diskfs_unref(leaf);
+    // fsck checks the ".." of a moved directory, and a renamed file.
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "OTHER") == 0 && diskfs_rename(DISKFS_ROOT, "TREE/LEAF", "OTHER/LEAF") == 0 &&
+          diskfs_rename(DISKFS_ROOT, "OTHER/LEAF/F3.TXT", "/F3MOVED.TXT") == 0, "moves on 2 KB clusters");
 }
 
 static void test_bad_volumes(void) {
@@ -526,6 +619,7 @@ int main(void) {
     test_io_errors();
     test_bad_volumes();
     test_dirs();
+    test_rename();
     test_big_clusters();  // last: its image is what fsck checks
 
     FILE* img = fopen("test_disk.img", "wb");

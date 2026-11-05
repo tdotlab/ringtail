@@ -48,3 +48,27 @@ int check_summary(const char* program) {
     else printf("%s: all %d checks passed\n", program, checks);
     return failures ? 1 : 0;
 }
+
+int dest_path(const char* src, const char* dst, char* out, size_t size) {
+    dirent_t d;
+    if (sys_stat(dst, &d) < 0 || !(d.flags & DIRENT_DIR)) {
+        if (strlen(dst) >= size) return -ENAMETOOLONG;
+        memcpy(out, dst, strlen(dst) + 1);
+        return 0;
+    }
+    // src's last name, without trailing slashes.
+    size_t end = strlen(src);
+    while (end > 1 && src[end - 1] == '/') end--;
+    size_t start = end;
+    while (start > 0 && src[start - 1] != '/') start--;
+    size_t dl = strlen(dst);
+    while (dl > 1 && dst[dl - 1] == '/') dl--;
+    int slash = dst[dl - 1] != '/';
+    size_t n = end - start;
+    if (dl + (size_t)slash + n >= size) return -ENAMETOOLONG;
+    memcpy(out, dst, dl);
+    if (slash) out[dl] = '/';
+    memcpy(out + dl + slash, src + start, n);
+    out[dl + slash + n] = 0;
+    return 0;
+}

@@ -109,6 +109,22 @@ static int sys_getcwd(uint32_t ubuf, uint32_t size, uint32_t c) {
 // clusters and the directory entry switches only once they are all
 // written, so a full disk or an I/O error leaves the old file intact.
 #define SAVE_MAX (1024u * 1024u)
+static int sys_rename(uint32_t ufrom, uint32_t uto, uint32_t c) {
+    (void)c;
+    char from[PATH_MAX], to[PATH_MAX];
+    int n = copy_path(from, ufrom);
+    if (n >= 0) n = copy_path(to, uto);
+    return n < 0 ? n : diskfs_rename(file_cwd(), from, to);
+}
+static int sys_stat(uint32_t upath, uint32_t uent, uint32_t c) {
+    (void)c;
+    char path[PATH_MAX];
+    dirent_t d;
+    int n = copy_path(path, upath);
+    if (n >= 0) n = diskfs_stat(file_cwd(), path, &d);
+    if (n < 0) return n;
+    return copy_to_user((void*)uent, &d, sizeof d) ? -EFAULT : 0;
+}
 static int sys_save(uint32_t upath, uint32_t ubuf, uint32_t len) {
     char path[PATH_MAX];
     int n = copy_path(path, upath);
@@ -463,6 +479,8 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_RMDIR] = sys_rmdir,
     [SYS_CHDIR] = sys_chdir,
     [SYS_GETCWD] = sys_getcwd,
+    [SYS_RENAME] = sys_rename,
+    [SYS_STAT] = sys_stat,
 };
 
 void syscall_handle(regs_t* r) {

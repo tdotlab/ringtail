@@ -50,7 +50,9 @@
 #define SYS_RMDIR       40  // (path)                  -> 0; the directory must be empty and nobody's current one
 #define SYS_CHDIR       41  // (path)                  -> 0
 #define SYS_GETCWD      42  // (buf, size)             -> length of the absolute path put in buf
-#define NUM_SYSCALLS    43
+#define SYS_RENAME      43  // (from, to)              -> 0; moves too; to must not exist
+#define SYS_STAT        44  // (path, dirent_t*)       -> 0
+#define NUM_SYSCALLS    45
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -88,8 +90,10 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 // looks for a name without a '/' in the root, where programs live.
 #define PATH_MAX 128  // including the NUL
 
+// dirent_t.id tells files and directories apart while they exist: two
+// paths with the same id are the same thing. A rename can change it.
 #define DIRENT_DIR 1  // dirent_t.flags: a directory (size is 0)
-typedef struct { char name[16]; unsigned size; unsigned flags; } dirent_t;
+typedef struct { char name[16]; unsigned size; unsigned flags; unsigned id; } dirent_t;
 
 // Values from -4095 to -1 are errors. Anything else is a result,
 // including addresses above 2 GB that look negative as an int.

@@ -21,7 +21,7 @@
 // what keeps open files and current directories safe.
 //
 // Not supported: long file names (their entries are skipped),
-// timestamps, renaming, FAT12 and FAT32.
+// timestamps, FAT12 and FAT32.
 //
 // Concurrency: one mutex around every public call. Interrupts stay
 // on, so the disk wait does not freeze the machine.
@@ -55,7 +55,7 @@ static mutex_t fs_lock = MUTEX_INIT;
 #define MAX_FATS 4
 #define PER_SECTOR 16       // directory entries in a sector
 #define MAX_DIR_ENTRIES 65536u  // FAT's limit; bounds a walk on a looped chain
-#define DCACHE 8            // cached subdirectory sectors
+#define DCACHE 16           // cached subdirectory sectors
 #define MAX_NODES 64
 
 static int fs_ok;
@@ -169,7 +169,7 @@ static void free_chain(uint32_t c) {
 // ---- Directory sectors ----
 
 // Subdirectory sectors, read on demand. A slot with unwritten
-// changes stays until commit(); a public call dirties two at most.
+// changes stays until commit(); a public call dirties a few at most.
 static uint8_t dcache_data[DCACHE][SECTOR];
 static struct { uint32_t lba, stamp; uint8_t valid, dirty; } dcache[DCACHE];
 static uint32_t dcache_clock;
@@ -431,6 +431,49 @@ static int dir_path(uint32_t dcl, char* buf, uint32_t size) {
     if (len + 1 > size) return -ENAMETOOLONG;
     memcpy(buf, tmp + pos, len + 1);
     return (int)len;
+}
+
+// The length of the absolute path of a directory named n bytes in
+// directory dcl (without the NUL), in *len.
+static int child_path_len(uint32_t dcl, uint32_t n, uint32_t* len) {
+    char where[PATH_MAX];
+    int r = dir_path(dcl, where, sizeof where);
+    if (r < 0) return r;
+    *len = (dcl ? (uint32_t)r + 1 : 1) + n;
+    return 0;
+}
+
+// The longest path to a directory below top, relative to it ("A/B" is
+// 3), in *out. Iterative, with a fixed stack: a legal tree is no
+// deeper than PATH_MAX allows, and a deeper one (or a looped chain on
+// a corrupt disk) is -ENAMETOOLONG.
+static struct { diter_t it; uint32_t len; } subtree[PATH_MAX / 2 + 1];
+
+static int subtree_len(uint32_t top, uint32_t* out) {
+    int sp = 0;
+    uint32_t best = 0;
+    dir_begin(&subtree[0].it, top);
+    subtree[0].len = 0;
+    while (sp >= 0) {
+        loc_t l;
+        uint8_t e[32];
+        int r = dir_next(&subtree[sp].it, &l);
+        if (r < 0) return r;
+        if (r && ent_get(l, e)) return -EIO;
+        if (!r || ent_end(e)) { sp--; continue; }
+        if (!ent_usable(e) || ent_is_dot(e) || !ent_is_dir(e)) continue;
+        if (!valid_cluster(entry_first(e))) return -EIO;
+        char name[FS_NAME_MAX];
+        raw_to_display(e, name);
+        uint32_t len = subtree[sp].len + (subtree[sp].len ? 1 : 0) + (uint32_t)strlen(name);
+        if (len >= PATH_MAX || sp + 1 == (int)ARRAY_SIZE(subtree)) return -ENAMETOOLONG;
+        if (len > best) best = len;
+        sp++;
+        dir_begin(&subtree[sp].it, entry_first(e));
+        subtree[sp].len = len;
+    }
+    *out = best;
+    return 0;
 }
 
 // ---- Paths ----
@@ -735,14 +778,14 @@ static int mkdir_locked(int at, const char* path) {
     path_t p;
     loc_t loc;
     uint8_t e[32];
-    char where[PATH_MAX];
+    uint32_t len;
     int r = resolve_at(at, path, &p);
     if (!r) r = name_free(&p);
+    if (!r) r = child_path_len(p.dir, FS_NAME_MAX - 1, &len);
     if (r) return r;
     // Every directory's full path must fit PATH_MAX, or getcwd fails.
-    r = dir_path(p.dir, where, sizeof where);
-    if (r < 0) return r;
-    if ((uint32_t)r + 1 + FS_NAME_MAX > PATH_MAX) return -ENAMETOOLONG;
+    // The longest 8.3 name counts, so a rename can never break that.
+    if (len >= PATH_MAX) return -ENAMETOOLONG;
     r = dir_slot(p.dir, &loc);
     if (r) return r;
     uint32_t c = alloc_cluster();
@@ -801,6 +844,110 @@ int diskfs_unlink(int at, const char* path) {
 int diskfs_rmdir(int at, const char* path) {
     LOCK();
     int r = remove_locked(at, path, 1);
+    UNLOCK();
+    return r;
+}
+
+static int rename_locked(int at, const char* from, const char* to) {
+    path_t s, d;
+    loc_t sloc, dloc;
+    uint8_t e[32], x[32];
+    int r = resolve_at(at, from, &s);
+    if (r) return r;
+    if (!s.named) return -EBUSY;  // ".", ".." or "/"
+    r = dir_find(s.dir, s.raw, 0, &sloc, e);
+    if (r <= 0) return r < 0 ? r : -ENOENT;
+    r = resolve_at(at, to, &d);
+    if (r) return r;
+    if (!d.named) return -EEXIST;
+    r = dir_find(d.dir, d.raw, 1, &dloc, x);
+    if (r < 0) return r;
+    if (r) return d.dir == s.dir && dloc == sloc ? 0 : -EEXIST;  // onto itself: done
+    int isdir = ent_is_dir(e);
+    uint32_t c = entry_first(e);
+    loc_t dotdot = 0;
+    if (isdir) {
+        if (!valid_cluster(c)) return -EIO;
+        // Not into itself or anything below it.
+        uint32_t up = d.dir;
+        for (uint32_t n = 0; up; n++) {
+            if (up == c) return -EINVAL;
+            if (n > cluster_count) return -EIO;
+            r = dir_parent(up, &up);
+            if (r) return r;
+        }
+        uint32_t len, below;
+        r = child_path_len(d.dir, FS_NAME_MAX - 1, &len);
+        if (!r) r = subtree_len(c, &below);
+        if (r) return r;
+        if (len + (below ? 1 + below : 0) >= PATH_MAX) return -ENAMETOOLONG;
+        if (d.dir != s.dir && dir_find(c, DOTDOT, 0, &dotdot, x) <= 0) return -EIO;
+    }
+    r = dir_slot(d.dir, &dloc);
+    if (r) return r;
+    // The new entry goes in first, then the old one goes away. A
+    // moved directory's ".." follows it.
+    memcpy(x, e, 32);
+    memcpy(x, d.raw, 11);
+    r = ent_put(dloc, x);
+    if (!r) {
+        e[0] = 0xE5;
+        r = ent_put(sloc, e);
+        if (r) { x[0] = 0xE5; ent_put(dloc, x); }
+    }
+    if (!r && dotdot) {
+        uint8_t dd[32];
+        r = ent_get(dotdot, dd);
+        if (!r) { set_first(dd, d.dir); r = ent_put(dotdot, dd); }
+    }
+    if (!r && !isdir) {
+        int n = node_find(N_FILE, sloc);
+        if (n >= 0) nodes[n].key = dloc;  // an open file stays open
+    }
+    int cr = commit();
+    return r ? r : cr;
+}
+
+int diskfs_rename(int at, const char* from, const char* to) {
+    LOCK();
+    int r = rename_locked(at, from, to);
+    UNLOCK();
+    return r;
+}
+
+#define DIR_ID 0x80000000u  // dirent_t.id of a directory: its cluster | this
+
+static int stat_locked(int at, const char* path, dirent_t* d) {
+    path_t p;
+    loc_t loc;
+    uint8_t e[32];
+    int r = resolve_at(at, path, &p);
+    if (r) return r;
+    memset(d, 0, sizeof *d);
+    if (!p.named) {  // a directory named by "/", "." or ".."
+        d->flags = DIRENT_DIR;
+        d->id = DIR_ID | p.dir;
+        if (!p.dir) { d->name[0] = '/'; return 0; }
+        uint32_t parent;
+        r = dir_parent(p.dir, &parent);
+        return r ? r : dir_name(parent, p.dir, d->name);
+    }
+    r = dir_find(p.dir, p.raw, 0, &loc, e);
+    if (r <= 0) return r < 0 ? r : -ENOENT;
+    raw_to_display(e, d->name);
+    if (ent_is_dir(e)) {
+        d->flags = DIRENT_DIR;
+        d->id = DIR_ID | entry_first(e);
+    } else {
+        d->size = entry_size(e);
+        d->id = loc;
+    }
+    return 0;
+}
+
+int diskfs_stat(int at, const char* path, dirent_t* d) {
+    LOCK();
+    int r = stat_locked(at, path, d);
     UNLOCK();
     return r;
 }
@@ -967,6 +1114,7 @@ int diskfs_readdir(int dir, int* cursor, dirent_t* d) {
             raw_to_display(e, d->name);
             d->flags = ent_is_dir(e) ? DIRENT_DIR : 0;
             d->size = ent_is_dir(e) ? 0 : entry_size(e);
+            d->id = ent_is_dir(e) ? DIR_ID | entry_first(e) : l;
             *cursor = (int)it.n;
             r = 0;
             break;
