@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.23.0"
-#define RINGTAIL_CODENAME "Switchboard"
+#define RINGTAIL_VERSION "0.24.0"
+#define RINGTAIL_CODENAME "Handshake"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08

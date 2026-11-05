@@ -1,11 +1,12 @@
 // The network stack's core: Ethernet in and out, ARP to find
 // neighbours, IPv4 with no fragments and no options worth reading,
 // ICMP echo both ways (answering pings, and SYS_PING), and loopback.
-// UDP sockets are in udp.c and the DHCP client in dhcp.c.
+// UDP sockets are in udp.c, TCP in tcp.c (with tcpsock.c putting it
+// in the kernel) and the DHCP client in dhcp.c.
 //
 // One kernel task, "net", takes frames off the card and packets off
-// the loopback queue and handles them, and runs the DHCP client's
-// timers. Everything that touches the stack's state (the address, the
+// the loopback queue and handles them, and runs the timers of the DHCP
+// client and of TCP. Everything that touches the stack's state (the address, the
 // ARP table, the ping slots, the sockets, the counters and the transmit
 // buffer) holds net_lock, so the net task and programs making network
 // calls never run into each other. The card's interrupt only wakes the
@@ -22,6 +23,7 @@
 #include "task.h"
 #include "mm.h"
 #include "netpriv.h"
+#include "tcp.h"
 
 #define ICMP_ECHO_REPLY   0
 #define ICMP_UNREACHABLE  3
@@ -32,7 +34,7 @@
 #define ARP_TRIES 3
 #define ARP_RETRY TIMER_HZ  // as Linux: 3 asks, 1 s apart. Links can take that long to come up
 #define PING_SLOTS 8
-#define LO_QUEUE 32         // loopback packets waiting, at most
+#define LO_QUEUE 64         // loopback packets waiting, at most
 #define BOOT_WAIT (5 * TIMER_HZ)  // for DHCP before the shell starts
 
 netdev_t* net_dev;
@@ -253,6 +255,10 @@ int ip_route(uint32_t dst, uint32_t* hop) {
 }
 
 void net_set_config(const ipconf_t* c) {
+    if (net_cfg.ip && c->ip != net_cfg.ip) {
+        tcp_addr_lost(net_cfg.ip);
+        tcp_flush_wakeups();
+    }
     if (c->ip != net_cfg.ip || c->mask != net_cfg.mask) memset(arp, 0, sizeof arp);
     net_cfg = *c;
 }
@@ -330,6 +336,17 @@ static void ping_unreachable(const uint8_t* q, uint32_t len, int code) {
     }
 }
 
+// The same for a TCP segment: an attempt to connect fails at once.
+// "Fragmentation needed" is no failure (we never send more than fits).
+static void tcp_unreachable(const uint8_t* q, uint32_t len, int code) {
+    if (len < IP_HLEN + 8 || (q[0] >> 4) != 4) return;
+    uint32_t ihl = (q[0] & 15) * 4u;
+    if (ihl < IP_HLEN || len < ihl + 8 || q[9] != IP_PROTO_TCP || code == 4) return;
+    int err = code == 0 ? -ENETUNREACH : code == 2 || code == 3 ? -ECONNREFUSED : -EHOSTUNREACH;
+    tcp_icmp_error(get32(q + 12), get32(q + 16), q + ihl, err);
+    tcp_flush_wakeups();
+}
+
 // Quotes the IP header and the first 8 bytes after it, as RFC 792 asks.
 void icmp_port_unreachable(const uint8_t* eth_src, const uint8_t* iph, uint32_t len) {
     uint32_t quote = MIN(len, (iph[0] & 15) * 4u + 8);
@@ -361,6 +378,7 @@ static void icmp_input(const uint8_t* eth_src, uint32_t src, uint32_t dst, int t
         return;
     case ICMP_UNREACHABLE:
         ping_unreachable(p + 8, len - 8, p[1]);
+        tcp_unreachable(p + 8, len - 8, p[1]);
         return;
     }
     st.dropped++;
@@ -388,6 +406,9 @@ static void ip_input(const uint8_t* eth, const uint8_t* p, uint32_t len) {
     if (p[9] == IP_PROTO_ICMP) icmp_input(eth_src, src, dst, p[8], p + ihl, total - ihl);
     else if (p[9] == IP_PROTO_UDP) {
         if (udp_input(eth_src, p, src, dst, p + ihl, total - ihl)) st.dropped++;
+    } else if (p[9] == IP_PROTO_TCP && ip_local(dst)) {  // never a broadcast's
+        tcp_input(src, dst, p + ihl, total - ihl, eth_src);
+        tcp_flush_wakeups();
     } else st.dropped++;
 }
 
@@ -418,12 +439,18 @@ static void net_main(void* arg) {
             if (!lo_head) lo_tail = 0;
             lo_count--;
             ip_input(0, q->data, q->len);
-            mutex_unlock(&net_lock);
+        }
+        // The timers run after every loopback packet too, so a busy
+        // connection over loopback cannot hold them off.
+        uint64_t now = net_now(), next = dhcp_poll(now);
+        uint32_t tcp_ms = tcp_timers();
+        tcp_flush_wakeups();
+        if (tcp_ms != ~0u) next = MIN(next, now + ((uint64_t)tcp_ms * TIMER_HZ + 999) / 1000);
+        mutex_unlock(&net_lock);
+        if (q) {
             kfree(q);
             continue;
         }
-        uint64_t now = net_now(), next = dhcp_poll(now);
-        mutex_unlock(&net_lock);
         if (net_dev) {
             int n = net_dev->recv(net_dev, frame, sizeof frame);
             if (n > 0) {
@@ -631,6 +658,7 @@ void net_format(sbuf_t* sb) {
         sbprintf(sb, "Loopback: 127.0.0.1, %u packets\n", st.looped);
         mutex_lock(&net_lock);
         udp_format(sb);
+        tcp_format(sb);
         mutex_unlock(&net_lock);
         return;
     }
@@ -663,6 +691,7 @@ void net_format(sbuf_t* sb) {
              st.dropped, st.not_ours, st.fragments, dev->rx_errors);
     sbprintf(sb, "Pings:    %u answered; %u packets through loopback\n", st.pings_answered, st.looped);
     udp_format(sb);
+    tcp_format(sb);
     int n = 0;
     for (int i = 0; i < ARP_SLOTS; i++) {
         if (!arp[i].used || timer_ticks() - arp[i].when > ARP_LIFETIME) continue;

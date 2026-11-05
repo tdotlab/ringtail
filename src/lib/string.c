@@ -150,12 +150,19 @@ const char* strerror(int err) {
     case ENOTEMPTY: return "directory not empty";
     case ENOTSOCK: return "not a socket";
     case EMSGSIZE: return "message too long";
+    case EOPNOTSUPP: return "not supported";
     case EADDRINUSE: return "address in use";
     case EADDRNOTAVAIL: return "no network address yet";
     case ENETDOWN: return "network is down";
     case ENETUNREACH: return "network unreachable";
+    case ECONNABORTED: return "connection aborted";
+    case ECONNRESET: return "connection reset";
+    case EISCONN: return "already connected";
+    case ENOTCONN: return "not connected";
     case ETIMEDOUT: return "timed out";
+    case ECONNREFUSED: return "connection refused";
     case EHOSTUNREACH: return "host unreachable";
+    case EALREADY: return "already in progress";
     }
     return "unknown error";
 }

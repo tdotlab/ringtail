@@ -2374,3 +2374,55 @@ a trailing dot, `ping printer`, answers from the wrong address or port
 ignored, random source ports, and a failing first server. The garbage
 flood is 4000 frames now, with UDP and DHCP-shaped ones among them.
 Host 244 + 82, QEMU 419.
+
+## v0.24.0 "Handshake"
+
+TCP, and a page fetched over HTTP from inside RingTail.
+
+The engine (`src/net/tcp.c`) is pure protocol and runs the same in the
+kernel and on the host: the RFC 9293 state machine with the MSS option,
+RFC 6298 retransmission timing (SYNs at 0, 1, 3, 7 and 15 s, giving up
+at 31; eight retries on an open connection), RFC 5681 slow start and
+congestion avoidance from a ten-segment first window, NewReno fast
+recovery, zero-window probes, 40 ms delayed ACKs, up to four
+out-of-order gaps held in the receive buffer, TIME-WAIT of 30 s, and the
+RFC 5961 checks (a reset or SYN not exactly in place gets a challenge
+ACK). Connections buffer 16 KB each way; a socket closed with data still
+going out keeps sending it in the background. ICMP unreachables end a
+connection that is still opening, and losing the address resets every
+connection on it.
+
+The kernel side (`src/net/tcpsock.c`) has the calls under the net lock.
+A task that waits sleeps on the connection; the engine only notes whom
+to wake, and the wakeups go out after the call, so nobody wakes to half
+a change. New syscalls: `listen`, `accept` and `connect` (both with a
+timeout), `shutdown`, `sockaddr`, `pollfd` and `fdtype`. `socket` takes
+SOCK_STREAM. TCP sockets read and write like files, `dup2` and
+inheritance work, and `pollfd` waits on any mix of sockets, pipes and
+the terminal: pipes, the tty, UDP and TCP all tell it when something
+changed. `net` lists TCP's counters and every connection.
+
+Programs: `fetch [-i] [-o FILE] URL` speaks HTTP/1.0, follows up to five
+redirects (absolute, //host, /path and relative), reports an error
+status or a body shorter than its Content-Length, gives up after 30 s of
+silence, and deletes a half-saved file. `nc` connects or listens; on a
+terminal it edits the line itself in raw mode so that what arrives is
+printed above it, Enter sends, Ctrl+D on an empty line ends the sending
+side. User code dials names through `lib/dial.c`, which tries each
+address DNS gave.
+
+Tests. Host: `tests/test_tcp.c` runs two engines against each other and
+against hand-made segments on a simulated network with loss, reordering,
+duplication and a clock it controls: the handshake and every way of
+closing, simultaneous open and close, resets and the RFC 5961 cases,
+retransmission and backoff, fast retransmit and recovery, window
+updates and probes, out-of-order delivery, sequence wraparound, the
+connection table running out, and bulk transfers checked byte for byte.
+QEMU: `tcptest` (errors, accept timing, a 256 KB transfer each way
+through poll, shutdown, resets, the backlog, a full descriptor table,
+a connection to our own address, pollfd on pipes), also on a machine
+with no card. Against the host: `fetch` of a page, three kinds of
+redirect, a redirect loop, a 404, a short body, https refused, and
+300000 bytes saved with -o; `nc` through an echo server and to a closed
+port. The new calls joined the fuzzer.
+Host 244 + 82 + 163, QEMU 436.

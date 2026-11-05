@@ -8,6 +8,7 @@
 #include "task.h"
 #include "tty.h"
 #include "ringtail/abi.h"
+#include "fs.h"
 
 #define QUEUE_SIZE 256
 #define LINE_MAX 256
@@ -37,6 +38,7 @@ void tty_input(int c) {
         head++;
     }
     task_wakeup(&input_chan);
+    poll_notify();
 }
 
 int tty_pending(void) { return head != tail || pending_pos != pending_len; }

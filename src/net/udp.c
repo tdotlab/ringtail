@@ -7,6 +7,7 @@
 #include "arch.h"
 #include "task.h"
 #include "mm.h"
+#include "fs.h"
 #include "netpriv.h"
 
 #define UDP_SOCKETS 32
@@ -112,6 +113,15 @@ void udp_header(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport, uint
     put16(u + 6, c ? c : 0xFFFF);  // 0 would mean "no checksum"
 }
 
+int udp_socket_port(struct socket* s) { return s->port; }
+
+int udp_socket_events(struct socket* s) {
+    mutex_lock(&net_lock);
+    int ev = (s->head ? POLLIN : 0) | POLLOUT;
+    mutex_unlock(&net_lock);
+    return ev;
+}
+
 int udp_sendto(struct socket* s, uint32_t ip, int port, const uint8_t* kbuf, uint32_t len) {
     if (len > UDP_MAX_SIZE) return -EMSGSIZE;
     if (port <= 0 || port > 65535) return -EINVAL;
@@ -214,6 +224,7 @@ int udp_input(const uint8_t* eth_src, const uint8_t* iph, uint32_t src, uint32_t
     s->queued++;
     us.in++;
     task_wakeup(s);
+    poll_notify();
     return 0;
 }
 

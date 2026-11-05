@@ -117,6 +117,8 @@ static const call_t calls[] = {
     { SYS_KILL, "kill" }, { SYS_READDIR, "readdir" }, { SYS_KINFO, "kinfo" }, { SYS_SET_COLOR, "set_color" },
     { SYS_DUP2, "dup2" }, { SYS_POLL, "poll" }, { SYS_SLEEP, "sleep" }, { SYS_SOCKET, "socket" },
     { SYS_BIND, "bind" }, { SYS_SENDTO, "sendto" }, { SYS_RECVFROM, "recvfrom" }, { SYS_NETCONF, "netconf" },
+    { SYS_LISTEN, "listen" }, { SYS_ACCEPT, "accept" }, { SYS_CONNECT, "connect" }, { SYS_SHUTDOWN, "shutdown" },
+    { SYS_SOCKADDR, "sockaddr" }, { SYS_POLLFD, "pollfd" }, { SYS_FDTYPE, "fdtype" },
     { 0, "unknown" },
 };
 #define NCALLS ((int)(sizeof calls / sizeof calls[0]))
@@ -124,6 +126,7 @@ static const call_t calls[] = {
 static uint32_t stat_ok[64], stat_fault[64], stat_other[64];
 static int gfx_on;  // the fuzzer asked for the display and has not let go
 static int last_sock = -1;  // the socket calls mostly go to the newest socket, or they would never find one
+static int last_tcp = -1;   // the same for TCP, which never connects anywhere
 static int last_port = 9;   // and sends now and then to the port it was bound to, so something arrives
 
 // Words at scratch+128 that look like the argument structs: small
@@ -153,6 +156,11 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     if ((n == SYS_BIND || n == SYS_SENDTO || n == SYS_RECVFROM) && last_sock < 0) {
         last_sock = sys_socket(SOCK_DGRAM);
         if (rnd() & 1) last_port = sys_bind(last_sock, 0);
+    }
+    if ((n == SYS_LISTEN || n == SYS_ACCEPT || n == SYS_CONNECT || n == SYS_SHUTDOWN || n == SYS_SOCKADDR) &&
+        last_tcp < 0) {
+        last_tcp = sys_socket(SOCK_STREAM);
+        if (rnd() & 1) sys_bind(last_tcp, 0);
     }
 
     switch (n) {
@@ -223,6 +231,42 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         b = rnd() % 8 ? (uint32_t)m : (rnd() & 1) ? 0 : 0xC0000000u + (rnd() & 0xFFF);
         break;
     }
+    case SYS_LISTEN: case SYS_SHUTDOWN: case SYS_SOCKADDR:
+        a = rnd() % 4 ? (uint32_t)last_tcp : rnd() % 2 ? (uint32_t)last_sock : fd_value();
+        if (n == SYS_SHUTDOWN && rnd() % 3) b = rnd() % 4;
+        if (n == SYS_SOCKADDR) { b = rnd() % 3; d = pointer(); }
+        break;
+    case SYS_ACCEPT:
+        // Nothing ever connects to it, so only waits that end.
+        a = rnd() % 4 ? (uint32_t)last_tcp : fd_value();
+        b = rnd() % 2 ? 0 : pointer();
+        d = rnd() % 3;
+        break;
+    case SYS_CONNECT: {
+        // Only where nothing can answer: a connection that worked would
+        // leave a socket whose reads wait for ever.
+        static const uint32_t ips[] = { 0, 0xE0000001, 0xF0000001, 0xFFFFFFFF, 0x7F000001 };
+        sock_addr_t* sa = (sock_addr_t*)(scratch + 640);
+        sa->ip = ips[rnd() % (sizeof ips / sizeof ips[0])];
+        sa->port = sa->ip == 0x7F000001 ? (rnd() & 1 ? 0 : 65536 + (int)(rnd() % 1000)) : (int)(rnd() % 70000);
+        a = rnd() % 4 ? (uint32_t)last_tcp : rnd() % 2 ? (uint32_t)last_sock : fd_value();
+        b = rnd() % 6 ? (uint32_t)sa : pointer();
+        if (b != (uint32_t)sa && b >= USER_BASE_ADDR && b < USER_TOP_ADDR) b = 0xC0000000u + (rnd() & 0xFFF);
+        d = rnd() % 3 ? 1 + rnd() % 5 : interesting();
+        break;
+    }
+    case SYS_POLLFD: {
+        pollfd_t* pf = (pollfd_t*)(scratch + 768);
+        for (int i = 0; i < 4; i++) {
+            pf[i].fd = rnd() % 3 ? (int)fd_value() : -1;
+            pf[i].events = (int)(rnd() % 64);
+        }
+        a = rnd() % 4 ? (uint32_t)pf : pointer();
+        b = rnd() % 4 ? rnd() % 5 : value();
+        d = rnd() % 3;  // never a long wait
+        break;
+    }
+    case SYS_FDTYPE: a = fd_value(); break;
     case SYS_NETCONF:
         // Reading the settings goes anywhere; a change only where it must
         // fail, or the machine would lose its address in the middle.
@@ -262,7 +306,10 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         else if (r == -EFAULT) stat_fault[n]++;
         else stat_other[n]++;
     }
-    if (n == SYS_SOCKET && r >= 0) last_sock = r;
+    if (n == SYS_SOCKET && r >= 0) {
+        if (sys_fdtype(r) == FDTYPE_TCP) last_tcp = r;
+        else last_sock = r;
+    }
     if (n == SYS_BIND && r > 0) last_port = r;
     if (n == SYS_GFX_BEGIN && r == 0) gfx_on = 1;
     if (n == SYS_GFX_END && r == 0) gfx_on = 0;
@@ -274,7 +321,7 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
 
 static void drop_extra_fds(void) {
     for (int fd = 3; fd < MAX_FDS; fd++) sys_close(fd);
-    last_sock = -1;
+    last_sock = last_tcp = -1;
 }
 
 // Empty a directory and remove it, however deep the fuzzer nested things.

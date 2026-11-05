@@ -1,7 +1,7 @@
 // Per-task file descriptors and current directory. A program starts
 // with console input on fd 0 and console output on 1 and 2, or with
 // copies of its parent's descriptors; the rest are diskfs files and
-// pipe ends. It starts in its parent's directory. Copies of a
+// pipe ends and sockets. It starts in its parent's directory. Copies of a
 // file descriptor each keep their own offset. All buffers passed in are user
 // pointers; data moves through a kernel bounce buffer, so the disk
 // code never touches user memory.
@@ -13,6 +13,8 @@
 #include "mm.h"
 #include "ringtail/abi.h"
 #include "net.h"
+#include "arch.h"
+#include "drivers.h"
 
 #define BOUNCE 4096u
 
@@ -35,12 +37,14 @@ static void fd_ref(const fd_t* f) {
     if (f->kind == FD_FILE) diskfs_ref(f->node);
     else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_ref(f->pipe, f->kind == FD_PIPE_W);
     else if (f->kind == FD_SOCKET) udp_socket_ref(f->sock);
+    else if (f->kind == FD_TCP) tcpsock_ref(f->tcp);
 }
 
 static void fd_release(fd_t* f) {
     if (f->kind == FD_FILE) diskfs_unref(f->node);
     else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_unref(f->pipe, f->kind == FD_PIPE_W);
     else if (f->kind == FD_SOCKET) udp_socket_unref(f->sock);
+    else if (f->kind == FD_TCP) tcpsock_unref(f->tcp);
     f->kind = FD_NONE;
 }
 
@@ -146,25 +150,140 @@ int file_pipe(int* ufds) {
 }
 
 int file_socket(int type) {
-    if (type != SOCK_DGRAM) return -EINVAL;
+    if (type != SOCK_DGRAM && type != SOCK_STREAM) return -EINVAL;
     int fd = free_fd(0);
     if (fd < 0) return fd;
-    struct socket* sk = udp_socket_new();
-    if (!sk) return -ENFILE;
     fd_t* f = &current->fds[fd];
-    memset(f, 0, sizeof *f);
-    f->kind = FD_SOCKET;
+    if (type == SOCK_DGRAM) {
+        struct socket* sk = udp_socket_new();
+        if (!sk) return -ENFILE;
+        memset(f, 0, sizeof *f);
+        f->kind = FD_SOCKET;
+        f->sock = sk;
+    } else {
+        struct tcp* c = tcpsock_new();
+        if (!c) return -ENFILE;
+        memset(f, 0, sizeof *f);
+        f->kind = FD_TCP;
+        f->tcp = c;
+    }
     f->flags = O_RDWR;
-    f->sock = sk;
     return fd;
 }
 
 int file_get_socket(int fd, struct socket** s) {
     fd_t* f = get_fd(fd);
     if (!f) return -EBADF;
+    if (f->kind == FD_TCP) return -EOPNOTSUPP;
     if (f->kind != FD_SOCKET) return -ENOTSOCK;
     *s = f->sock;
     return 0;
+}
+
+int file_get_tcp(int fd, struct tcp** c) {
+    fd_t* f = get_fd(fd);
+    if (!f) return -EBADF;
+    if (f->kind == FD_SOCKET) return -EOPNOTSUPP;
+    if (f->kind != FD_TCP) return -ENOTSOCK;
+    *c = f->tcp;
+    return 0;
+}
+
+int file_accept(int fd, sock_addr_t* uaddr, int timeout_ms) {
+    struct tcp* l;
+    int r = file_get_tcp(fd, &l);
+    if (r) return r;
+    // Everything that could fail is checked before a connection is
+    // taken, so none is lost.
+    int nfd = free_fd(0);
+    if (nfd < 0) return nfd;
+    if (uaddr && user_range_ok((uint32_t)uaddr, sizeof *uaddr, 1)) return -EFAULT;
+    struct tcp* c;
+    sock_addr_t a;
+    uint32_t ip;
+    r = tcpsock_accept(l, &c, &ip, &a.port, timeout_ms);
+    if (r) return r;
+    a.ip = ip;
+    fd_t* f = &current->fds[nfd];
+    memset(f, 0, sizeof *f);
+    f->kind = FD_TCP;
+    f->flags = O_RDWR;
+    f->tcp = c;
+    if (uaddr && copy_to_user(uaddr, &a, sizeof a)) return -EFAULT;  // the fd is open all the same
+    return nfd;
+}
+
+int file_fdtype(int fd) {
+    fd_t* f = get_fd(fd);
+    if (!f) return -EBADF;
+    switch (f->kind) {
+    case FD_CONSOLE_IN:
+    case FD_CONSOLE_OUT: return FDTYPE_TTY;
+    case FD_FILE: return FDTYPE_FILE;
+    case FD_PIPE_R:
+    case FD_PIPE_W: return FDTYPE_PIPE;
+    case FD_SOCKET: return FDTYPE_UDP;
+    case FD_TCP: return FDTYPE_TCP;
+    default: return -EBADF;
+    }
+}
+
+// ---- Polling ----
+
+static volatile uint32_t poll_gen;  // counts the changes a poller may care about
+
+void poll_notify(void) {
+    uint32_t f = irq_save();
+    poll_gen++;
+    irq_restore(f);
+    task_wakeup((void*)&poll_gen);
+}
+
+static int fd_events(int fd) {
+    fd_t* f = get_fd(fd);
+    if (!f) return POLLNVAL;
+    switch (f->kind) {
+    case FD_CONSOLE_IN: return current->job == tty_foreground() && tty_pending() ? POLLIN : 0;
+    case FD_PIPE_R: return pipe_events(f->pipe, 0);
+    case FD_PIPE_W: return pipe_events(f->pipe, 1);
+    case FD_SOCKET: return udp_socket_events(f->sock);
+    case FD_TCP: return tcpsock_events(f->tcp);
+    default: return POLLIN | POLLOUT;  // files and console output never wait
+    }
+}
+
+// A change is noted by poll_gen before anyone is woken, so reading it
+// before looking and sleeping only if it has not moved loses nothing.
+// The sleep is cut short every 100 ms anyway, for the one change
+// nobody announces: the terminal passing to another job.
+int file_pollfd(pollfd_t* ufds, uint32_t n, int timeout_ms) {
+    if (n > MAX_FDS) return -EINVAL;
+    pollfd_t p[MAX_FDS];
+    uint32_t size = n * (uint32_t)sizeof *p;
+    if (copy_from_user(p, ufds, size) || user_range_ok((uint32_t)ufds, size, 1)) return -EFAULT;
+    uint64_t ticks = timeout_ms > 0 ? ((uint64_t)timeout_ms * TIMER_HZ + 999) / 1000 : 0;
+    uint32_t until = timer_ticks() + (uint32_t)ticks;
+    int count;
+    for (;;) {
+        uint32_t gen = poll_gen;
+        count = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            p[i].revents = p[i].fd < 0 ? 0 : fd_events(p[i].fd) & (p[i].events | POLLERR | POLLHUP | POLLNVAL);
+            count += p[i].revents != 0;
+        }
+        if (count || timeout_ms == 0) break;
+        if (current->killed) return -EINTR;
+        uint32_t now = timer_ticks(), wake = now + TIMER_HZ / 10;
+        if (timeout_ms > 0) {
+            if ((int32_t)(now - until) >= 0) break;
+            if ((int32_t)(wake - until) > 0) wake = until;
+        }
+        uint32_t f = irq_save();
+        if (poll_gen == gen && !current->killed) task_block_timeout((void*)&poll_gen, wake);
+        irq_restore(f);
+    }
+    if (copy_to_user(ufds, p, size)) return -EFAULT;
+    return count;
 }
 
 int file_dup2(int oldfd, int newfd) {
@@ -191,18 +310,18 @@ static int console_read(void* ubuf, uint32_t len) {
 int file_read(int fd, void* ubuf, uint32_t len) {
     fd_t* f = get_fd(fd);
     if (!f || (f->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
-    if (f->kind == FD_SOCKET) return -EINVAL;  // sockets take SYS_RECVFROM
+    if (f->kind == FD_SOCKET) return -EINVAL;  // UDP sockets take SYS_RECVFROM
     if (len == 0) return 0;
     if (f->kind == FD_CONSOLE_IN) return console_read(ubuf, len);
-    if (f->kind != FD_FILE && f->kind != FD_PIPE_R) return -EBADF;
+    if (f->kind != FD_FILE && f->kind != FD_PIPE_R && f->kind != FD_TCP) return -EBADF;
     if (user_range_ok((uint32_t)ubuf, len, 1)) return -EFAULT;
 
     uint8_t* bounce = kmalloc(BOUNCE);
     if (!bounce) return -ENOMEM;
-    if (f->kind == FD_PIPE_R) {
+    if (f->kind == FD_PIPE_R || f->kind == FD_TCP) {
         // Whatever is there now, waiting only if nothing is.
-        struct pipe* p = f->pipe;
-        int n = pipe_read(p, bounce, MIN(len, BOUNCE));
+        int n = f->kind == FD_TCP ? tcpsock_read(f->tcp, bounce, MIN(len, BOUNCE))
+                                  : pipe_read(f->pipe, bounce, MIN(len, BOUNCE));
         if (n > 0 && copy_to_user(ubuf, bounce, (size_t)n)) n = -EFAULT;
         kfree(bounce);
         return n;
@@ -242,11 +361,11 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
             done += chunk;
             continue;
         }
-        if (f->kind == FD_PIPE_W) {
-            int n = pipe_write(f->pipe, bounce, chunk);
+        if (f->kind == FD_PIPE_W || f->kind == FD_TCP) {
+            int n = f->kind == FD_TCP ? tcpsock_write(f->tcp, bounce, chunk) : pipe_write(f->pipe, bounce, chunk);
             if (n <= 0) { err = n; break; }
             done += (uint32_t)n;
-            if ((uint32_t)n < chunk) break;  // the readers went away
+            if ((uint32_t)n < chunk) break;  // the readers went away, or the connection did
             continue;
         }
         if (f->flags & O_APPEND) f->offset = diskfs_size(f->node);

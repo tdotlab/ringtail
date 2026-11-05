@@ -55,12 +55,19 @@
 #define SYS_TIME        45  // (rtc_time_t*)           -> 0; the clock, as the CMOS keeps it
 #define SYS_POLL        46  // (ticks)                 -> 1 once terminal input is waiting, 0 if the ticks run out first
 #define SYS_PING        47  // (ping_t*)               -> 0 with the reply's rtt_us and ttl filled in
-#define SYS_SOCKET      48  // (SOCK_DGRAM)            -> fd of a new UDP socket
+#define SYS_SOCKET      48  // (SOCK_STREAM or SOCK_DGRAM) -> fd of a new TCP or UDP socket
 #define SYS_BIND        49  // (fd, port)              -> the port bound; 0 picks a free one
-#define SYS_SENDTO      50  // (fd, udp_msg_t*)        -> bytes sent
-#define SYS_RECVFROM    51  // (fd, udp_msg_t*)        -> bytes received; ip and port say from where
+#define SYS_SENDTO      50  // (fd, udp_msg_t*)        -> bytes sent; UDP only
+#define SYS_RECVFROM    51  // (fd, udp_msg_t*)        -> bytes received; ip and port say from where; UDP only
 #define SYS_NETCONF     52  // (NETCONF_*, netconf_t*) -> 0
-#define NUM_SYSCALLS    53
+#define SYS_LISTEN      53  // (fd, backlog)           -> 0; a TCP socket starts taking connections
+#define SYS_ACCEPT      54  // (fd, sock_addr_t* or NULL, timeout_ms) -> fd of the next connection
+#define SYS_CONNECT     55  // (fd, const sock_addr_t*, timeout_ms) -> 0 once connected
+#define SYS_SHUTDOWN    56  // (fd, SHUT_*)            -> 0
+#define SYS_SOCKADDR    57  // (fd, peer, sock_addr_t*) -> 0; the local address, or with peer the remote one
+#define SYS_POLLFD      58  // (pollfd_t*, n, timeout_ms) -> how many descriptors have something
+#define SYS_FDTYPE      59  // (fd)                    -> FDTYPE_*
+#define NUM_SYSCALLS    60
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -181,12 +188,19 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 #define ENOTEMPTY     39
 #define ENOTSOCK      88
 #define EMSGSIZE      90
+#define EOPNOTSUPP    95
 #define EADDRINUSE    98
 #define EADDRNOTAVAIL 99
 #define ENETDOWN      100
 #define ENETUNREACH   101
+#define ECONNABORTED  103
+#define ECONNRESET    104
+#define EISCONN       106
+#define ENOTCONN      107
 #define ETIMEDOUT     110
+#define ECONNREFUSED  111
 #define EHOSTUNREACH  113
+#define EALREADY      114
 
 #define GFX_WIDTH  320
 #define GFX_HEIGHT 200
@@ -229,9 +243,62 @@ typedef struct { unsigned ip; int seq, size, timeout_ms; int rtt_us, ttl; } ping
 // a link, -EADDRNOTAVAIL before the machine has an address, and
 // -EHOSTUNREACH or -ENETUNREACH as for ping; -ETIMEDOUT when the wait
 // runs out, -EINTR if the caller was killed while waiting.
+#define SOCK_STREAM 1
 #define SOCK_DGRAM 2
 #define UDP_MAX_SIZE 1472
 typedef struct { unsigned ip; int port; void* buf; int len; int timeout_ms; } udp_msg_t;
+
+// TCP sockets: SYS_SOCKET(SOCK_STREAM). A socket either connects
+// (SYS_CONNECT) or listens (SYS_BIND for its port, then SYS_LISTEN)
+// and hands out each connection that comes as a new descriptor
+// (SYS_ACCEPT). A connection is read and written with SYS_READ and
+// SYS_WRITE: a read waits for at least one byte and returns 0 once the
+// other end has finished sending; a write waits until all of it is
+// taken (16 KB are buffered each way). close() finishes sending what
+// is buffered in the background; closing with data unread resets the
+// connection instead.
+//
+// SYS_CONNECT waits for the answer: timeout_ms > 0 gives up sooner
+// than TCP itself would (31 s), anything else waits for TCP. A socket
+// whose connect failed may try again. SYS_ACCEPT waits timeout_ms for
+// a connection: 0 returns -EAGAIN at once, negative waits for ever;
+// with addr it fills in the peer. backlog (1 to 16) is how many
+// connections may wait to be accepted. SYS_SHUTDOWN stops reading
+// (SHUT_RD), sending (SHUT_WR: the other end reads the end) or both.
+//
+// Errors: -ECONNREFUSED (nobody listens there), -ETIMEDOUT (no answer,
+// or the peer stopped answering), -ECONNRESET (the peer reset it),
+// -ECONNABORTED (the machine's address went away), -ENOTCONN, -EISCONN,
+// -EALREADY (a connect is under way), -EPIPE (writing after
+// SHUT_WR), -EOPNOTSUPP (a UDP call on a TCP socket, or the other way
+// round), and those of UDP. An error is reported once, by the next
+// call; after it the connection reads as ended.
+#define SHUT_RD   0
+#define SHUT_WR   1
+#define SHUT_RDWR 2
+typedef struct { unsigned ip; int port; } sock_addr_t;
+
+// SYS_POLLFD waits up to timeout_ms (0: not at all, negative: for
+// ever) until at least one of the n (at most MAX_FDS) descriptors has
+// one of the events it asks for, and sets revents in each. POLLERR,
+// POLLHUP and POLLNVAL (fd not open) are reported whether asked for or
+// not; a negative fd is skipped. The terminal is readable once a key
+// is waiting for a program in the foreground (in cooked mode a read
+// still waits for the whole line). POLLOUT on a TCP connection means
+// a write of 4 KB would not wait.
+#define POLLIN   1
+#define POLLOUT  4
+#define POLLERR  8
+#define POLLHUP  16
+#define POLLNVAL 32
+typedef struct { int fd, events, revents; } pollfd_t;
+
+// SYS_FDTYPE: what a descriptor is.
+#define FDTYPE_TTY  1  // the terminal, either way
+#define FDTYPE_FILE 2
+#define FDTYPE_PIPE 3
+#define FDTYPE_UDP  4
+#define FDTYPE_TCP  5
 
 // SYS_NETCONF. NETCONF_GET fills in the configuration. NETCONF_STATIC
 // sets ip, mask, gw and dns by hand (gw and dns may be 0 for none) and

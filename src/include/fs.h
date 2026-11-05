@@ -52,17 +52,19 @@ int diskfs_name_ok(const char* name);
 
 // ---- File descriptors ----
 
-typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W, FD_SOCKET } fd_kind_t;
+typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W, FD_SOCKET, FD_TCP } fd_kind_t;
 
 struct pipe;
 struct socket;
+struct tcp;
 typedef struct {
     fd_kind_t kind;
     int flags;
     int node;            // FD_FILE
     uint32_t offset;     // FD_FILE
     struct pipe* pipe;   // FD_PIPE_R, FD_PIPE_W
-    struct socket* sock; // FD_SOCKET
+    struct socket* sock; // FD_SOCKET (UDP)
+    struct tcp* tcp;     // FD_TCP
 } fd_t;
 
 // Pipes (pipe.c). pipe_new returns a pipe with one reader and one
@@ -74,6 +76,12 @@ void pipe_ref(struct pipe* p, int writer);
 void pipe_unref(struct pipe* p, int writer);  // frees it with the last end
 int pipe_read(struct pipe* p, uint8_t* kbuf, uint32_t len);
 int pipe_write(struct pipe* p, const uint8_t* kbuf, uint32_t len);
+int pipe_events(struct pipe* p, int writer);  // POLL*
+
+// SYS_POLLFD sleeps until something it may be waiting for changes:
+// whatever makes a descriptor readable or writable calls poll_notify
+// afterwards (safe from interrupt handlers).
+void poll_notify(void);
 
 struct task;
 void files_init_std(struct task* t);
@@ -89,9 +97,14 @@ int file_write(int fd, const void* ubuf, uint32_t len);
 int file_seek(int fd, int32_t off, int whence);
 int file_pipe(int* ufds);            // ufds[0] reads, ufds[1] writes
 int file_dup2(int oldfd, int newfd); // newfd becomes a copy of oldfd
-int file_socket(int type);           // a new UDP socket's descriptor
-// The socket behind fd: 0 with *s set, -EBADF or -ENOTSOCK.
+int file_socket(int type);           // a new socket's descriptor, TCP or UDP
+// The socket behind fd: 0 with *s set, -EBADF, -ENOTSOCK, or
+// -EOPNOTSUPP for a socket of the other kind.
 int file_get_socket(int fd, struct socket** s);
+int file_get_tcp(int fd, struct tcp** c);
+int file_accept(int fd, sock_addr_t* uaddr, int timeout_ms);  // the new connection's fd
+int file_pollfd(pollfd_t* ufds, uint32_t n, int timeout_ms);
+int file_fdtype(int fd);             // FDTYPE_*
 // Path calls for the current task, relative to its directory. These
 // take kernel strings; the syscalls copy them in first.
 int file_chdir(const char* path);

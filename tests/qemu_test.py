@@ -22,6 +22,8 @@ import tempfile
 import time
 
 import dns_server
+import http.server
+import threading
 
 # The prompt carries the current directory: "ringtail:/> ", "ringtail:/My Docs> ".
 PROMPT = rb"ringtail:/[^>\n]*> "
@@ -226,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.23.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -255,10 +257,10 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.23.0" in out, out)
+    t.check("and the new shell works", "0.24.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
-                 "udptest"]:
+                 "udptest", "tcptest"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")
@@ -308,7 +310,7 @@ def tests(m, t):
             "PING localhost (127.0.0.1): 56 data bytes" in out and "1 received" in out, out)
     out = m.run("net")
     t.check("net counts the pings answered and the packets looped",
-            re.search(r"Pings:    [4-9] answered; \d\d packets through loopback", out), out)
+            re.search(r"Pings:    [4-9] answered; \d+ packets through loopback", out), out)
     for bad in ["", "-c", "-s 1473 10.0.2.2", "-W 0 10.0.2.2", "-x 10.0.2.2", "10.0.2.2 10.0.2.3"]:
         out = m.run("ping " + bad)
         t.check(f"ping {bad or '(nothing)'} is a usage error", "usage: ping" in out and "[exit status 2]" in out, out)
@@ -327,6 +329,7 @@ def tests(m, t):
     t.check("pings leave memory as they found it", m.run("mem") == mem_before, mem_before)
 
     dns_tests(m, t)
+    tcp_tests(m, t)
     netconf_tests(m, t)
 
     # The fuzzer throws hostile arguments at every non-blocking system call.
@@ -598,7 +601,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.23.0" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.0" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -800,7 +803,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.23.0" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.0" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -817,7 +820,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.23.0"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.0"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1000,6 +1003,110 @@ def _dns_tests(m, t, srv):
     t.check("and leaves memory as it found it", m.run("mem") == mem_before, mem_before)
 
 
+BIG = bytes((i * 7919 + (i >> 8)) & 255 for i in range(300000))
+
+
+class _Http(http.server.BaseHTTPRequestHandler):
+    """A few pages for fetch: plain, redirected three ways, missing,
+    cut short, and big."""
+    def do_GET(self):
+        pages = {"/hello.txt": b"hello from the host\n", "/rel/b": b"relative ok\n", "/big.bin": BIG}
+        moves = {"/moved": "/hello.txt", "/rel/a": "b", "/loop": "/loop",
+                 "/abs": "http://10.0.2.2:%d/hello.txt" % self.server.server_port}
+        if self.path in moves:
+            self.send_response(302)
+            self.send_header("Location", moves[self.path])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif self.path == "/short":
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"only a bit\n")
+        elif self.path in pages:
+            self.server.agents.append(self.headers.get("User-Agent", ""))
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(pages[self.path])))
+            self.end_headers()
+            self.wfile.write(pages[self.path])
+        else:
+            self.send_error(404, "Not Found")
+
+    def log_message(self, *a):
+        pass
+
+
+def _echo_once(srv, got):
+    c, _ = srv.accept()
+    with c:
+        while True:
+            d = c.recv(4096)
+            if not d:
+                break
+            got.append(d)
+            c.sendall(d.upper())
+
+
+def tcp_tests(m, t):
+    """fetch and nc against servers on the host, which the guest
+    reaches as 10.0.2.2."""
+    web = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Http)
+    web.agents = []
+    threading.Thread(target=web.serve_forever, daemon=True).start()
+    url = "10.0.2.2:%d" % web.server_port
+    try:
+        out = plain(m.run("fetch http://%s/hello.txt" % url, timeout=20))
+        t.check("fetch gets a page", out.strip() == "hello from the host", out)
+        t.check("and says who it is", web.agents and web.agents[-1].startswith("fetch (RingTail OS"), str(web.agents))
+        out = plain(m.run("fetch -i %s/moved" % url, timeout=20))
+        t.check("fetch follows a redirect, -i shows both responses",
+                "302" in out and "200 OK" in out and out.endswith("hello from the host"), out)
+        out = plain(m.run("fetch %s/rel/a" % url, timeout=20))
+        t.check("a relative redirect", "relative ok" in out, out)
+        out = plain(m.run("fetch %s/abs" % url, timeout=20))
+        t.check("an absolute redirect", "hello from the host" in out, out)
+        out = plain(m.run("fetch %s/loop" % url, timeout=20))
+        t.check("a redirect loop gives up", "too many redirects" in out and "exit status 1" in out, out)
+        out = plain(m.run("fetch %s/nope" % url, timeout=20))
+        t.check("fetch reports 404", "HTTP 404" in out and "exit status 1" in out, out)
+        out = plain(m.run("fetch %s/short" % url, timeout=20))
+        t.check("fetch notices a short body", "closed after 11 of 100 bytes" in out, out)
+        out = plain(m.run("fetch https://%s/" % url))
+        t.check("fetch refuses https", "no TLS" in out, out)
+        out = plain(m.run("fetch -o big.bin %s/big.bin" % url, timeout=60))
+        t.check("fetch -o saves a big file", "saved 300000 bytes to big.bin" in out, out)
+        out = plain(m.run("wc big.bin"))
+        t.check("all of it", "300000 big.bin" in out, out)
+        out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))
+        out = plain(m.run("cat gone.bin"))
+        t.check("a failed -o leaves no file", "no such file" in out, out)
+    finally:
+        web.shutdown()
+        web.server_close()
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    srv.settimeout(20)
+    got = []
+    th = threading.Thread(target=_echo_once, args=(srv, got), daemon=True)
+    th.start()
+    m.run("echo shout this > nc.txt")
+    out = plain(m.run("nc -v 10.0.2.2 %d < nc.txt" % srv.getsockname()[1], timeout=20))
+    th.join(5)
+    srv.close()
+    t.check("nc sends stdin and prints the answer", b"".join(got) == b"shout this\n" and "SHOUT THIS" in out
+            and "Connected to 10.0.2.2" in out, out)
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    out = plain(m.run("nc 10.0.2.2 %d" % port, timeout=20))
+    t.check("nc to a closed port", "connection refused" in out and "exit status 1" in out, out)
+    out = plain(m.run("net"))
+    t.check("net lists TCP", "TCP:" in out and "opened" in out, out)
+
+
 def netconf_tests(m, t):
     """Setting the address by hand, and going back to DHCP."""
     out = m.run("net static 10.0.2.20/24 10.0.2.2 10.0.2.3")
@@ -1043,6 +1150,7 @@ def short_boots(iso, disk, work, t):
                                           ("ping 10.0.2.2", "ping: network is down"),
                                           ("ping -c 1 127.0.0.1", "1 received"),
                                           ("run udptest", "udptest: all"),
+                                          ("run tcptest", "tcptest: all"),
                                           ("host a.test", "no DNS server to ask"),
                                           ("net dhcp", "net: network is down")])]:
         sub = os.path.join(work, model)

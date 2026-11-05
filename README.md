@@ -4,11 +4,11 @@ A small 32-bit x86 operating system written from scratch in freestanding
 C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
 FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
-13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP
-and UDP, an address from DHCP, and a DNS resolver, so `ping example.com`
-works.
+13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
+UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
+example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.23.0 "Switchboard"**. See PROGRESS.md for the history.
+Current version: **v0.24.0 "Handshake"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -66,8 +66,9 @@ monitor), an editing session in Octavo, file and directory commands,
 the timer rate,
 the switch into graphics mode and back, reboot persistence and poweroff,
 and the network through QEMU's user network: DHCP at boot, `ping`,
-loopback, UDP sockets (`udptest`), `net static` and `net dhcp`, and
-`host` against `tests/dns_server.py`, a DNS server on the host whose
+loopback, UDP and TCP sockets (`udptest`, `tcptest`), `fetch` and `nc`
+against an HTTP server and an echo server on the host, `net static` and
+`net dhcp`, and `host` against `tests/dns_server.py`, a DNS server on the host whose
 names each misbehave in their own way (aliases, loops, SERVFAIL, silence,
 forged answers, truncation, a compression loop, escape codes in names).
 Afterwards it runs fsck.fat and mtools against the disk. Then it boots
@@ -190,6 +191,21 @@ that server's address and port with that ID and the same question,
 follows up to 8 aliases, and tries a name with no dot under the search
 domain first. Names that come back are escaped before they are printed.
 
+TCP is split in two. `src/net/tcp.c` is the protocol engine and knows
+nothing of the kernel: RFC 9293 with the MSS option (no window scaling,
+timestamps or SACK), RFC 6298 retransmission timing, slow start and
+congestion avoidance with NewReno fast recovery, zero-window probes,
+delayed ACKs, out-of-order segments held until the gap fills, and the
+RFC 5961 checks against blind resets and SYNs. Each connection buffers
+16 KB each way; there are 64 at most, counting those still closing.
+`tests/test_tcp.c` runs the engine on the host against a simulated
+network that loses, reorders and duplicates segments.
+`src/net/tcpsock.c` puts it in the kernel: the calls behind `connect`,
+`listen`, `accept`, `shutdown` and the rest, all under the net lock,
+with tasks sleeping on the connection and the wakeups sent once the
+engine is done. TCP sockets read and write like files, and `pollfd`
+waits on any mix of sockets, pipes and the terminal.
+
 ## Source layout
 
 ```
@@ -197,7 +213,7 @@ src/boot       Multiboot header, entry, kernel linker script
 src/kernel     kernel_main, GDT/IDT/interrupts, tasks, syscalls, ELF loader, faults, power
 src/mm         heap, physical frames, paging and checked user copies
 src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000
-src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), the DHCP client (dhcp.c, dhcpmsg.c)
+src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
 src/lib        string and printf subset, shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
@@ -248,6 +264,8 @@ Programs on the disk:
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
+| fetch | `fetch [-i] [-o FILE] URL`: gets a page over HTTP/1.0, following up to five redirects. -i shows the headers, -o saves the body. No https. |
+| nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
 | wc | Counts lines, words and bytes of files, or of its input. |

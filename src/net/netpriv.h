@@ -1,6 +1,7 @@
 // What the parts of the network stack share: net.c (Ethernet, ARP,
-// IPv4, ICMP, loopback and the net task), udp.c (sockets) and dhcp.c
-// (the DHCP client). Everything here is used with net_lock held.
+// IPv4, ICMP, loopback and the net task), udp.c (UDP sockets),
+// tcpsock.c (TCP's place in the kernel; tcp.c is the protocol) and
+// dhcp.c (the DHCP client). Everything here is used with net_lock held.
 #ifndef RINGTAIL_NETPRIV_H
 #define RINGTAIL_NETPRIV_H
 
@@ -14,6 +15,7 @@
 #define IP_HLEN   20
 #define UDP_HLEN  8
 #define IP_PROTO_ICMP 1
+#define IP_PROTO_TCP  6
 #define IP_PROTO_UDP  17
 #define IP_BROADCAST  0xFFFFFFFFu
 
@@ -82,6 +84,11 @@ void udp_header(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport, uint
 void udp_format(sbuf_t* sb);
 // ICMP "port unreachable" back to the sender of the packet at iph.
 void icmp_port_unreachable(const uint8_t* eth_src, const uint8_t* iph, uint32_t len);
+
+// tcpsock.c. Whoever calls into tcp.c (tcp_input, tcp_timers and so
+// on) calls tcp_flush_wakeups after it, still holding net_lock.
+void tcp_flush_wakeups(void);
+void tcp_format(sbuf_t* sb);
 
 // dhcp.c, the client. dhcp_poll does whatever is due and returns when
 // it next needs to run (net_now ticks, or ~0 for never).

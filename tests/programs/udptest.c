@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
 
     int a = sys_socket(SOCK_DGRAM), b = sys_socket(SOCK_DGRAM);
     check(a == 3 && b == 4, "socket gives descriptors");
-    check(sys_socket(1) == -EINVAL && sys_socket(0) == -EINVAL, "only SOCK_DGRAM is a socket type");
+    check(sys_socket(3) == -EINVAL && sys_socket(0) == -EINVAL, "SOCK_DGRAM and SOCK_STREAM are the socket types");
     check(recv_from(a, buf, 10, 0, 0) == -EINVAL, "an unbound socket has nothing to receive");
     int pa = sys_bind(a, 0);
     check(pa >= 49152 && pa <= 65535, "bind 0 picks a free port from 49152 up");

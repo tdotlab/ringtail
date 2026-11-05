@@ -43,6 +43,13 @@ static inline int sys_bind(int fd, int port) { return SC2(SYS_BIND, fd, port); }
 static inline int sys_sendto(int fd, const udp_msg_t* m) { return SC2(SYS_SENDTO, fd, m); }
 static inline int sys_recvfrom(int fd, udp_msg_t* m) { return SC2(SYS_RECVFROM, fd, m); }
 static inline int sys_netconf(int op, netconf_t* c) { return SC2(SYS_NETCONF, op, c); }
+static inline int sys_listen(int fd, int backlog) { return SC2(SYS_LISTEN, fd, backlog); }
+static inline int sys_accept(int fd, sock_addr_t* a, int timeout_ms) { return SC3(SYS_ACCEPT, fd, a, timeout_ms); }
+static inline int sys_connect(int fd, const sock_addr_t* a, int timeout_ms) { return SC3(SYS_CONNECT, fd, a, timeout_ms); }
+static inline int sys_shutdown(int fd, int how) { return SC2(SYS_SHUTDOWN, fd, how); }
+static inline int sys_sockaddr(int fd, int peer, sock_addr_t* a) { return SC3(SYS_SOCKADDR, fd, peer, a); }
+static inline int sys_pollfd(pollfd_t* fds, int n, int timeout_ms) { return SC3(SYS_POLLFD, fds, n, timeout_ms); }
+static inline int sys_fdtype(int fd) { return SC1(SYS_FDTYPE, fd); }
 static inline int sys_seek(int fd, int32_t off, int whence) { return SC3(SYS_SEEK, fd, off, whence); }
 static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS_LIST, index, buf, size); }
 static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }

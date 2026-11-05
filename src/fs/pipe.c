@@ -19,6 +19,12 @@ struct pipe {
     int readers, writers;
 };
 
+// Every change wakes both ends, and anyone polling.
+static void changed(struct pipe* p) {
+    task_wakeup(p);
+    poll_notify();
+}
+
 struct pipe* pipe_new(void) {
     struct pipe* p = kmalloc(sizeof *p);
     if (!p) return 0;
@@ -39,7 +45,7 @@ void pipe_unref(struct pipe* p, int writer) {
     if (writer) p->writers--;
     else p->readers--;
     int gone = p->readers == 0 && p->writers == 0;
-    task_wakeup(p);  // a reader may now see EOF, a writer EPIPE
+    changed(p);  // a reader may now see EOF, a writer EPIPE
     irq_restore(f);
     if (gone) kfree(p);
 }
@@ -53,7 +59,7 @@ int pipe_read(struct pipe* p, uint8_t* kbuf, uint32_t len) {
             for (uint32_t i = 0; i < n; i++) kbuf[i] = p->buf[(p->head + i) % PIPE_SIZE];
             p->head = (p->head + n) % PIPE_SIZE;
             p->len -= n;
-            task_wakeup(p);
+            changed(p);
             r = (int)n;
             break;
         }
@@ -78,7 +84,7 @@ int pipe_write(struct pipe* p, const uint8_t* kbuf, uint32_t len) {
             for (uint32_t i = 0; i < n; i++) p->buf[(tail + i) % PIPE_SIZE] = kbuf[done + i];
             p->len += n;
             done += n;
-            task_wakeup(p);
+            changed(p);
             continue;
         }
         if (current->killed) { err = -EINTR; break; }
@@ -86,4 +92,13 @@ int pipe_write(struct pipe* p, const uint8_t* kbuf, uint32_t len) {
     }
     irq_restore(f);
     return done ? (int)done : err;
+}
+
+int pipe_events(struct pipe* p, int writer) {
+    uint32_t f = irq_save();
+    int ev;
+    if (writer) ev = p->readers == 0 ? POLLERR : p->len < PIPE_SIZE ? POLLOUT : 0;
+    else ev = (p->len ? POLLIN : 0) | (p->writers == 0 ? POLLIN | POLLHUP : 0);
+    irq_restore(f);
+    return ev;
 }

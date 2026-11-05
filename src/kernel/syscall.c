@@ -285,7 +285,7 @@ static int sys_ping(uint32_t up, uint32_t b, uint32_t c) {
     return copy_to_user((void*)up, &p, sizeof p);
 }
 
-// ---- UDP and the network's configuration (udp.c, net.c) ----
+// ---- Sockets (udp.c, tcpsock.c) and the network's configuration (net.c) ----
 
 static int sys_socket(uint32_t type, uint32_t b, uint32_t c) {
     (void)b; (void)c;
@@ -295,8 +295,64 @@ static int sys_socket(uint32_t type, uint32_t b, uint32_t c) {
 static int sys_bind(uint32_t fd, uint32_t port, uint32_t c) {
     (void)c;
     struct socket* s;
+    struct tcp* t;
+    if (file_get_tcp((int)fd, &t) == 0) return tcpsock_bind(t, (int)port);
     int r = file_get_socket((int)fd, &s);
     return r ? r : udp_bind(s, (int)port);
+}
+
+static int sys_listen(uint32_t fd, uint32_t backlog, uint32_t c) {
+    (void)c;
+    struct tcp* t;
+    int r = file_get_tcp((int)fd, &t);
+    return r ? r : tcpsock_listen(t, (int)backlog);
+}
+
+static int sys_accept(uint32_t fd, uint32_t uaddr, uint32_t timeout_ms) {
+    return file_accept((int)fd, (sock_addr_t*)uaddr, (int)timeout_ms);
+}
+
+static int sys_connect(uint32_t fd, uint32_t uaddr, uint32_t timeout_ms) {
+    struct tcp* t;
+    sock_addr_t a;
+    int r = file_get_tcp((int)fd, &t);
+    if (r) return r;
+    if (copy_from_user(&a, (const void*)uaddr, sizeof a)) return -EFAULT;
+    return tcpsock_connect(t, a.ip, a.port, (int)timeout_ms);
+}
+
+static int sys_shutdown(uint32_t fd, uint32_t how, uint32_t c) {
+    (void)c;
+    struct tcp* t;
+    int r = file_get_tcp((int)fd, &t);
+    return r ? r : tcpsock_shutdown(t, (int)how);
+}
+
+// A UDP socket has only a port of its own: its address is any of ours.
+static int sys_sockaddr(uint32_t fd, uint32_t peer, uint32_t uaddr) {
+    struct tcp* t;
+    struct socket* s;
+    sock_addr_t a;
+    uint32_t ip = 0;
+    int r;
+    if (user_range_ok(uaddr, sizeof a, 1)) return -EFAULT;
+    if (file_get_tcp((int)fd, &t) == 0) r = tcpsock_addr(t, peer != 0, &ip, &a.port);
+    else if ((r = file_get_socket((int)fd, &s)) == 0) {
+        if (peer) r = -ENOTCONN;
+        else a.port = udp_socket_port(s);
+    }
+    if (r) return r;
+    a.ip = ip;
+    return copy_to_user((void*)uaddr, &a, sizeof a);
+}
+
+static int sys_pollfd(uint32_t ufds, uint32_t n, uint32_t timeout_ms) {
+    return file_pollfd((pollfd_t*)ufds, n, (int)timeout_ms);
+}
+
+static int sys_fdtype(uint32_t fd, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    return file_fdtype((int)fd);
 }
 
 static int sys_sendto(uint32_t fd, uint32_t umsg, uint32_t c) {
@@ -598,6 +654,13 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_SENDTO] = sys_sendto,
     [SYS_RECVFROM] = sys_recvfrom,
     [SYS_NETCONF] = sys_netconf,
+    [SYS_LISTEN] = sys_listen,
+    [SYS_ACCEPT] = sys_accept,
+    [SYS_CONNECT] = sys_connect,
+    [SYS_SHUTDOWN] = sys_shutdown,
+    [SYS_SOCKADDR] = sys_sockaddr,
+    [SYS_POLLFD] = sys_pollfd,
+    [SYS_FDTYPE] = sys_fdtype,
 };
 
 void syscall_handle(regs_t* r) {
