@@ -2011,3 +2011,28 @@ the PATH_MAX limit with long names, and long names in the image fsck
 checks, which mtools also lists correctly), 148 QEMU checks (long names
 in the shell, a long-named file mtools wrote before boot, and one the
 guest wrote that mtools reads after).
+
+## v0.18.0 "Tabby"
+
+Tab completion in the shell. Shell only; no kernel changes.
+
+- Tab completes the word at the end of the line. The first word of a
+  command (and the word after `run`) is a command: a built-in, or a
+  program in the root, offered in lower case. Any other word is a path,
+  completed against the directory it names. `cd` and `rmdir` offer
+  directories only; a word after `<`, `>` or `>>` is a path.
+- Matching ignores case, like the disk; a finished name takes the
+  disk's case. With several matches Tab fills in what they share, and
+  when it can go no further it lists them in columns.
+- A name with a blank or another special character is wrapped in quotes
+  as it goes in (`cd tab<Tab>` gives `"Tab Test/`); a finished file
+  closes the quote and adds a space, a directory leaves the quote open
+  and adds `/` so the next Tab goes inside it.
+- Up to 128 matches are collected; past that the listing says so.
+- The editor still has no cursor in the middle of a line, so
+  completion always works at the end.
+
+Tests: 11 new QEMU checks (files, quoted names across directories,
+programs, built-ins, `run`, `cd`, redirection targets, the listing).
+It first failed on a loop that treated the readdir result as 0 for
+success; readdir returns 1 per entry.

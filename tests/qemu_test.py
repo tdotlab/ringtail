@@ -188,7 +188,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.17.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.18.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -217,7 +217,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.17.0" in out, out)
+    t.check("and the new shell works", "0.18.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
         out = m.run("run " + prog, timeout=30)
@@ -471,6 +471,45 @@ def tests(m, t):
         out = m.run('cat "/From the host, with love.txt"')
         t.check("a long name another system wrote", "written by mtools" in out, out)
     m.run("cd /")
+
+    # Tab completion.
+    m.run('mkdir "Tab Test"')
+    m.run('mkdir "Tab Test/Sub Dir"')
+    for f in ("Alpha One.txt", "alpha two.txt", "Beta.txt"):
+        m.run('touch "Tab Test/%s"' % f)
+    out = plain(m.run("echo wel\t"))
+    t.check("Tab completes a file, in the disk's case", out.strip() == "WELCOME.TXT", out)
+    out = plain(m.run("echo tab\tbeta\t"))
+    t.check("Tab quotes a name with a blank, through a directory", out.strip() == "Tab Test/Beta.txt", out)
+    out = plain(m.run("hell\t"))
+    t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
+    out = plain(m.run("ver\t"))
+    t.check("Tab completes a built-in", "RingTail OS v0.18.0" in out, out)
+    out = plain(m.run("run arg\t a b"))
+    t.check("Tab completes the program after run", "argc=3" in out, out)
+    m.run('cd "Tab Test"')
+    out = plain(m.run("echo al\tt\t"))
+    t.check("Tab extends to the common part, then finishes", out.strip() == "alpha two.txt", out)
+    out = plain(m.run("cd s\t\""))
+    t.check("Tab on cd finds a directory", "no such" not in out, out)
+    out = m.run("pwd")
+    t.check("and cd went there", plain(out).strip() == "/Tab Test/Sub Dir", out)
+    m.run("cd ..")
+    out = plain(m.run("cd b\t"))
+    t.check("Tab on cd skips files", "Beta.txt" not in out and "b: no such file" in out, out)
+    m.run("echo hi > bet\t")
+    t.check("Tab after > completes the target", "hi" in m.run("cat beta.txt"))
+    m.send("echo \t")
+    out = plain(m.expect(PROMPT, 5))
+    m.send("\x15")  # Ctrl+U: drop the line
+    m.send("\r")
+    m.expect(PROMPT, 5)
+    t.check("Tab with several matches lists them", all(n in out for n in ("Alpha One.txt", "alpha two.txt", "Beta.txt", "Sub Dir/")), out)
+    m.run("cd /")
+    m.run('rmdir "Tab Test/Sub Dir"')
+    for f in ("Alpha One.txt", "alpha two.txt", "Beta.txt"):
+        m.run('rm "Tab Test/%s"' % f)
+    m.run('rmdir "Tab Test"')
 
     # Raw mode: keys arrive as bytes, arrows as xterm sequences.
     m.send("run rawkeys\r")

@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.17.0 "Longtail"**. See PROGRESS.md for the history.
+Current version: **v0.18.0 "Tabby"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -144,7 +144,9 @@ tests          host unit tests, the QEMU integration suite, test programs
 
 Type `help` at the `ringtail:/>` prompt (it shows the current directory) for the command list. The editor
 keeps the last 10 lines (Up and Down), Ctrl+C cancels a line or kills the
-foreground program, and Ctrl+L clears the screen.
+foreground program, and Ctrl+L clears the screen. Tab completes commands,
+programs and paths, ignoring case and quoting names with spaces; a second
+Tab with several matches lists them.
 
 `run <program> [args...]`, or just the program's name, starts a program
 from the disk, and a trailing `&` runs it in the background.

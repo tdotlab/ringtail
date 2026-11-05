@@ -109,6 +109,8 @@ static void prompt(void) {
     printf(GRN "ringtail:%s> " NORM, cwd);
 }
 
+static int complete(char* buf, int n);  // Tab, defined after the built-ins
+
 // Returns the line length, -1 if the line was cancelled, -2 when the
 // terminal is gone.
 static int read_line(char* buf) {
@@ -159,6 +161,10 @@ static int read_line(char* buf) {
             if (browse == hist_count) n = 0;
             else n = (int)strlcpy(buf, history[browse % HISTORY], LINE_MAX);
             out(buf, n);
+            continue;
+        }
+        if (c == '\t') {
+            n = complete(buf, n);
             continue;
         }
         if (c >= 0x20 && c < 0x7F && n < LINE_MAX - 1) {
@@ -494,6 +500,198 @@ static const builtin_t* find_builtin(const char* name) {
     for (uint32_t i = 0; i < ARRAY_SIZE(builtins); i++)
         if (strcmp(name, builtins[i].name) == 0) return &builtins[i];
     return 0;
+}
+
+// ---- Tab completion ----
+//
+// Tab completes the word at the end of the line (the editor has no
+// cursor in the middle). The first word of a command, and the one after
+// `run`, is a command: a built-in or a program in the root. Any other
+// word is a path, completed against the directory it names. Matching
+// ignores case, like the disk does, and a completed name takes the
+// disk's case. With several matches Tab extends the word as far as they
+// agree; when it cannot go further it lists them. A name with a blank or
+// another special character is wrapped in quotes as it is inserted.
+
+#define MAX_CAND 128
+
+static struct { char name[NAME_MAX + 1]; int dir; } cand[MAX_CAND];
+static int ncand, cand_more;  // cand_more: there were more matches than fit
+
+static int prefix_ci(const char* name, const char* prefix, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        char a = name[i], b = prefix[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b || !a) return 0;
+    }
+    return 1;
+}
+
+static void cand_add(const char* name, int dir, int lower) {
+    for (int i = 0; i < ncand; i++)
+        if (strcasecmp(cand[i].name, name) == 0) return;
+    if (ncand == MAX_CAND) { cand_more = 1; return; }
+    char* s = cand[ncand].name;
+    strlcpy(s, name, sizeof cand[ncand].name);
+    cand[ncand].dir = dir;
+    // Programs sit on the disk in upper case but are typed in lower case.
+    for (char* p = s; lower && *p; p++)
+        if (*p >= 'a' && *p <= 'z') lower = 0;
+    for (char* p = s; lower && *p; p++)
+        if (*p >= 'A' && *p <= 'Z') *p += 32;
+    ncand++;
+}
+
+// What the typed word can be completed to.
+enum { CTX_COMMAND, CTX_PATH, CTX_DIR };
+
+static void gather(int ctx, const char* dirpart, const char* prefix) {
+    size_t plen = strlen(prefix);
+    int cmd = ctx == CTX_COMMAND && !*dirpart;
+    ncand = cand_more = 0;
+    if (cmd)
+        for (uint32_t i = 0; i < ARRAY_SIZE(builtins); i++)
+            if (prefix_ci(builtins[i].name, prefix, plen)) cand_add(builtins[i].name, 0, 0);
+    int cursor = 0;
+    dirent_t d;
+    const char* where = cmd ? "/" : *dirpart ? dirpart : ".";
+    while (sys_readdir(where, &cursor, &d) > 0) {
+        int dir = d.flags & DIRENT_DIR ? 1 : 0;
+        if (!prefix_ci(d.name, prefix, plen)) continue;
+        if (cmd) {
+            if (!dir && !strchr(d.name, '.')) cand_add(d.name, 0, 1);  // programs have no extension
+        } else if (ctx != CTX_DIR || dir) {
+            cand_add(d.name, dir, 0);
+        }
+    }
+}
+
+// Print the candidates in columns, then the prompt and line again.
+static void list_cands(const char* buf, int n) {
+    int order[MAX_CAND], width = 0;
+    for (int i = 0; i < ncand; i++) {
+        int j = i;
+        while (j > 0 && strcasecmp(cand[order[j - 1]].name, cand[i].name) > 0) { order[j] = order[j - 1]; j--; }
+        order[j] = i;
+        int w = (int)strlen(cand[i].name) + cand[i].dir;
+        if (w > width) width = w;
+    }
+    width += 2;
+    int cols = 78 / width;
+    if (cols < 1) cols = 1;
+    print("\n");
+    for (int i = 0; i < ncand; i++) {
+        const char* name = cand[order[i]].name;
+        int dir = cand[order[i]].dir;
+        int last = (i + 1) % cols == 0 || i + 1 == ncand;
+        printf("%s%s%*s", name, dir ? "/" : "", last ? 0 : width - (int)strlen(name) - dir, "");
+        if (last) print("\n");
+    }
+    if (cand_more) print(DIM "(more matches than shown)\n" NORM);
+    prompt();
+    out(buf, n);
+}
+
+// Completes the word at the end of buf (n bytes) in place. Returns the
+// new length.
+static int complete(char* buf, int n) {
+    // Walk the line the way split() does, to learn where the last word
+    // starts and what kind of word it is.
+    int wstart = n, inword = 0, argidx = 0, redir = 0;
+    char q = 0, first[16] = "";
+    for (int i = 0; i < n; i++) {
+        char c = buf[i];
+        int special = !q && strchr("|<>&", c) != 0;
+        if (!q && (c == ' ' || c == '\t' || special)) {
+            if (inword) {  // a word ended
+                if (redir) redir = 0;
+                else if (argidx++ == 0) {
+                    int k = 0;
+                    for (int j = wstart; j < i && k < (int)sizeof first - 1; j++)
+                        if (buf[j] != '"' && buf[j] != '\'') first[k++] = buf[j];
+                    first[k] = 0;
+                }
+                inword = 0;
+            }
+            if (special) {
+                if (c == '|' || c == '&') { argidx = 0; first[0] = 0; redir = 0; }
+                else redir = 1;
+            }
+            continue;
+        }
+        if (!inword) { inword = 1; wstart = i; }
+        if (q) { if (c == q) q = 0; }
+        else if (c == '"' || c == '\'') q = c;
+    }
+    if (!inword) wstart = n;
+    int ctx = redir ? CTX_PATH
+            : argidx == 0 || (argidx == 1 && strcmp(first, "run") == 0) ? CTX_COMMAND
+            : strcmp(first, "cd") == 0 || strcmp(first, "rmdir") == 0 ? CTX_DIR
+            : CTX_PATH;
+
+    // The word without its quotes, split after its last slash.
+    char word[LINE_MAX];
+    int wl = 0;
+    char qq = 0;
+    for (int i = wstart; i < n; i++) {
+        if (qq) { if (buf[i] == qq) qq = 0; else word[wl++] = buf[i]; }
+        else if (buf[i] == '"' || buf[i] == '\'') qq = buf[i];
+        else word[wl++] = buf[i];
+    }
+    word[wl] = 0;
+    char* slash = strrchr(word, '/');
+    size_t dl = slash ? (size_t)(slash - word) + 1 : 0;
+    char dirpart[LINE_MAX];
+    memcpy(dirpart, word, dl);
+    dirpart[dl] = 0;
+    const char* prefix = word + dl;
+    size_t plen = strlen(prefix);
+
+    gather(ctx, dirpart, prefix);
+    if (!ncand) return n;
+
+    // How far the matches agree.
+    size_t cl = strlen(cand[0].name);
+    for (int i = 1; i < ncand; i++) {
+        size_t k = 0;
+        while (k < cl && prefix_ci(cand[i].name + k, cand[0].name + k, 1)) k++;
+        cl = k;
+    }
+    if (ncand > 1 && cl <= plen) { list_cands(buf, n); return n; }
+
+    // The new word: the directory part as typed, then the matched name.
+    int unique = ncand == 1;
+    char neww[LINE_MAX];
+    int nl = (int)dl;
+    int take = (int)(unique ? strlen(cand[0].name) : cl);
+    if (nl + take >= (int)sizeof neww - 1) return n;
+    memcpy(neww, dirpart, dl);
+    memcpy(neww + nl, cand[0].name, (size_t)take);
+    nl += take;
+    neww[nl] = 0;
+    int dir = unique && cand[0].dir;
+    if (dir) { neww[nl++] = '/'; neww[nl] = 0; }
+
+    int needq = q != 0;  // still inside a quote the user opened
+    for (int i = 0; i < nl; i++)
+        if (strchr(" \t|<>&'\"", neww[i])) needq = 1;
+    char qc = strchr(neww, '"') ? '\'' : '"';
+    char ow[LINE_MAX + 4];
+    int ol = 0;
+    if (needq) ow[ol++] = qc;
+    memcpy(ow + ol, neww, (size_t)nl);
+    ol += nl;
+    if (unique && !dir) {  // a finished name: close the quote, leave a space
+        if (needq) ow[ol++] = qc;
+        ow[ol++] = ' ';
+    }
+    if (wstart + ol >= LINE_MAX) return n;
+
+    erase(n - wstart);
+    memcpy(buf + wstart, ow, (size_t)ol);
+    out(buf + wstart, ol);
+    return wstart + ol;
 }
 
 // ---- Running commands ----
