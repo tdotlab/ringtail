@@ -10,7 +10,7 @@
 #include "tty.h"
 #include "fs.h"
 
-#define SHELL "SHELL"
+#define SHELL "SAKLAS"
 
 void init_main(void* arg) {
     (void)arg;
@@ -19,7 +19,7 @@ void init_main(void* arg) {
         for (;;) task_sleep_ticks(0xFFFFFFFFu);
     }
     for (;;) {
-        const char* argv[] = { "shell" };
+        const char* argv[] = { "saklas" };
         uint32_t start = timer_ticks();
         int id = loader_spawn(DISKFS_ROOT, SHELL, 1, argv, 0, 0);
         if (id < 0) {

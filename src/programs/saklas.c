@@ -1,4 +1,4 @@
-// The shell: an ordinary program. init starts it at boot and starts
+// Saklas, the shell: an ordinary program. init starts it at boot and starts
 // a new one whenever it ends.
 //
 // It edits the line itself in raw mode, with Ctrl+C as a plain key,

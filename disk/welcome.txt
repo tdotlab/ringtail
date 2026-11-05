@@ -3,6 +3,6 @@ Welcome to RingTail.
 Try:  ls               the files on this disk
       run hello        a program from the disk
       run octavo       a text editor (Ctrl+Q quits)
-      run gui          a small desktop (Esc leaves)
+      run kenoma       a small desktop (Esc leaves)
       tasks            what is running
       help             everything else

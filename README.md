@@ -69,7 +69,7 @@ and the physical frame pool are sized from the Multiboot memory map. A program's
 
 Tasks: a round-robin, preemptive scheduler runs on the 100 Hz PIT. The
 kernel's own tasks (idle, init) and user programs are scheduled the same
-way. init starts SHELL from the disk, hands it the terminal, and starts a
+way. init starts SAKLAS from the disk, hands it the terminal, and starts a
 fresh one whenever it ends. A program that faults is killed and the fault is
 logged (`faults` in the shell). A kill takes effect at the next safe
 point, never in the middle of a kernel operation. The tty belongs to one
@@ -175,8 +175,8 @@ Programs on the disk:
 | Program | What it does |
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
-| gui | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
-| shell | The command line. init starts it at boot and again whenever it ends. |
+| kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
+| saklas | The command line (the shell). init starts it at boot and again whenever it ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
 | wc | Counts lines, words and bytes of files, or of its input. |

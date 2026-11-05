@@ -2087,3 +2087,13 @@ Tests: 24 QEMU checks. They replay the serial output onto a one-line
 screen model and check the text and cursor column after each edit, run
 the edited line, and read the VGA memory for a line wrapped across two
 rows. (The model caught a wrong expectation of mine, not a shell bug.)
+
+## Names: Saklas and Kenoma
+
+The shell is now Saklas (disk name SAKLAS, `src/programs/saklas.c`) and
+the desktop is Kenoma (`kenoma.c`; `run kenoma`). Both are Gnostic: the
+Saklas is the fool, a name for the demiurge, and the kenoma is the
+visible world the archons rule. Names were checked against GitHub repo
+names for anything over 100 stars (Archon and Gam were turned down,
+Archon as too solemn and Gam for the 4k-star Google Workspace CLI).
+Octavo stays as it is. No behaviour changed.

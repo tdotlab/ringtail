@@ -1,4 +1,4 @@
-// A small desktop: a program launcher, text files that open in
+// Kenoma, the desktop: a program launcher, text files that open in
 // Octavo, a draggable About window, and a mouse cursor. Frames are drawn into a buffer in this program's own
 // memory and sent to the screen in one call, so nothing flickers.
 // Esc or the Quit button leaves.
@@ -116,7 +116,7 @@ static void load_programs(void) {
         for (int i = 0; prog_count < MAX_PROGS && sys_list(i, name, sizeof name) == 0; i++) {
             const char* dot = strrchr(name, '.');
             if (pass == 0 && dot && is_document(dot + 1)) add_icon(name);
-            if (pass == 1 && !dot && strcasecmp(name, "gui") != 0) add_icon(name);
+            if (pass == 1 && !dot && strcasecmp(name, "kenoma") != 0) add_icon(name);
         }
     }
 }
@@ -189,7 +189,7 @@ static int launch(const icon_t* ic) {
     if (!ic->ext[0]) argv[1] = 0;
     int id = sys_spawn_args(prog, argv);
     if (id < 0) {
-        printf("gui: cannot start %s: %s\n", prog, strerror(id));
+        printf("kenoma: cannot start %s: %s\n", prog, strerror(id));
     } else {
         int status = sys_join(id);
         if (ic->ext[0] && status == 0) return sys_gfx_begin();
@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
     (void)argc; (void)argv;
     int r = sys_gfx_begin();
     if (r < 0) {
-        printf("gui: cannot take the display: %s\n", strerror(r));
+        printf("kenoma: cannot take the display: %s\n", strerror(r));
         return 1;
     }
     sys_gfx_font(font);

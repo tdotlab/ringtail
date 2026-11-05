@@ -343,7 +343,7 @@ def tests(m, t):
     out = m.run("kill 1")
     t.check("kernel tasks cannot be killed", "not permitted" in out, out)
     out = m.run("tasks")
-    shell = re.search(r"^\s*(\d+)\s+\d+\s+user\s+\S+\s+\S+\s+shell\s*$", out, re.M)
+    shell = re.search(r"^\s*(\d+)\s+\d+\s+user\s+\S+\s+\S+\s+saklas\s*$", out, re.M)
     t.check("the shell is a user task", shell, out)
     if shell:
         out = m.run("kill " + shell.group(1))
@@ -699,7 +699,7 @@ def tests(m, t):
     t.check("Up arrow recalls the last command", out.count("first") >= 2, out)
 
     # The desktop: graphics mode, then Esc back to text.
-    m.send("run gui\r")
+    m.send("run kenoma\r")
     # QEMU shows mode 13h pixel-doubled, so 320x200 dumps as 640x400.
     size = None
     for _ in range(30):
@@ -707,7 +707,7 @@ def tests(m, t):
         size = m.screen_size()
         if size == (640, 400):
             break
-    t.check("gui switches to mode 13h graphics", size == (640, 400), f"screen is {size}")
+    t.check("kenoma switches to mode 13h graphics", size == (640, 400), f"screen is {size}")
     # Click the WELCOME page icon (the first slot, at 80,26): the pointer
     # is pinned to the corner first, since mouse moves are relative.
     m.monitor_cmd("mouse_move -400 -400")
@@ -728,7 +728,7 @@ def tests(m, t):
     t.check("closing Octavo goes straight back to the desktop", size == (640, 400), f"screen is {size}")
     m.monitor_cmd("sendkey esc")
     m.expect(PROMPT, 5)
-    t.check("Esc leaves the gui and text mode returns", m.screen_size() == (720, 400))
+    t.check("Esc leaves kenoma and text mode returns", m.screen_size() == (720, 400))
 
     out = m.run("mem")
     t.check("mem", "Frames:" in out and "Heap:" in out, out)
