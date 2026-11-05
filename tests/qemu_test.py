@@ -257,6 +257,16 @@ def tests(m, t):
     out = m.run("run nullds")
     t.check("null data segments cannot hurt a syscall", "worked" in out, out)
 
+    # The fuzzer throws hostile arguments at every non-blocking system call.
+    # The kernel must come through with its heap and its frames intact.
+    mem0 = m.run("mem")
+    for seed in (1, 2, 3):
+        out = m.run(f"run fuzz {seed} 3000", timeout=120)
+        t.check(f"syscall fuzzing, seed {seed}", "fuzz: all" in out and "KERNEL PANIC" not in out and "FAIL" not in plain(out), out[-400:])
+    t.check("the fuzzer left no frames or heap behind", m.run("mem") == mem0, mem0 + m.run("mem"))
+    out = m.run("ls /")
+    t.check("and its scratch directory is gone", "FZ" not in out, out)
+
     out = m.run("run crash")
     t.check("privileged instruction kills only the program",
             "general protection" in out.lower() and "task killed" in out, out)

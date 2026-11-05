@@ -14,6 +14,8 @@
 #include "ulib.h"
 
 int main(int argc, char** argv);
+#define USER_BASE_ADDR 0x40000000u  // user space, as the kernel lays it out
+#define USER_TOP_ADDR  0xC0000000u
 static uint32_t rng_state = 1;
 static uint32_t rnd(void) {  // xorshift32
     uint32_t x = rng_state;
@@ -200,6 +202,12 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
             if (rnd() & 1) *len %= 300;
             else *ptr = (rnd() & 1) ? 0xC0000000u + (rnd() & 0xFFF) : (interesting() | 0x80000000u);
         }
+        // Valid memory that is not the scratch buffer would put this
+        // program's own code and strings (the word FAIL among them) on the
+        // console, where a test reading the output would take it for a result.
+        uint32_t sc = (uint32_t)scratch;
+        if (*ptr >= USER_BASE_ADDR && *ptr < USER_TOP_ADDR && (*ptr < sc || *ptr >= sc + sizeof scratch) && *len)
+            *ptr = sc + (rnd() % 4000);
     }
 
     if (iter >= verbose_from) out("  #%u %s(%x, %x, %x)\n", iter, c->name, a, b, d);
@@ -318,9 +326,15 @@ int main(int argc, char** argv) {
             if (n) out("  %-12s ok %5u  efault %5u  other %5u\n", calls[i].name, stat_ok[n], stat_fault[n], stat_other[n]);
         }
     }
-    check(1, "the kernel survived the fuzzing");
-    check(sys_getpid() > 0, "this program still runs");
-    check(heap_before > 0 && heap_after >= heap_before - 4, "no kernel heap was lost");
+    // The verdict uses locals only: a stray write into this program's own
+    // data (which is legitimate, it is mapped) must not be able to fake
+    // or hide a failure through the check() counters.
+    int alive = sys_getpid() > 0;
+    int heap_ok = heap_before > 0 && heap_after >= heap_before - 4;
     out("heap free: %d KB before, %d KB after\n", heap_before, heap_after);
-    return check_summary("fuzz");
+    out("  %s  the kernel survived the fuzzing\n", alive ? "ok  " : "FAIL");
+    out("  %s  no kernel heap was lost\n", heap_ok ? "ok  " : "FAIL");
+    if (alive && heap_ok) out("fuzz: all 2 checks passed\n");
+    else out("fuzz: FAILED\n");
+    return !(alive && heap_ok);
 }
