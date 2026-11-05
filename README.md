@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.16.0 "Packrat"**. See PROGRESS.md for the history.
+Current version: **v0.17.0 "Longtail"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -36,7 +36,8 @@ and `fsck.fat -n build/disk.img` both read it.
 `tests/test_heap_diskfs.c` builds the real kernel heap and filesystem
 code as a 32-bit Linux program, on top of a RAM disk that can be told to
 fail writes. It covers allocation and coalescing, double frees and bad
-pointers, 8.3 name rules, sparse writes, truncation, full disks, root
+pointers, name rules and long names (aliases, ~N tails, case,
+slots across sectors and clusters, bad checksums), sparse writes, truncation, full disks, root
 directory exhaustion, an I/O error during a replace (the old contents
 must survive), subdirectories (paths, growth past one cluster, rmdir
 rules, remounts, the depth limit), a non-default cluster size and
@@ -99,9 +100,17 @@ disk) and `kill`. Pipes are 4 KB kernel buffers: a reader waits for data
 and sees end of file once every writer has closed, and a writer waits
 for room. `dup2` copies a descriptor onto another number.
 
-Filesystem: FAT16 with subdirectories and DOS 8.3 names. Paths use `/`,
-start at the task's current directory unless they begin with `/`, and
-know `.` and `..`; a full path is at most 127 characters. Each task has
+Filesystem: FAT16 with subdirectories and Windows-style long names
+(VFAT). A name is up to 255 printable ASCII characters, none of
+`\ / : * ? " < > |`, not starting with a space or ending in a space or
+dot. Case is kept as typed and ignored when matching, so `cat readme.TXT`
+finds `ReadMe.txt`. A name that fits 8.3 in one case per part is stored
+as a plain short entry (lowercase via the NT case bits, like Windows);
+any other gets long-name slots and a short alias such as `MYDOCU~1`,
+which also works as its name. Disks written by Windows, Linux or mtools
+read the same way. Paths use `/`, start at the task's current directory
+unless they begin with `/`, and know `.` and `..`; a directory's full
+path is at most 255 characters. Each task has
 its own current directory, inherited by the programs it starts. The FAT
 and the root directory are kept in memory, subdirectory sectors go
 through a small cache, and all of it is written back after each
@@ -147,7 +156,7 @@ come after a `|`. Ctrl+C stops every program in a pipeline. `tasks` lists what i
 `kill <id>` stops it. `ls [dir]`, `cat`, `touch`, `write <file> <text>`
 and `rm` work on files, and `cd`, `pwd`, `mkdir` and `rmdir` on
 directories. `mv` renames or moves a file or a whole directory (into a
-directory if the target is one), and the `cp` program copies files. Every file argument can be a path (`DOCS/A.TXT`,
+directory if the target is one), and the `cp` program copies files. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
 `/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `uptime` the
 time and timer ticks, and `faults` the fault log. `color <name>` sets
@@ -159,7 +168,7 @@ Programs on the disk:
 | Program | What it does |
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
-| gui | Desktop: a paged launcher for every program, and page icons for .TXT and .LEM files that open them in Octavo. Esc quits. |
+| gui | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
 | shell | The command line. init starts it at boot and again whenever it ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
@@ -192,15 +201,16 @@ toggles it.
 
 Differences from the Windows version: Replace is Ctrl+R because Ctrl+H
 is Backspace in a terminal, and Save as hylic is F12 because Ctrl+Shift+S
-arrives as Ctrl+S. New documents are saved as `.LEM`, `.lemur` squeezed
-into 8.3. Files keep their line endings (LF or CR LF). Bytes are shown
+arrives as Ctrl+S. New documents are saved as `.lemur`. Files keep their line endings (LF or CR LF). Bytes are shown
 one column each, so it is an ASCII editor; there is no mouse, and files
 are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 
 ## Limits
 
 These are deliberate, or simply not done yet. Programs get the x87 FPU
-(its state is saved per task) but not SSE. There are no long file names, no
+(its state is saved per task) but not SSE. Long names are ASCII only (a name
+with other characters shows as its short alias), and files carry no
+timestamps. There is no
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and

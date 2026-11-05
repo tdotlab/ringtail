@@ -45,6 +45,13 @@ int strcmp(const char* a, const char* b) {
     return (uint8_t)*a - (uint8_t)*b;
 }
 
+static int fold(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+
+int strcasecmp(const char* a, const char* b) {
+    while (*a && fold((uint8_t)*a) == fold((uint8_t)*b)) { a++; b++; }
+    return fold((uint8_t)*a) - fold((uint8_t)*b);
+}
+
 int strncmp(const char* a, const char* b, size_t n) {
     for (; n; n--, a++, b++) {
         if (*a != *b) return (uint8_t)*a - (uint8_t)*b;

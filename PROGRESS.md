@@ -1974,3 +1974,40 @@ depth checks, stat and ids, and a move on 2 KB clusters for fsck),
 136 QEMU checks (mv and cp, every refusal, a copied program running).
 
 Next: long file names.
+
+## v0.17.0 "Longtail"
+
+Long file names. Names keep their case, run to 255 characters, and can
+have spaces and several dots; `cd "My Docs"` works and the prompt shows
+it. Lookups ignore case, and match the short alias too.
+
+Kernel:
+- VFAT long-name slots: written before the short entry, last piece
+  first, with the alias's checksum. Read back only when the run of
+  slots is unbroken and the checksum matches; a broken one, or one with
+  characters outside printable ASCII, falls back to the short name.
+- Short aliases the Windows way: uppercase, spaces and all but the last
+  dot dropped, other unfit characters made `_`, then the lowest free
+  `~N` (`REPORT~9`, then `REPOR~10`). A name that only loses its case
+  (`ReadMe.txt`) keeps the plain alias `README.TXT`, and one that fits
+  8.3 in a single case per part (`notes.txt`) gets no long name at all,
+  just the NT lowercase bits.
+- Free runs of slots for a long name are found across sectors, and a
+  subdirectory grows by clusters to fit one. Deleting frees every slot.
+- rename handles changing only the case, keeping the entry's alias.
+- NAME_MAX 255 and PATH_MAX 256 in the ABI, and dirent_t's name grew
+  to match. `strcasecmp` in the shared lib, `%*s` in printf.
+
+User side: `ls` widens its name column to the longest name (up to 32),
+the shell says "not a valid file name" for a bad name instead of
+"invalid argument", Octavo saves new documents as `.lemur` and hylic
+ones as `.txt`, and the desktop shows long names cut to seven letters
+and a `~`.
+
+Tests: 229 host checks (aliases and tails, case bits, the 255-character
+name across sectors and across clusters, reuse of freed slots, case-only
+and long/short renames, bad checksums and non-ASCII slots falling back,
+the PATH_MAX limit with long names, and long names in the image fsck
+checks, which mtools also lists correctly), 148 QEMU checks (long names
+in the shell, a long-named file mtools wrote before boot, and one the
+guest wrote that mtools reads after).

@@ -48,6 +48,11 @@ int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap) {
             else if (*fmt == '-') left = 1;
             else break;
         }
+        if (*fmt == '*') {  // the width as an argument; negative means left
+            width = va_arg(ap, int);
+            if (width < 0) { left = 1; width = -width; }
+            fmt++;
+        }
         while (*fmt >= '0' && *fmt <= '9') width = width * 10 + (*fmt++ - '0');
         while (*fmt == 'l') fmt++;
         char num[16];

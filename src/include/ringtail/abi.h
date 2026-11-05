@@ -84,16 +84,21 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 #define POWER_REBOOT 0
 #define POWER_OFF    1
 
-// Paths: names separated by '/', each a DOS 8.3 name, "." or "..".
-// One starting with '/' begins at the root, any other at the caller's
-// current directory, which a spawned program inherits. SYS_SPAWN
-// looks for a name without a '/' in the root, where programs live.
-#define PATH_MAX 128  // including the NUL
+// Paths: names separated by '/', or "." and "..". One starting with
+// '/' begins at the root, any other at the caller's current
+// directory, which a spawned program inherits. SYS_SPAWN looks for a
+// name without a '/' in the root, where programs live. Names are up
+// to NAME_MAX printable ASCII characters except \ / : * ? " < > |,
+// not starting with a space or ending in a space or a dot. Case is
+// kept but does not matter: README.TXT and readme.txt are one file.
+// A long name's short alias (like MYNOTE~1.TXT) names it too.
+#define NAME_MAX 255
+#define PATH_MAX 256  // including the NUL
 
 // dirent_t.id tells files and directories apart while they exist: two
 // paths with the same id are the same thing. A rename can change it.
 #define DIRENT_DIR 1  // dirent_t.flags: a directory (size is 0)
-typedef struct { char name[16]; unsigned size; unsigned flags; unsigned id; } dirent_t;
+typedef struct { char name[NAME_MAX + 1]; unsigned size; unsigned flags; unsigned id; } dirent_t;
 
 // Values from -4095 to -1 are errors. Anything else is a result,
 // including addresses above 2 GB that look negative as an int.

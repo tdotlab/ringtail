@@ -34,8 +34,10 @@ int main(int argc, char** argv) {
     sys_close(fd);
 
     check(sys_open("NOFILE.TXT", O_RDONLY) == -ENOENT, "open of a missing file gives ENOENT");
-    check(sys_open("12345678901234567890123456789012", O_RDWR | O_CREAT) == -EINVAL,
-          "a name that does not fit 8.3 gives EINVAL");
+    char toolong[NAME_MAX + 2];
+    memset(toolong, 'n', NAME_MAX + 1);
+    toolong[NAME_MAX + 1] = 0;
+    check(sys_open(toolong, O_RDWR | O_CREAT) == -ENAMETOOLONG, "a name over 255 characters gives ENAMETOOLONG");
     check(sys_open("BAD*.TXT", O_RDWR | O_CREAT) == -EINVAL, "a forbidden character gives EINVAL");
     check(sys_open("DEMO.TXT", O_RDONLY | O_TRUNC) == -EINVAL, "truncating read-only gives EINVAL");
 

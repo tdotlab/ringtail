@@ -747,7 +747,7 @@ static int write_file(const char* name) {
 }
 
 static const char* save_error(int r) {
-    if (r == -EINVAL) return "not a DOS 8.3 name (like NOTES.TXT)";
+    if (r == -EINVAL) return "not a valid file name (none of \\ : * ? \" < > | in it)";
     return strerror(r);
 }
 
@@ -758,7 +758,7 @@ static int save_as(const char* label, const char* default_ext) {
     if (!prompt(label, name, sizeof name, 0) || !name[0]) return 0;
     const char* base = strrchr(name, '/');
     base = base ? base + 1 : name;
-    if (base[0] && !has_dot(base) && strlen(base) <= 8 && strlen(name) + strlen(default_ext) < sizeof name)
+    if (base[0] && !has_dot(base) && strlen(name) + strlen(default_ext) < sizeof name)
         strlcpy(name + strlen(name), default_ext, sizeof name - strlen(name));
     int r = write_file(name);
     if (r < 0) {
@@ -774,8 +774,8 @@ static int save_as(const char* label, const char* default_ext) {
 }
 
 static int save(void) {
-    // New documents are lemurs; 8.3 squeezes .lemur to .LEM.
-    if (!filename[0]) return save_as("Save as", ".LEM");
+    // New documents are lemurs.
+    if (!filename[0]) return save_as("Save as", ".lemur");
     int r = write_file(filename);
     if (r < 0) {
         char m[COLS + 1];
@@ -968,7 +968,7 @@ static void handle(int k) {
         if (key == K_FN(3)) {
             if (!find_term[0]) find_dialog(); else find_next(!extend);
         } else if (key == K_FN(12)) {
-            save_as("Save as hylic", ".TXT");
+            save_as("Save as hylic", ".txt");
         } else if (key == K_FN(1)) {
             strlcpy(message, "^A all ^X/^C/^V cut/copy/paste ^O open ^N new Alt+Z wrap ^Q quit",
                     sizeof message);

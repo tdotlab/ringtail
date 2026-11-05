@@ -20,8 +20,8 @@ import sys
 import tempfile
 import time
 
-# The prompt carries the current directory: "ringtail:/> ", "ringtail:/DOCS> ".
-PROMPT = rb"ringtail:/[^>\s]*> "
+# The prompt carries the current directory: "ringtail:/> ", "ringtail:/My Docs> ".
+PROMPT = rb"ringtail:/[^>\n]*> "
 
 
 class Machine:
@@ -178,6 +178,9 @@ class Runner:
                 print("        " + detail.strip().replace("\n", "\n        ")[:1500])
 
 
+HOST_FILE = False  # whether mtools put a long-named file on the disk
+
+
 def plain(out):
     """Output without colour codes or surrounding whitespace."""
     return re.sub(r"\x1b\[[0-9;]*m", "", out).strip()
@@ -185,7 +188,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.16.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.17.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -214,7 +217,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.16.0" in out, out)
+    t.check("and the new shell works", "0.17.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
         out = m.run("run " + prog, timeout=30)
@@ -348,7 +351,7 @@ def tests(m, t):
     out = m.run("touch note.txt")
     t.check("touch of an existing file is an error", "already exists" in out, out)
     out = m.run("touch bad*name")
-    t.check("bad names are rejected", "invalid" in out, out)
+    t.check("bad names are rejected", "not a valid file name" in out, out)
     m.run("rm note.txt")
     out = m.run("cat note.txt")
     t.check("rm deletes", "no such file" in out, out)
@@ -360,15 +363,15 @@ def tests(m, t):
     out = m.run("mkdir docs")
     t.check("mkdir of a taken name is an error", "already exists" in out, out)
     out = m.run("ls")
-    t.check("ls marks directories", re.search(r"DOCS/\s+<dir>", plain(out)) and "1 directory" in out, out)
+    t.check("ls marks directories", re.search(r"docs/\s+<dir>", plain(out)) and "1 directory" in out, out)
     m.run("write docs/a.txt in a directory")
     out = m.run("cat DOCS/A.TXT")
     t.check("a file in a directory, by path", "in a directory" in out, out)
     m.send("cd docs\r")
     out = m.expect(PROMPT, 5)
-    t.check("cd changes the prompt", "ringtail:/DOCS> " in out, out)
+    t.check("cd changes the prompt, with the name as written", "ringtail:/docs> " in out, out)
     out = m.run("pwd")
-    t.check("pwd", plain(out) == "/DOCS", out)
+    t.check("pwd", plain(out) == "/docs", out)
     out = m.run("cat a.txt")
     t.check("relative paths start at the current directory", "in a directory" in out, out)
     out = m.run("cat ../keep.txt")
@@ -382,7 +385,7 @@ def tests(m, t):
     m.run("mkdir sub")
     m.run("cd sub")
     out = m.run("pwd")
-    t.check("nested directories", plain(out) == "/DOCS/SUB", out)
+    t.check("nested directories", plain(out) == "/docs/sub", out)
     out = m.run("cd nothere")
     t.check("cd to a missing directory", "no such file" in out, out)
     out = m.run("cd /keep.txt")
@@ -401,7 +404,7 @@ def tests(m, t):
     out = m.run("rmdir docs/sub")
     t.check("rmdir", plain(out) == "", out)
     out = m.run("ls docs")
-    t.check("ls of a directory", "A.TXT" in out and "SUB" not in out, out)
+    t.check("ls of a directory", "a.txt" in out and "sub" not in out, out)
 
     # mv and cp.
     m.run("write m1.txt moving text")
@@ -440,6 +443,34 @@ def tests(m, t):
 
     m.run("mkdir keepdir")
     m.run("write keepdir/deep.txt nested and kept")
+
+    # Long names.
+    out = m.run('mkdir "My Docs"')
+    t.check("mkdir of a name with a space", plain(out) == "", out)
+    m.send('cd "my docs"\r')
+    out = m.expect(PROMPT, 5)
+    t.check("the prompt shows a long name as written", "ringtail:/My Docs> " in out, out)
+    m.run('write "A rather long file name.text" long names work')
+    out = m.run('cat "a RATHER long FILE name.TEXT"')
+    t.check("a long name in any case", "long names work" in out, out)
+    out = m.run("cat arathe~1.tex")
+    t.check("and by its short alias", "long names work" in out, out)
+    out = m.run("ls")
+    t.check("ls shows a long name whole", re.search(r"A rather long file name\.text\s+\d+", plain(out)), out)
+    out = m.run('mv "A rather long file name.text" Short.txt')
+    t.check("mv from a long name to a short one", "long names work" in m.run("cat short.txt"), out)
+    out = m.run('mv short.txt "Back to a long one.txt"')
+    t.check("and back", "long names work" in m.run('cat "back to a long one.txt"'), out)
+    out = m.run('mv "back to a long one.txt" "Back To A Long One.txt"')
+    t.check("mv that changes only case", "Back To A Long One.txt" in m.run("ls"), out)
+    out = m.run('mv "Back To A Long One.txt" "a:b"')
+    t.check("mv to a bad name says so", "not a valid file name" in out, out)
+    out = m.run("touch name.")
+    t.check("a name ending in a dot is refused", "not a valid file name" in out, out)
+    if HOST_FILE:
+        out = m.run('cat "/From the host, with love.txt"')
+        t.check("a long name another system wrote", "written by mtools" in out, out)
+    m.run("cd /")
 
     # Raw mode: keys arrive as bytes, arrows as xterm sequences.
     m.send("run rawkeys\r")
@@ -531,10 +562,10 @@ def tests(m, t):
     m.send("\x13")
     m.wait_row(23, "Save as")
     m.send("zoo\r")
-    t.check("an untitled document is saved as a lemur", "Saved zoo.LEM" in m.wait_row(23, "Saved"))
+    t.check("an untitled document is saved as a lemur", "Saved zoo.lemur" in m.wait_row(23, "Saved"))
     m.send("\x11")
     m.expect(PROMPT, 5)
-    out = m.run("cat zoo.lem")
+    out = m.run("cat ZOO.LEMUR")
     t.check("and the file is there", out.count("lemur") == 20, repr(out))
 
     # History recall with the Up arrow.
@@ -600,6 +631,13 @@ def main():
     work = tempfile.mkdtemp(prefix="ringtail-test-")
     disk = os.path.join(work, "disk.img")
     shutil.copy(args.disk, disk)
+    global HOST_FILE
+    if shutil.which("mcopy"):
+        # A long name written by another implementation, for the guest to read.
+        src = os.path.join(work, "host.txt")
+        with open(src, "w") as f:
+            f.write("written by mtools\n")
+        HOST_FILE = subprocess.run(["mcopy", "-i", disk, src, "::From the host, with love.txt"]).returncode == 0
     t = Runner()
     m = Machine(args.iso, disk, work)
     try:
@@ -623,6 +661,8 @@ def main():
 
         r = subprocess.run(["mtype", "-i", disk, "::KEEPDIR/DEEP.TXT"], capture_output=True, text=True)
         t.check("and our subdirectory", "nested and kept" in r.stdout, r.stdout + r.stderr)
+        r = subprocess.run(["mtype", "-i", disk, "::My Docs/Back To A Long One.txt"], capture_output=True, text=True)
+        t.check("and our long names", "long names work" in r.stdout, r.stdout + r.stderr)
 
     print(f"\n{t.passed} passed, {len(t.failed)} failed")
     print(f"serial log: {os.path.join(work, 'serial.log')}")

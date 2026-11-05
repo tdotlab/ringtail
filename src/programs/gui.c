@@ -72,9 +72,9 @@ static int dragging, drag_dx, drag_dy;
 
 // Icons: text files first, then programs.
 typedef struct {
-    char name[16];  // the file name on disk
-    char label[9];  // what the icon says underneath: the name without its extension
-    char ext[4];    // empty for a program
+    char name[NAME_MAX + 1];  // the file name on disk
+    char label[9];            // under the icon: the name without its extension, cut to 8
+    char ext[4];              // on a page: the extension's first three letters; empty for a program
 } icon_t;
 
 static icon_t progs[MAX_PROGS];
@@ -89,27 +89,34 @@ static void prog_xy(int slot, int* x, int* y) {
 
 // Text files Octavo opens from the desktop.
 static int is_document(const char* ext) {
-    return strcmp(ext, "TXT") == 0 || strcmp(ext, "LEM") == 0;
+    return strcasecmp(ext, "txt") == 0 || strcasecmp(ext, "lem") == 0 || strcasecmp(ext, "lemur") == 0;
 }
 
 static void add_icon(const char* name) {
     icon_t* ic = &progs[prog_count++];
     strlcpy(ic->name, name, sizeof ic->name);
-    const char* dot = strchr(name, '.');
+    const char* dot = strrchr(name, '.');
     size_t base = dot ? (size_t)(dot - name) : strlen(name);
-    if (base >= sizeof ic->label) base = sizeof ic->label - 1;
-    memcpy(ic->label, name, base);
+    if (base >= sizeof ic->label) {  // a long name: seven letters and a ~
+        memcpy(ic->label, name, sizeof ic->label - 2);
+        ic->label[sizeof ic->label - 2] = '~';
+        base = sizeof ic->label - 1;
+    } else {
+        memcpy(ic->label, name, base);
+    }
     ic->label[base] = 0;
     strlcpy(ic->ext, dot ? dot + 1 : "", sizeof ic->ext);
+    for (char* e = ic->ext; *e; e++)
+        if (*e >= 'a' && *e <= 'z') *e = (char)(*e - 32);
 }
 
 static void load_programs(void) {
-    char name[16];
+    char name[NAME_MAX + 1];
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; prog_count < MAX_PROGS && sys_list(i, name, sizeof name) == 0; i++) {
-            const char* dot = strchr(name, '.');
+            const char* dot = strrchr(name, '.');
             if (pass == 0 && dot && is_document(dot + 1)) add_icon(name);
-            if (pass == 1 && !dot && strcmp(name, "GUI") != 0) add_icon(name);
+            if (pass == 1 && !dot && strcasecmp(name, "gui") != 0) add_icon(name);
         }
     }
 }
@@ -135,7 +142,7 @@ static void draw_about(void) {
     text(w->x + 5, w->y + 2, "About", 15);
     rect(w->x + w->w - 20, w->y + 2, 18, 16, 4);
     text(w->x + w->w - 14, w->y + 2, "X", 15);
-    text(w->x + 10, w->y + 30, "RingTail v0.16", 0);
+    text(w->x + 10, w->y + 30, "RingTail v0.17", 0);
     text(w->x + 10, w->y + 50, "Bare-metal x86 OS", 0);
     text(w->x + 10, w->y + 70, "C + NASM, no libc", 0);
 }

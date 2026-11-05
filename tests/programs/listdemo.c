@@ -3,9 +3,9 @@
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
-    char name[16];
+    char name[NAME_MAX + 1];
     check(sys_list(0, name, 2) == -EINVAL, "a buffer too small gives EINVAL");
-    check(sys_list(0, 0, 16) == -EFAULT, "a null buffer gives EFAULT");
+    check(sys_list(0, 0, sizeof name) == -EFAULT, "a null buffer gives EFAULT");
     int count = 0;
     while (sys_list(count, name, sizeof name) == 0) {
         printf("  %d: %s\n", count, name);

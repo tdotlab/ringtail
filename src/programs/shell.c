@@ -32,8 +32,23 @@
 static char history[HISTORY][LINE_MAX];
 static int hist_count;  // total lines ever added; the ring holds the last HISTORY
 
+// Whether the last name in path follows the disk's rules (abi.h):
+// printable, none of \" * : < > ? \\ |, no space first or space or
+// dot last. "." and ".." count as fine.
+static int name_ok(const char* path) {
+    const char* n = strrchr(path, '/');
+    n = n ? n + 1 : path;
+    size_t len = strlen(n);
+    if (!len || strcmp(n, ".") == 0 || strcmp(n, "..") == 0) return 1;
+    if (len > NAME_MAX || n[0] == ' ' || n[len - 1] == ' ' || n[len - 1] == '.') return 0;
+    for (const char* p = n; *p; p++)
+        if (*p < 0x20 || *p > 0x7E || strchr("\"*:<>?\\|", *p)) return 0;
+    return 1;
+}
+
 static void err(const char* what, int e) {
-    dprintf(STDERR_FILENO, RED "%s: %s" NORM "\n", what, strerror(e));
+    const char* why = e == -EINVAL && !name_ok(what) ? "not a valid file name" : strerror(e);
+    dprintf(STDERR_FILENO, RED "%s: %s" NORM "\n", what, why);
 }
 
 static void complain(const char* msg) {
@@ -269,18 +284,28 @@ static void cmd_history(cmd_t* c) {
     for (int i = oldest; i < hist_count; i++) printf("%3d  %s\n", i + 1, history[i % HISTORY]);
 }
 
+// The name column fits the longest name up to LS_WIDE; a longer one
+// pushes its size along rather than widening every line.
+#define LS_NARROW 13
+#define LS_WIDE 32
+
 static void cmd_ls(cmd_t* c) {
     const char* dir = c->argc > 1 ? c->argv[1] : ".";
-    int cursor = 0, files = 0, dirs = 0, r;
+    int cursor = 0, files = 0, dirs = 0, width = LS_NARROW, r;
     dirent_t d;
     while ((r = sys_readdir(dir, &cursor, &d)) > 0) {
+        int n = (int)strlen(d.name) + ((d.flags & DIRENT_DIR) ? 1 : 0);
+        if (n > width) width = n < LS_WIDE ? n : LS_WIDE;
+    }
+    cursor = 0;
+    while (r >= 0 && (r = sys_readdir(dir, &cursor, &d)) > 0) {
         if (d.flags & DIRENT_DIR) {
             char name[sizeof d.name + 1];
             snprintf(name, sizeof name, "%s/", d.name);
-            printf("  %s%-13s%s %8s\n", tty_out ? BLU : "", name, tty_out ? NORM : "", "<dir>");
+            printf("  %s%-*s%s %8s\n", tty_out ? BLU : "", width, name, tty_out ? NORM : "", "<dir>");
             dirs++;
         } else {
-            printf("  %-13s %8u\n", d.name, d.size);
+            printf("  %-*s %8u\n", width, d.name, d.size);
             files++;
         }
     }
@@ -368,7 +393,8 @@ static void cmd_mv(cmd_t* c) {
         char to[PATH_MAX];
         int r = dest_path(src, dst, to, sizeof to);
         if (!r) r = sys_rename(src, to);
-        if (r == -EINVAL) dprintf(STDERR_FILENO, RED "%s: cannot go inside itself" NORM "\n", src);
+        if (r == -EINVAL && !name_ok(to)) err(to, r);
+        else if (r == -EINVAL) dprintf(STDERR_FILENO, RED "%s: cannot go inside itself" NORM "\n", src);
         else if (r == -EBUSY) dprintf(STDERR_FILENO, RED "%s: give it by name to move it" NORM "\n", src);
         else if (r == -EEXIST) dprintf(STDERR_FILENO, RED "%s: already exists (rm it first)" NORM "\n", to);
         else if (r < 0) err(src, r);

@@ -6,14 +6,14 @@
 #include <stdint.h>
 #include "ringtail/abi.h"  // MAX_FDS, PATH_MAX, dirent_t
 
-#define FS_NAME_MAX 13  // "NAME8CHR.EXT" plus NUL
 #define DISKFS_ROOT 0   // the root directory's node, which always exists
 
 // Files and directories in use are nodes. The calls that return one
 // return it with a reference held, and diskfs_unref drops it; nothing
 // with a reference can be deleted. Paths are resolved from directory
 // node `at` (DISKFS_ROOT, or one from diskfs_opendir) unless they
-// start with '/'. Names are DOS 8.3; "." and ".." work as usual.
+// start with '/'. Names are long and case-insensitive (abi.h has the
+// rules); "." and ".." work as usual.
 int diskfs_init(void);           // 0, or -errno when there is no usable disk
 int diskfs_ready(void);
 int diskfs_lookup(int at, const char* path);   // file node; -EISDIR for a directory
@@ -43,7 +43,7 @@ void diskfs_ref(int node);
 void diskfs_unref(int node);
 int diskfs_refs(int node);
 void diskfs_stats(uint32_t* clusters, uint32_t* free_clusters, uint32_t* cluster_bytes);
-// 1 if name is a valid DOS 8.3 name, 0 if not. Does not touch the disk.
+// 1 if name is a valid file name, 0 if not. Does not touch the disk.
 int diskfs_name_ok(const char* name);
 
 // ---- File descriptors ----

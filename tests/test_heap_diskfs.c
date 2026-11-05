@@ -175,12 +175,18 @@ static void test_names(void) {
     CHECK(diskfs_name_ok("HELLO.TXT"), "plain 8.3 name is fine");
     CHECK(diskfs_name_ok("readme"), "lowercase without an extension is fine");
     CHECK(!diskfs_name_ok(""), "empty name is rejected");
-    CHECK(!diskfs_name_ok("TOOLONGNAME.TXT"), "nine-character base is rejected");
-    CHECK(!diskfs_name_ok("A.TEXT"), "four-character extension is rejected");
-    CHECK(!diskfs_name_ok("A.B.C"), "two dots are rejected");
-    CHECK(!diskfs_name_ok("NAME."), "trailing dot is rejected");
-    CHECK(!diskfs_name_ok(".TXT"), "empty base is rejected");
-    CHECK(!diskfs_name_ok("A B"), "space is rejected");
+    CHECK(diskfs_name_ok("A much longer name.text") && diskfs_name_ok("a.b.c") && diskfs_name_ok(".profile") &&
+          diskfs_name_ok("x+y=[z];w,v"), "long names, more dots, a leading dot and +,;=[] are fine");
+    CHECK(!diskfs_name_ok("NAME.") && !diskfs_name_ok("NAME ") && !diskfs_name_ok(" NAME"),
+          "a trailing dot, a trailing space and a leading space are rejected");
+    CHECK(!diskfs_name_ok(".") && !diskfs_name_ok(".."), ". and .. are not names");
+    char n255[300];
+    memset(n255, 'n', 255);
+    n255[255] = 0;
+    CHECK(diskfs_name_ok(n255), "255 characters are fine");
+    n255[255] = 'n';
+    n255[256] = 0;
+    CHECK(!diskfs_name_ok(n255), "256 are not");
     CHECK(!diskfs_name_ok("A*B") && !diskfs_name_ok("A/B") && !diskfs_name_ok("A:B"),
           "reserved characters are rejected");
     CHECK(!diskfs_name_ok("A\x01") && !diskfs_name_ok("A\x7F") && !diskfs_name_ok("A\xE5"),
@@ -199,7 +205,7 @@ static void test_basic(void) {
     dirent_t d;
     CHECK(diskfs_readdir(DISKFS_ROOT, &cursor, &d) == -ENOENT, "the volume label is not listed as a file");
     CHECK(diskfs_lookup(DISKFS_ROOT, "HELLO.TXT") == -ENOENT, "missing file is not found");
-    CHECK(diskfs_lookup(DISKFS_ROOT, "BAD NAME") == -EINVAL, "lookup of an invalid name is -EINVAL");
+    CHECK(diskfs_lookup(DISKFS_ROOT, "BAD*NAME") == -EINVAL, "lookup of an invalid name is -EINVAL");
 
     int node = diskfs_create(DISKFS_ROOT, "hello.txt");
     CHECK(node >= 0, "create succeeds");
@@ -366,7 +372,7 @@ static void test_dirs(void) {
     CHECK(f == free0 - 1, "an empty directory takes one cluster");
     dirent_t d;
     int cursor = 0;
-    CHECK(diskfs_readdir(DISKFS_ROOT, &cursor, &d) == 0 && strcmp(d.name, "DOCS") == 0 &&
+    CHECK(diskfs_readdir(DISKFS_ROOT, &cursor, &d) == 0 && strcmp(d.name, "docs") == 0 &&
           d.flags == DIRENT_DIR && d.size == 0, "readdir marks it as a directory");
 
     CHECK(diskfs_write_file(DISKFS_ROOT, "docs/a.txt", "inside", 6) == 0, "write a file inside it");
@@ -377,7 +383,7 @@ static void test_dirs(void) {
     CHECK(read_all("A.TXT", buf, sizeof buf) == -ENOENT, "it is not in the root");
     CHECK(read_all("DOCS/A.TXT/X", buf, sizeof buf) == -ENOTDIR, "a file in the middle is -ENOTDIR");
     CHECK(read_all("NOPE/A.TXT", buf, sizeof buf) == -ENOENT, "a missing directory in the middle is -ENOENT");
-    CHECK(read_all("DOCS/TOOLONGNAME.TXT", buf, sizeof buf) == -EINVAL, "a bad name in a path is -EINVAL");
+    CHECK(read_all("DOCS/BAD|NAME.TXT", buf, sizeof buf) == -EINVAL, "a bad name in a path is -EINVAL");
     CHECK(read_all("", buf, sizeof buf) == -ENOENT, "an empty path is -ENOENT");
 
     int dn = diskfs_opendir(DISKFS_ROOT, "DOCS");
@@ -388,14 +394,14 @@ static void test_dirs(void) {
     diskfs_unref(fn);
     CHECK(diskfs_opendir(dn, "..") == DISKFS_ROOT && diskfs_opendir(DISKFS_ROOT, "..") == DISKFS_ROOT,
           ".. of a top directory and of the root is the root");
-    CHECK(diskfs_getcwd(dn, buf, sizeof buf) == 5 && strcmp(buf, "/DOCS") == 0, "getcwd names it");
+    CHECK(diskfs_getcwd(dn, buf, sizeof buf) == 5 && strcmp(buf, "/docs") == 0, "getcwd names it");
     CHECK(diskfs_getcwd(DISKFS_ROOT, buf, sizeof buf) == 1 && strcmp(buf, "/") == 0, "and the root");
     CHECK(diskfs_getcwd(dn, buf, 5) == -ENAMETOOLONG, "getcwd into a short buffer is -ENAMETOOLONG");
 
     // A directory grows past its first cluster.
     CHECK(diskfs_mkdir(dn, "SUB") == 0, "mkdir relative to a directory node");
     int sub = diskfs_opendir(DISKFS_ROOT, "/DOCS/SUB");
-    CHECK(sub > 0 && diskfs_getcwd(sub, buf, sizeof buf) == 9 && strcmp(buf, "/DOCS/SUB") == 0,
+    CHECK(sub > 0 && diskfs_getcwd(sub, buf, sizeof buf) == 9 && strcmp(buf, "/docs/SUB") == 0,
           "a nested directory knows its path");
     int made = 0;
     for (int i = 0; i < 40; i++) {
@@ -455,9 +461,9 @@ static void test_dirs(void) {
     diskfs_unref(inner);
 
     // Nesting stops before a directory's path would not fit PATH_MAX.
-    char path[512] = "DEEP";
+    char path[1024] = "DEEP";
     int depth = 0;
-    while (diskfs_mkdir(DISKFS_ROOT, path) == 0 && depth < 40) {
+    while (diskfs_mkdir(DISKFS_ROOT, path) == 0 && depth < 80) {
         depth++;
         strcat(path, "/DDDDDDDD");
     }
@@ -488,7 +494,7 @@ static void test_rename(void) {
     CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "D") == -EEXIST, "and onto a directory");
     CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "/C.TXT") == 0, "renaming onto itself is a no-op");
     CHECK(diskfs_rename(DISKFS_ROOT, "NOPE", "X") == -ENOENT, "renaming nothing is -ENOENT");
-    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "LONGERNAME.TXT") == -EINVAL, "to a bad name is -EINVAL");
+    CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "BAD:NAME.TXT") == -EINVAL, "to a bad name is -EINVAL");
     CHECK(diskfs_rename(DISKFS_ROOT, "C.TXT", "NOPE/C.TXT") == -ENOENT, "into a missing directory is -ENOENT");
     CHECK(diskfs_rename(DISKFS_ROOT, ".", "X") == -EBUSY && diskfs_rename(DISKFS_ROOT, "/", "X") == -EBUSY,
           ". and / cannot be renamed");
@@ -542,21 +548,159 @@ static void test_rename(void) {
     CHECK(diskfs_stat(DISKFS_ROOT, "NOPE", &d) == -ENOENT, "stat of nothing is -ENOENT");
 
     // A move that would push a directory's path past PATH_MAX.
-    char path[256] = "DEEP";
+    char path[1024] = "DEEP";
     int depth = 0;
-    while (diskfs_mkdir(DISKFS_ROOT, path) == 0 && depth < 40) {
+    while (diskfs_mkdir(DISKFS_ROOT, path) == 0 && depth < 80) {
         depth++;
         strcat(path, "/DDDDDDDD");
     }
     diskfs_mkdir(DISKFS_ROOT, "T");
-    diskfs_mkdir(DISKFS_ROOT, "T/U");
+    diskfs_mkdir(DISKFS_ROOT, "T/UUUUUUUUUUUU");
     *strrchr(path, '/') = 0;
     strcat(path, "/X");
     CHECK(diskfs_rename(DISKFS_ROOT, "T", path) == -ENAMETOOLONG, "moving a tree too deep is -ENAMETOOLONG");
     *strrchr(path, '/') = 0;
     *strrchr(path, '/') = 0;
     strcat(path, "/X");
-    CHECK(diskfs_rename(DISKFS_ROOT, "T/U", path) == 0, "a smaller one fits where the tree did not");
+    CHECK(diskfs_rename(DISKFS_ROOT, "T/UUUUUUUUUUUU", path) == 0, "a smaller one fits where the tree did not");
+}
+
+// The root directory's 32-byte slots in the image: format() puts it
+// after the boot sector and both FATs. Slot 0 is the volume label.
+static uint8_t* root_slot(int i) {
+    uint32_t fsz = (uint32_t)(disk[22] | disk[23] << 8);
+    return disk + (1 + 2 * fsz) * 512 + (uint32_t)i * 32;
+}
+
+// The root slot holding short name raw (11 bytes, space padded), or -1.
+static int find_short(const char* raw) {
+    for (int i = 0; i < 512; i++)
+        if (root_slot(i)[11] != 0x0F && memcmp(root_slot(i), raw, 11) == 0) return i;
+    return -1;
+}
+
+static int stat_name(const char* path, char* out) {
+    dirent_t d;
+    int r = diskfs_stat(DISKFS_ROOT, path, &d);
+    if (r == 0) strcpy(out, d.name);
+    return r;
+}
+
+static void test_long_names(void) {
+    char buf[300], name[300];
+    dirent_t d;
+    format(16384, 1);
+    diskfs_init();
+
+    // A long name keeps its case and is found in any case or by its alias.
+    CHECK(diskfs_write_file(DISKFS_ROOT, "My Long Document.txt", "hello", 5) == 0, "create a long name");
+    int cur = 0, root_n = 0;
+    CHECK(diskfs_readdir(DISKFS_ROOT, &cur, &d) == 0 && strcmp(d.name, "My Long Document.txt") == 0,
+          "readdir gives it back as written");
+    CHECK(read_all("my long document.TXT", buf, sizeof buf) == 5 && read_all("MYLONG~1.TXT", buf, sizeof buf) == 5 &&
+          read_all("mylong~1.txt", buf, sizeof buf) == 5, "found in any case, and by its short alias");
+    CHECK(stat_name("MYLONG~1.TXT", name) == 0 && strcmp(name, "My Long Document.txt") == 0,
+          "stat by the alias names the long name");
+    int s = find_short("MYLONG~1TXT");
+    CHECK(s == 3 && root_slot(1)[0] == 0x42 && root_slot(2)[0] == 0x01 && root_slot(1)[11] == 0x0F,
+          "on disk: two long-name slots, the last piece first, then MYLONG~1.TXT");
+    CHECK(diskfs_write_file(DISKFS_ROOT, "My Long Diary.txt", "dear", 4) == 0 && find_short("MYLONG~2TXT") > 0,
+          "the next one with the same start gets ~2");
+    CHECK(touch("MYLONG~1.TXT") == -EEXIST && touch("MY LONG DOCUMENT.TXT") == -EEXIST,
+          "a name is taken by its alias and by its long name in another case");
+
+    // Names that fit 8.3 get no long-name slots.
+    CHECK(touch("notes.txt") == 0 && find_short("NOTES   TXT") > 0 && root_slot(find_short("NOTES   TXT"))[12] == 0x18 &&
+          root_slot(find_short("NOTES   TXT") - 1)[11] != 0x0F, "notes.txt: a bare short entry with lowercase bits");
+    CHECK(touch("CAPS.txt") == 0 && root_slot(find_short("CAPS    TXT"))[12] == 0x10, "CAPS.txt: just the extension's");
+    CHECK(stat_name("NOTES.TXT", name) == 0 && strcmp(name, "notes.txt") == 0 &&
+          stat_name("caps.TXT", name) == 0 && strcmp(name, "CAPS.txt") == 0, "and they read back in their case");
+    CHECK(touch("ReadMe.txt") == 0 && (s = find_short("README  TXT")) > 0 && root_slot(s - 1)[11] == 0x0F &&
+          stat_name("README.TXT", name) == 0 && strcmp(name, "ReadMe.txt") == 0,
+          "ReadMe.txt: mixed case needs a long name, but its alias needs no tail");
+    CHECK(touch(".profile") == 0 && find_short("PROFIL~1   ") > 0,
+          ".profile: the alias loses the dot, so it gets a tail");
+    CHECK(touch("a.b.c") == 0 && find_short("AB~1    C  ") > 0, "a.b.c: only the last dot counts");
+
+    // Past ~9 the start gives way to the digits; freed tails come back.
+    int made = 0;
+    for (int i = 1; i <= 11; i++) {
+        snprintf(buf, sizeof buf, "Report number %d.txt", i);
+        if (touch(buf) == 0) made++;
+    }
+    CHECK(made == 11 && find_short("REPORT~9TXT") > 0 && find_short("REPOR~10TXT") > 0 && find_short("REPOR~11TXT") > 0,
+          "eleven alike: ~1 to ~9, then REPOR~10 and REPOR~11");
+    CHECK(stat_name("repor~10.txt", name) == 0 && strcmp(name, "Report number 10.txt") == 0, "each alias finds its file");
+    CHECK(diskfs_unlink(DISKFS_ROOT, "Report number 3.txt") == 0 && touch("Report number X.txt") == 0 &&
+          stat_name("REPORT~3.TXT", name) == 0 && strcmp(name, "Report number X.txt") == 0, "a freed ~3 is reused");
+
+    // The longest name: 20 long-name slots, across a sector of the root.
+    memset(name, 'a', 254);
+    name[254] = 'Z';
+    name[255] = 0;
+    CHECK(diskfs_write_file(DISKFS_ROOT, name, "max", 3) == 0, "a 255-character name");
+    CHECK(diskfs_init() == 0 && read_all(name, buf, sizeof buf) == 3 && stat_name("AAAAAA~1", buf) == 0 &&
+          strcmp(buf, name) == 0, "it survives a remount whole");
+    name[255] = 'x';
+    name[256] = 0;
+    CHECK(touch(name) == -ENAMETOOLONG, "256 characters is -ENAMETOOLONG");
+
+    // In a subdirectory on 512-byte clusters, the 21 slots span two.
+    uint32_t clusters, f0, f, cb;
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "Long Names") == 0, "a directory with a long name");
+    int ln = diskfs_opendir(DISKFS_ROOT, "long names");
+    diskfs_stats(&clusters, &f0, &cb);
+    name[255] = 0;
+    CHECK(diskfs_write_file(ln, name, "deep", 4) == 0, "a 255-character name in it");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == f0 - 2, "the directory grew by a cluster (and the file took one)");
+    cur = 0;
+    CHECK(diskfs_readdir(ln, &cur, &d) == 0 && strcmp(d.name, name) == 0 && d.size == 4 &&
+          diskfs_readdir(ln, &cur, &d) == -ENOENT, "readdir puts it together across the clusters");
+    CHECK(diskfs_unlink(ln, name) == 0 && count_entries(ln) == 0, "deleting it frees every slot");
+    name[0] = 'b';
+    CHECK(diskfs_write_file(ln, name, "deep", 4) == 0, "another fits in the same slots");
+    diskfs_stats(&clusters, &f, &cb);
+    CHECK(f == f0 - 2, "without growing the directory again");
+    CHECK(diskfs_getcwd(ln, buf, sizeof buf) > 0 && strcmp(buf, "/Long Names") == 0, "getcwd shows the long name");
+    CHECK(diskfs_mkdir(ln, "Sub Folder") == 0 && diskfs_opendir(ln, "SUBFOL~1") > 0, "a long-named subdirectory");
+    int sf = diskfs_opendir(DISKFS_ROOT, "/long names/sub folder");
+    CHECK(diskfs_getcwd(sf, buf, sizeof buf) > 0 && strcmp(buf, "/Long Names/Sub Folder") == 0, "and its path");
+    diskfs_unref(sf); diskfs_unref(sf);
+    diskfs_unref(ln);
+
+    // A directory's path must fit PATH_MAX.
+    memset(name, 'd', 254);
+    name[254] = 0;
+    CHECK(diskfs_mkdir(DISKFS_ROOT, name) == 0, "a 254-character directory fits (/ and the name)");
+    name[254] = 'd';
+    name[255] = 0;
+    CHECK(diskfs_mkdir(DISKFS_ROOT, name) == -ENAMETOOLONG, "a 255-character one does not");
+
+    // Renames between long and short names, and of case alone.
+    CHECK(diskfs_rename(DISKFS_ROOT, "notes.txt", "Notes.txt") == 0 && stat_name("NOTES.TXT", name) == 0 &&
+          strcmp(name, "Notes.txt") == 0, "a rename that changes only case");
+    CHECK(diskfs_rename(DISKFS_ROOT, "My Long Diary.txt", "DIARY.TXT") == 0 && stat_name("MYLONG~2.TXT", name) == -ENOENT &&
+          read_all("diary.txt", buf, sizeof buf) == 4, "long to short drops the long name and its alias");
+    CHECK(diskfs_rename(DISKFS_ROOT, "DIARY.TXT", "Dear diary, today.txt") == 0 &&
+          stat_name("DEARDI~1.TXT", name) == 0 && strcmp(name, "Dear diary, today.txt") == 0, "short to long");
+    CHECK(diskfs_rename(DISKFS_ROOT, "Dear diary, today.txt", "dear diary, today.txt") == 0 &&
+          stat_name("DEARDI~1.TXT", name) == 0 && strcmp(name, "dear diary, today.txt") == 0, "case alone, of a long name");
+
+    // A long name that does not belong to its short entry is ignored.
+    root_n = count_entries(DISKFS_ROOT);
+    CHECK(touch("Broken long name.txt") == 0 && (s = find_short("BROKEN~1TXT")) > 0, "one more long name");
+    root_slot(s - 1)[13] ^= 0xFF;  // the checksum
+    CHECK(diskfs_init() == 0 && stat_name("BROKEN~1.TXT", name) == 0 && strcmp(name, "BROKEN~1.TXT") == 0 &&
+          stat_name("Broken long name.txt", name) == -ENOENT, "a bad checksum leaves the short name");
+    CHECK(count_entries(DISKFS_ROOT) == root_n + 1, "and the stray slots are not listed");
+    root_slot(s - 1)[13] ^= 0xFF;
+    root_slot(s - 1)[1] = 0xE9;  // é: no long names outside ASCII yet
+    CHECK(diskfs_init() == 0 && stat_name("broken~1.txt", name) == 0 && strcmp(name, "BROKEN~1.TXT") == 0,
+          "so does a character we cannot show");
+    root_slot(s - 1)[1] = 'B';
+    CHECK(diskfs_init() == 0 && stat_name("broken~1.txt", name) == 0 && strcmp(name, "Broken long name.txt") == 0,
+          "repaired, the long name is back");
 }
 
 static void test_big_clusters(void) {
@@ -588,6 +732,22 @@ static void test_big_clusters(void) {
     // fsck checks the ".." of a moved directory, and a renamed file.
     CHECK(diskfs_mkdir(DISKFS_ROOT, "OTHER") == 0 && diskfs_rename(DISKFS_ROOT, "TREE/LEAF", "OTHER/LEAF") == 0 &&
           diskfs_rename(DISKFS_ROOT, "OTHER/LEAF/F3.TXT", "/F3MOVED.TXT") == 0, "moves on 2 KB clusters");
+    // And long names: a directory, mixed case, the longest, a rename.
+    char longest[256];
+    memset(longest, 'q', 255);
+    longest[255] = 0;
+    memcpy(longest + 250, ".text", 5);
+    CHECK(diskfs_mkdir(DISKFS_ROOT, "My Documents") == 0 &&
+          diskfs_write_file(DISKFS_ROOT, "My Documents/Read me first.txt", "first\n", 6) == 0 &&
+          diskfs_write_file(DISKFS_ROOT, "My Documents/ReadMe.txt", "mixed\n", 6) == 0 &&
+          diskfs_write_file(DISKFS_ROOT, "OTHER/LEAF/lower.txt", "lower\n", 6) == 0 &&
+          diskfs_write_file(DISKFS_ROOT, "OTHER/LEAF/F7.TXT", "", 0) == 0 &&
+          diskfs_rename(DISKFS_ROOT, "OTHER/LEAF/F7.TXT", "OTHER/LEAF/Seven, renamed.txt") == 0 &&
+          diskfs_write_file(DISKFS_ROOT, "My Documents/F", "x", 1) == 0 &&
+          diskfs_rename(DISKFS_ROOT, "My Documents/F", "My Documents/x") == 0, "long names on 2 KB clusters");
+    int md = diskfs_opendir(DISKFS_ROOT, "My Documents");
+    CHECK(diskfs_write_file(md, longest, "longest\n", 8) == 0, "and the longest one");
+    diskfs_unref(md);
 }
 
 static void test_bad_volumes(void) {
@@ -620,6 +780,7 @@ int main(void) {
     test_bad_volumes();
     test_dirs();
     test_rename();
+    test_long_names();
     test_big_clusters();  // last: its image is what fsck checks
 
     FILE* img = fopen("test_disk.img", "wb");
