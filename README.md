@@ -4,10 +4,11 @@ A small 32-bit x86 operating system written from scratch in freestanding
 C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
 FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
-13h. It is on the network too: an Intel e1000 driver, ARP, IPv4 and
-ICMP, enough to answer pings and send them.
+13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP
+and UDP, an address from DHCP, and a DNS resolver, so `ping example.com`
+works.
 
-Current version: **v0.22.0 "Sonar"**. See PROGRESS.md for the history.
+Current version: **v0.23.0 "Switchboard"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -32,7 +33,7 @@ and `fsck.fat -n build/disk.img` both read it.
 
 ## Testing
 
-`make test` runs two suites.
+`make test` runs three suites.
 
 `tests/test_heap_diskfs.c` builds the real kernel heap and filesystem
 code as a 32-bit Linux program, on top of a RAM disk that can be told to
@@ -45,6 +46,15 @@ rules, remounts, the depth limit), a non-default cluster size and
 malformed volumes. At the
 end, fsck.fat checks the image the run left behind.
 
+`tests/test_netmsg.c` builds the DHCP and DNS message code, the parts
+that read bytes off the wire, under AddressSanitizer and UBSan. It
+checks the DHCP client's messages byte by byte and the parser on offers,
+NAKs, bad options and bad domains, then the DNS name rules, query
+encoding and answer parsing: CNAME chains, compression (pointer loops,
+forward pointers, names over 255 bytes), truncation, rcodes, and bytes
+that must be escaped before a terminal sees them. Both parsers then eat
+several hundred thousand mutated messages.
+
 `tests/qemu_test.py` boots the real ISO in QEMU and drives the shell
 over a serial socket. It uses `build/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
@@ -55,15 +65,24 @@ terminal mode, ANSI output (read back from VGA memory through the QEMU
 monitor), an editing session in Octavo, file and directory commands,
 the timer rate,
 the switch into graphics mode and back, reboot persistence and poweroff,
-and `ping` through QEMU's user network. Afterwards it runs fsck.fat and
-mtools against the disk. Then it boots again on a socket network whose
-only other host is `tests/net_peer.py`, which puts raw Ethernet frames on
-the wire: ARP and pings of every size and shape, packets that must be
-ignored (bad checksums, fragments, other addresses, broadcasts, short
-headers), the guest's own pings answered, timed out, refused by a router
-or damaged, and 3000 frames of garbage. Short boots check the other two
-e1000 models and a machine with no card. Pass `--keep`
-to keep the serial log and the disk.
+and the network through QEMU's user network: DHCP at boot, `ping`,
+loopback, UDP sockets (`udptest`), `net static` and `net dhcp`, and
+`host` against `tests/dns_server.py`, a DNS server on the host whose
+names each misbehave in their own way (aliases, loops, SERVFAIL, silence,
+forged answers, truncation, a compression loop, escape codes in names).
+Afterwards it runs fsck.fat and mtools against the disk. Then it boots
+again on a socket network whose only other host is `tests/net_peer.py`,
+which puts raw Ethernet frames on the wire and plays the network's DHCP
+and DNS server. It checks the DHCP messages field by field and a lease's
+whole life (renewing, rebinding, running out, NAKs, lying servers, an
+address set by hand), ARP and pings of every size and shape, packets
+that must be ignored (bad checksums, fragments, other addresses,
+broadcasts, short headers), UDP echoed by a guest program and port
+unreachable for closed ports, the search domain and a second DNS server,
+the guest's own pings answered, timed out, refused by a router or
+damaged, and 4000 frames of garbage. Short boots check the other two
+e1000 models and a machine with no card. Pass `--keep` to keep the
+serial log and the disk.
 
 ## Design in brief
 
@@ -145,14 +164,31 @@ Network: PCI devices are found by scanning configuration space at boot
 space but supervisor only, and runs a 32-buffer receive ring and an
 8-buffer transmit ring. Its interrupt only wakes the `net` kernel task,
 which takes frames off the ring and handles them under one lock, so the
-stack never runs in interrupt context. The address is fixed at
-10.0.2.15/24 with the gateway at 10.0.2.2, which is QEMU's user network.
-ARP learns neighbours from requests aimed at us and asks three times, a
+stack never runs in interrupt context. ARP learns neighbours from requests aimed at us and asks three times, a
 second apart, before giving up; IPv4 checks lengths and checksums and
 drops fragments; ICMP answers echo requests (not broadcast ones) and
 matches replies and routers' unreachable messages to the `ping` syscall
 waiting for them. Round trips are timed in microseconds from the PIT's
-counter.
+counter. Anything sent to 127/8 or the machine's own address goes round
+through the net task without touching the card.
+
+UDP sockets are file descriptors (`socket`, `bind`, `sendto`,
+`recvfrom`; `read` and `write` refuse them). Binding port 0 picks a
+random free port from 49152 up, port 68 is the DHCP client's, each
+socket queues 16 datagrams and drops the rest, and a datagram for a
+closed port gets ICMP port unreachable unless it was a broadcast. The
+DHCP client (RFC 2131) runs in the net task: DISCOVER at boot, renewing
+at T1 straight to the server, rebinding at T2 by broadcast, starting over
+when the lease runs out or on a NAK, which it answers more slowly each
+time. init gives it five seconds before starting the shell. `net static`
+turns it off and sets the address by hand; `net dhcp` starts it again,
+asking for the address DHCP gave last. The DNS resolver is user code
+(`src/programs/lib/dns.c` over `dnsmsg.c`), linked into the programs
+that look names up: it asks each server DHCP named in turn, twice, 2 s
+each, from a random port with a random ID, believes an answer only from
+that server's address and port with that ID and the same question,
+follows up to 8 aliases, and tries a name with no dot under the search
+domain first. Names that come back are escaped before they are printed.
 
 ## Source layout
 
@@ -161,11 +197,11 @@ src/boot       Multiboot header, entry, kernel linker script
 src/kernel     kernel_main, GDT/IDT/interrupts, tasks, syscalls, ELF loader, faults, power
 src/mm         heap, physical frames, paging and checked user copies
 src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000
-src/net        ARP, IPv4 and ICMP (net.c)
+src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
 src/lib        string and printf subset, shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
-src/programs   user programs (the shell among them), their C runtime (lib/) and linker script
+src/programs   user programs (the shell among them), their C library (lib/: runtime, malloc, DNS) and linker script
 tools          mkdisk.py, the FAT16 image builder
 tests          host unit tests, the QEMU integration suite, test programs
 ```
@@ -195,7 +231,10 @@ directory if the target is one), and the `cp` program copies files. Every file a
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
 `/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `date` the clock, `uptime` the
 time since boot and timer ticks, and `faults` the fault log. `pci` lists the PCI devices, and `net` shows
-the network card, the address, traffic counts and the ARP table. `color <name>` sets
+the network card, the address and where it came from, the DNS servers,
+traffic counts, UDP sockets and the ARP table. `net static
+10.0.2.20/24 10.0.2.2 10.0.2.3` sets the address, gateway (or `none`) and
+DNS server by hand, and `net dhcp` goes back to DHCP. `color <name>` sets
 the text colour, and `reboot` and `poweroff` do what they say. `exit`
 ends the shell, and init starts a new one.
 
@@ -207,7 +246,8 @@ Programs on the disk:
 | kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
 | saklas | The command line (the shell). init starts it at boot and again whenever it ends. |
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
-| ping | `ping [-c COUNT] [-s SIZE] [-W MS] ADDRESS`: ICMP echo, a second apart, with round trips and a summary. Addresses only (10.0.2.2), no names yet. |
+| ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
+| host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
 | sleep | `sleep <seconds>`, up to an hour. |
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
 | wc | Counts lines, words and bytes of files, or of its input. |
@@ -252,5 +292,9 @@ one, with no time zone (UTC under QEMU) and no changes for summer time. There is
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and
-mode 13h. The network has a fixed address (no DHCP), no loopback, no
-UDP or TCP yet, and the e1000 is the only card it drives.
+mode 13h. The network has no TCP and no IPv6, so DNS answers too big
+for UDP are an error. The resolver keeps no cache, nothing reads ICMP
+port unreachable for a socket (a dead DNS server is found out by
+timeout), and the DHCP client does not check that nobody else already
+has the address it was given (RFC 5227). The e1000 is the only card it
+drives.

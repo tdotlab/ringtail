@@ -21,6 +21,8 @@ import sys
 import tempfile
 import time
 
+import dns_server
+
 # The prompt carries the current directory: "ringtail:/> ", "ringtail:/My Docs> ".
 PROMPT = rb"ringtail:/[^>\n]*> "
 
@@ -218,13 +220,13 @@ HOST_FILE = False  # whether mtools put a long-named file on the disk
 
 
 def plain(out):
-    """Output without colour codes or surrounding whitespace."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", out).strip()
+    """Output without colour codes, carriage returns or surrounding whitespace."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", out).replace("\r\n", "\n").strip()
 
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.22.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.23.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -253,17 +255,21 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.22.0" in out, out)
+    t.check("and the new shell works", "0.23.0" in out, out)
 
-    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn"]:
+    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
+                 "udptest"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")
     t.check("null data segments cannot hurt a syscall", "worked" in out, out)
 
     # The network, through QEMU's user network: 10.0.2.2 is its gateway
-    # and answers ARP and pings; nobody else on 10.0.2.0/24 does.
-    t.check("finds the network card", "Network: e1000 82540EM 52:54:00:12:34:56, 10.0.2.15" in boot, boot)
+    # and DHCP server, and answers ARP and pings; 10.0.2.3 is its DNS
+    # server; nobody else on 10.0.2.0/24 answers.
+    t.check("finds the network card", "Network: e1000 82540EM 52:54:00:12:34:56\n" in boot, boot)
+    t.check("and gets an address from DHCP before the shell starts",
+            "Network: 10.0.2.15/24, gateway 10.0.2.2, DNS 10.0.2.3 (DHCP)\nType 'help'" in boot, boot)
     out = m.run("pci")
     t.check("pci lists the bus", re.search(r"00:03\.0  8086:100e  Intel ethernet +irq 11", out) and
             "Intel IDE controller" in out, out)
@@ -277,9 +283,11 @@ def tests(m, t):
     t.check("the biggest ping that fits a frame", "1480 bytes from 10.0.2.2" in out, out)
     out = m.run("ping -c 1 -s 0 10.0.2.2")
     t.check("and an empty one", "8 bytes from 10.0.2.2" in out, out)
-    out = m.run("net")
+    out = plain(m.run("net"))
     t.check("net shows the card", "e1000 82540EM (8086:100e) at 00:03.0, irq 11" in out and "link up" in out, out)
-    t.check("the address", "10.0.2.15/24, gateway 10.0.2.2" in out, out)
+    t.check("the address", "Address:  10.0.2.15/24, gateway 10.0.2.2\n" in out, out)
+    t.check("where it came from and for how long", re.search(r"DHCP:     from 10\.0\.2\.2, lease 2[34] h \d+ m left", out), out)
+    t.check("and the DNS server", "DNS:      10.0.2.3\n" in out, out)
     t.check("the traffic", (c := re.search(r"Frames:\s+(\d+) in, (\d+) out", out)) and
             int(c.group(1)) >= 5 and int(c.group(2)) >= 5, out)
     t.check("and the gateway's MAC, learned by ARP", "10.0.2.2 is 52:55:0a:00:02:02" in out, out)
@@ -289,16 +297,25 @@ def tests(m, t):
     t.check("a neighbour nobody answers for is host unreachable", "seq=1: host unreachable" in out and
             "1 sent, 0 received, 100% lost" in out and "[exit status 1]" in out, out)
     t.check("after three ARP requests a second apart", 2.5 < took < 6, "%.2f s" % took)
-    out = m.run("ping -c 1 127.0.0.1")
-    t.check("there is no loopback yet", "host unreachable" in out, out)
+    out = m.run("ping -c 2 127.0.0.1")
+    t.check("loopback answers", "2 sent, 2 received" in out and "64 bytes from 127.0.0.1: seq=2 ttl=64" in out, out)
+    out = m.run("ping -c 1 127.9.9.9")
+    t.check("all of 127/8 is loopback", "1 received" in out, out)
     out = m.run("ping -c 1 10.0.2.15")
-    t.check("so our own address is not reachable either", "host unreachable" in out, out)
+    t.check("and so is our own address", "1 received" in out, out)
+    out = m.run("ping -c 1 localhost")
+    t.check("localhost is 127.0.0.1, with nobody asked",
+            "PING localhost (127.0.0.1): 56 data bytes" in out and "1 received" in out, out)
+    out = m.run("net")
+    t.check("net counts the pings answered and the packets looped",
+            re.search(r"Pings:    [4-9] answered; \d\d packets through loopback", out), out)
     for bad in ["", "-c", "-s 1473 10.0.2.2", "-W 0 10.0.2.2", "-x 10.0.2.2", "10.0.2.2 10.0.2.3"]:
         out = m.run("ping " + bad)
         t.check(f"ping {bad or '(nothing)'} is a usage error", "usage: ping" in out and "[exit status 2]" in out, out)
-    for bad in ["10.0.2", "10.0.2.256", "10.0.2.2.", "localhost", "1..2.3"]:
+    for bad in ["10.0.2", "10.0.2.256", "10.0.2.2.", "1..2.3", "bad_name..com", "a" * 64 + ".com"]:
         out = m.run("ping " + bad)
-        t.check(f"{bad} is not an address", "is not an address" in out and "[exit status 2]" in out, out)
+        t.check(f"{bad[:20]} is neither an address nor a name", f"ping: {bad}: not a valid name" in out and
+                "[exit status 2]" in out, out)
     out = m.run("ping 224.0.0.1")
     t.check("multicast cannot be pinged", "ping: invalid argument" in out, out)
     m.send("ping -c 0 10.0.2.2\r")
@@ -308,6 +325,9 @@ def tests(m, t):
     out = m.run("echo after ping")
     t.check("Ctrl+C stops an endless ping", "after ping" in out, out)
     t.check("pings leave memory as they found it", m.run("mem") == mem_before, mem_before)
+
+    dns_tests(m, t)
+    netconf_tests(m, t)
 
     # The fuzzer throws hostile arguments at every non-blocking system call.
     # The kernel must come through with its heap and its frames intact.
@@ -578,7 +598,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.22.0" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.23.0" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -780,7 +800,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.22.0" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.23.0" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -797,7 +817,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.22.0"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.23.0"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -895,13 +915,136 @@ def tests(m, t):
     t.check("poweroff stops the machine", m.qemu.returncode is not None)
 
 
+def dns_tests(m, t):
+    """host and the resolver, against a DNS server of our own on the
+    host, which the guest reaches as 10.0.2.2 on whatever port it got."""
+    srv = dns_server.Server()
+    try:
+        _dns_tests(m, t, srv)
+    finally:
+        srv.close()
+
+
+def _dns_tests(m, t, srv):
+    mem_before = m.run("mem")
+    host = lambda name, timeout=15: plain(m.run(f"host -p {srv.port} {name} 10.0.2.2", timeout=timeout)) + "\n"
+    out = host("a.test")
+    t.check("host looks a name up", "a.test has address 192.0.2.1\n" in out and "exit status" not in out, out)
+    q = srv.zone.asked[-1] if srv.zone.asked else None
+    t.check("asking for recursion", q and q[1] == dns_server.A and q[3] & 0x0100, str(q))
+    out = host("multi.test")
+    t.check("every address once, and only class IN", out.count("has address") == 3 and
+            all(f"multi.test has address 192.0.2.{i}\n" in out for i in (1, 2, 3)), out)
+    for name in ("alias.test", "lone.test"):
+        n = len(srv.zone.asked)
+        out = host(name)
+        t.check(f"an alias is followed ({name})", f"{name} is an alias for a.test.\na.test has address 192.0.2.1\n" in out, out)
+    t.check("and asked about again when the answer stops at it", len(srv.zone.asked) - n == 2 and
+            srv.zone.asked[-1][0] == "a.test", str(srv.zone.asked[-3:]))
+    out = host("shout.test")
+    t.check("an answer in other letters is the same name", "shout.test has address 192.0.2.4" in out, out)
+    out = host("forged.test")
+    t.check("an answer with the wrong ID or question is not believed", "forged.test has address 192.0.2.9\n" in out and
+            "6.6.6.6" not in out, out)
+    out = host("evil.test")
+    t.check("bytes a terminal would act on are printed escaped",
+            "evil.test is an alias for e\\027\\0912Jx.test." in out and "\x1b[2J" not in out, repr(out))
+    for name, why in [("nope.test", "no such name"), ("noaddr.test", "the name has no address"),
+                      ("fail.test", "the DNS server failed to find out"), ("refused.test", "the DNS server refused to answer"),
+                      ("loop.test", "too many aliases"), ("big.test", "the answer is too big for UDP, and there is no TCP"),
+                      ("ptrloop.test", "the DNS server's answer made no sense"),
+                      ("lies.test", "the DNS server's answer made no sense")]:
+        out = host(name)
+        t.check(f"{name}: {why}", f"host: {name}: {why}\n" in out and "[exit status 1]" in out, out)
+    start = time.time()
+    out = host("late.test")
+    took = time.time() - start
+    t.check("an unanswered question is asked again", "late.test has address 192.0.2.5" in out and 1.5 < took < 3.5,
+            "%.2f s: %s" % (took, out))
+    start = time.time()
+    out = host("slow.test")
+    took = time.time() - start
+    t.check("and given up on after two tries of 2 s", "host: slow.test: no answer from the DNS server" in out and
+            3.5 < took < 6, "%.2f s: %s" % (took, out))
+    ids = [q[2] for q in srv.zone.asked]
+    t.check("each question gets its own ID; a retry keeps it", srv.zone.asked[-1][2] == srv.zone.asked[-2][2] and
+            len(set(ids)) >= len(ids) - 4, str(ids))
+
+    out = host("192.0.2.1")
+    t.check("an address is looked up backwards", "1.2.0.192.in-addr.arpa domain name pointer a.test.\n" in out, out)
+    out = host("192.0.2.3")
+    t.check("through an alias, odd bytes and all",
+            "3.2.0.192.in-addr.arpa is an alias for 3.0\\04726.2.0.192.in-addr.arpa.\n"
+            "3.0\\04726.2.0.192.in-addr.arpa domain name pointer c.test.\n" in out, out)
+    out = host("192.0.2.2")
+    t.check("an address with no name", "2.2.0.192.in-addr.arpa has no name\n" in out and "[exit status 1]" in out, out)
+    out = host("9.9.9.9")
+    t.check("an address nobody knows", "host: 9.9.9.9: no such name" in out, out)
+
+    n = len(srv.zone.asked)
+    out = plain(m.run("host localhost")) + "\n"
+    t.check("localhost needs no server", "localhost has address 127.0.0.1\n" in out, out)
+    out = plain(m.run("host 127.0.0.1")) + "\n"
+    t.check("nor does its address", "1.0.0.127.in-addr.arpa domain name pointer localhost.\n" in out, out)
+    t.check("none of which asked ours", len(srv.zone.asked) == n, str(srv.zone.asked[n:]))
+    for bad in ["", "-p", "-p 0 a.test", "-p 65536 a.test", "-x a.test", "a b c"]:
+        out = m.run("host " + bad)
+        t.check(f"host {bad or '(nothing)'} is a usage error", "usage: host" in out and "[exit status 2]" in out, out)
+    out = m.run("host a.test nameserver")
+    t.check("the server must be an address", "the server must be an address" in out and "[exit status 2]" in out, out)
+    out = m.run("host bad..name")
+    t.check("and the name a name", "host: bad..name: not a valid name" in out and "[exit status 1]" in out, out)
+
+    out = m.run("net")
+    t.check("the resolver closes its sockets", "UDP:      0 sockets" in out, out)
+    t.check("and leaves memory as it found it", m.run("mem") == mem_before, mem_before)
+
+
+def netconf_tests(m, t):
+    """Setting the address by hand, and going back to DHCP."""
+    out = m.run("net static 10.0.2.20/24 10.0.2.2 10.0.2.3")
+    t.check("net static says nothing when it works", plain(out) == "", repr(out))
+    out = plain(m.run("net"))
+    t.check("and the address is the one given", "Address:  10.0.2.20/24, gateway 10.0.2.2\n" in out and
+            "DHCP:     off (the address was set by hand)" in out and "DNS:      10.0.2.3\n" in out, out)
+    out = m.run("ping -c 1 10.0.2.2", timeout=20)
+    t.check("and it works", "1 received" in out, out)
+    out = m.run("net static 10.0.2.21/24 none")
+    out = m.run("net")
+    t.check("none means no gateway, and no DNS server given means none",
+            "10.0.2.21/24, no gateway" in out and "DNS:      none" in out, out)
+    out = m.run("ping -c 1 8.8.8.8")
+    t.check("so nothing off the network can be reached", "seq=1: network unreachable" in out, out)
+    out = plain(m.run("host a.test"))
+    t.check("and no name looked up", "host: a.test: no DNS server to ask (see net)" in out, out)
+    for bad in ["10.0.2.255/24", "10.0.2.0/24", "10.0.2.20/24 10.0.3.1", "10.0.2.20/24 10.0.2.20",
+                "224.0.0.1/24", "10.0.2.20/24 10.0.2.2 224.0.0.1"]:
+        out = m.run("net static " + bad)
+        t.check(f"net static {bad} does not fit", "net: those addresses do not fit together" in out, out)
+    for bad in ["10.0.2.20", "10.0.2.20/31", "10.0.2.20/0", "10.0.2.20/24 x", "10.0.2.20/24 10.0.2.2 10.0.2.3 more",
+                "frob", "dhcp now"]:
+        out = m.run("net " + ("static " + bad if not bad.startswith(("frob", "dhcp")) else bad))
+        t.check(f"net {bad} is a usage error", "Usage: net" in out, out)
+    t.check("and none of those changed anything", "10.0.2.21/24, no gateway" in m.run("net"))
+    out = m.run("net dhcp", timeout=20)
+    t.check("net dhcp asks again, for the address DHCP gave before",
+            "Asking DHCP... 10.0.2.15/24, gateway 10.0.2.2 from 10.0.2.2" in out, out)
+    out = plain(m.run("net"))
+    t.check("and is back where it started", "Address:  10.0.2.15/24, gateway 10.0.2.2\n" in out and
+            "DHCP:     from 10.0.2.2" in out and "DNS:      10.0.2.3\n" in out, out)
+
+
 def short_boots(iso, disk, work, t):
     """The other e1000 models QEMU has, and a machine with no card at all."""
     for model, banner, script in [
             ("e1000-82545em", "Network: e1000 82545EM", [("ping -c 1 10.0.2.2", "1 received")]),
             ("e1000-82544gc", "Network: e1000 82544GC", [("ping -c 1 10.0.2.2", "1 received")]),
             ("none", "Network: no card", [("net", "No network card."),
-                                          ("ping 10.0.2.2", "ping: network is down")])]:
+                                          ("ping 10.0.2.2", "ping: network is down"),
+                                          ("ping -c 1 127.0.0.1", "1 received"),
+                                          ("run udptest", "udptest: all"),
+                                          ("host a.test", "no DNS server to ask"),
+                                          ("net dhcp", "net: network is down")])]:
         sub = os.path.join(work, model)
         os.mkdir(sub)
         shutil.copy(disk, os.path.join(sub, "disk.img"))

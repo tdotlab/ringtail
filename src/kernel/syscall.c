@@ -285,6 +285,71 @@ static int sys_ping(uint32_t up, uint32_t b, uint32_t c) {
     return copy_to_user((void*)up, &p, sizeof p);
 }
 
+// ---- UDP and the network's configuration (udp.c, net.c) ----
+
+static int sys_socket(uint32_t type, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    return file_socket((int)type);
+}
+
+static int sys_bind(uint32_t fd, uint32_t port, uint32_t c) {
+    (void)c;
+    struct socket* s;
+    int r = file_get_socket((int)fd, &s);
+    return r ? r : udp_bind(s, (int)port);
+}
+
+static int sys_sendto(uint32_t fd, uint32_t umsg, uint32_t c) {
+    (void)c;
+    struct socket* s;
+    udp_msg_t m;
+    int r = file_get_socket((int)fd, &s);
+    if (r) return r;
+    if (copy_from_user(&m, (const void*)umsg, sizeof m)) return -EFAULT;
+    if (m.len < 0) return -EINVAL;
+    if (m.len > UDP_MAX_SIZE) return -EMSGSIZE;
+    uint8_t* buf = kmalloc(UDP_MAX_SIZE);
+    if (!buf) return -ENOMEM;
+    r = copy_from_user(buf, m.buf, (uint32_t)m.len) ? -EFAULT : udp_sendto(s, m.ip, m.port, buf, (uint32_t)m.len);
+    kfree(buf);
+    return r;
+}
+
+static int sys_recvfrom(uint32_t fd, uint32_t umsg, uint32_t c) {
+    (void)c;
+    struct socket* s;
+    udp_msg_t m;
+    int r = file_get_socket((int)fd, &s);
+    if (r) return r;
+    if (copy_from_user(&m, (const void*)umsg, sizeof m)) return -EFAULT;
+    if (m.len < 0) return -EINVAL;
+    uint32_t size = MIN((uint32_t)m.len, UDP_MAX_SIZE);
+    // Checked before a datagram is taken, so a bad buffer loses nothing.
+    if (user_range_ok((uint32_t)m.buf, size, 1) || user_range_ok(umsg, sizeof m, 1)) return -EFAULT;
+    uint8_t* buf = kmalloc(UDP_MAX_SIZE);
+    if (!buf) return -ENOMEM;
+    uint32_t ip;
+    int port;
+    r = udp_recvfrom(s, &ip, &port, buf, size, m.timeout_ms);
+    if (r >= 0) {
+        m.ip = ip;
+        m.port = port;
+        if (copy_to_user(m.buf, buf, (uint32_t)r) || copy_to_user((void*)umsg, &m, sizeof m)) r = -EFAULT;
+    }
+    kfree(buf);
+    return r;
+}
+
+static int sys_netconf(uint32_t op, uint32_t uc, uint32_t c) {
+    (void)c;
+    netconf_t n;
+    if (op == NETCONF_STATIC && copy_from_user(&n, (const void*)uc, sizeof n)) return -EFAULT;
+    if (op == NETCONF_GET && user_range_ok(uc, sizeof n, 1)) return -EFAULT;
+    int r = net_conf((int)op, &n);
+    if (!r && op == NETCONF_GET && copy_to_user((void*)uc, &n, sizeof n)) r = -EFAULT;
+    return r;
+}
+
 // ---- Files and tasks ----
 
 static int sys_seek(uint32_t fd, uint32_t off, uint32_t whence) {
@@ -528,6 +593,11 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_TIME] = sys_time,
     [SYS_POLL] = sys_poll,
     [SYS_PING] = sys_ping,
+    [SYS_SOCKET] = sys_socket,
+    [SYS_BIND] = sys_bind,
+    [SYS_SENDTO] = sys_sendto,
+    [SYS_RECVFROM] = sys_recvfrom,
+    [SYS_NETCONF] = sys_netconf,
 };
 
 void syscall_handle(regs_t* r) {

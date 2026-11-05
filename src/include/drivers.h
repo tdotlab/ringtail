@@ -10,6 +10,9 @@
 #define TIMER_HZ 100
 void timer_init(void);
 uint32_t timer_ticks(void);
+// The same count without the wrap after 497 days, for deadlines that
+// can be that far off (DHCP leases).
+uint64_t timer_ticks64(void);
 // Time since boot in microseconds, from the tick count and the PIT's
 // own counter. Wraps after about 71 minutes, so only differences mean
 // anything.

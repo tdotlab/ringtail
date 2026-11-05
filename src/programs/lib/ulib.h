@@ -38,6 +38,11 @@ static inline int sys_stat(const char* path, dirent_t* d) { return SC2(SYS_STAT,
 static inline int sys_time(rtc_time_t* t) { return SC1(SYS_TIME, t); }
 static inline int sys_poll(uint32_t ticks) { return SC1(SYS_POLL, ticks); }
 static inline int sys_ping(ping_t* p) { return SC1(SYS_PING, p); }
+static inline int sys_socket(int type) { return SC1(SYS_SOCKET, type); }
+static inline int sys_bind(int fd, int port) { return SC2(SYS_BIND, fd, port); }
+static inline int sys_sendto(int fd, const udp_msg_t* m) { return SC2(SYS_SENDTO, fd, m); }
+static inline int sys_recvfrom(int fd, udp_msg_t* m) { return SC2(SYS_RECVFROM, fd, m); }
+static inline int sys_netconf(int op, netconf_t* c) { return SC2(SYS_NETCONF, op, c); }
 static inline int sys_seek(int fd, int32_t off, int whence) { return SC3(SYS_SEEK, fd, off, whence); }
 static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS_LIST, index, buf, size); }
 static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }
@@ -73,6 +78,15 @@ static inline int sys_gfx_font(uint8_t* buf) { return SC1(SYS_GFX_FONT, buf); }
 static inline int sys_mouse_state(mouse_state_t* m) { return SC1(SYS_MOUSE_STATE, m); }
 static inline int sys_key_get(void) { return SC0(SYS_KEY_GET); }
 static inline int sys_wait(int x, int y, int buttons) { return SC3(SYS_WAIT, x, y, buttons); }
+
+// printf("addr " IPV4_FMT "\n", IPV4_ARGS(ip)) for an address in host order.
+#define IPV4_FMT "%u.%u.%u.%u"
+#define IPV4_ARGS(ip) (unsigned)(ip) >> 24, ((unsigned)(ip) >> 16) & 255, ((unsigned)(ip) >> 8) & 255, (unsigned)(ip) & 255
+static inline int mask_bits(unsigned m) {
+    int bits = 0;
+    for (; m & 0x80000000u; m <<= 1) bits++;
+    return bits;
+}
 
 // Memory. sbrk returns the old break, or NULL when memory runs out.
 void* sbrk(int incr);

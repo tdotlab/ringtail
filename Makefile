@@ -33,8 +33,12 @@ KERNEL_ASM := src/boot/boot.asm src/kernel/isr.asm src/kernel/switch.asm
 KERNEL_OBJS := $(KERNEL_C:%.c=$(BUILD)/k/%.o) $(KERNEL_ASM:%.asm=$(BUILD)/k/%.o)
 KERNEL := $(BUILD)/ringtail.bin
 
+# The user library is an archive, so a program gets only the parts it
+# uses (the resolver stays out of hello). crt0 goes in every program.
 ULIB_C := $(wildcard src/programs/lib/*.c) src/lib/string.c src/lib/printf.c
 ULIB_OBJS := $(ULIB_C:%.c=$(BUILD)/u/%.o)
+CRT0 := $(BUILD)/u/src/programs/lib/crt0.o
+ULIB := $(BUILD)/u/libu.a
 PROGRAMS := $(notdir $(basename $(wildcard src/programs/*.c)))
 PROGRAM_BINS := $(PROGRAMS:%=$(BUILD)/programs/%)
 # Programs that exist to test the kernel. They go on a separate test
@@ -70,13 +74,17 @@ $(BUILD)/u/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-$(BUILD)/programs/%: $(BUILD)/u/src/programs/%.o $(ULIB_OBJS) src/programs/user.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(ULIB_OBJS) -lgcc
+$(ULIB): $(filter-out $(CRT0),$(ULIB_OBJS))
+	rm -f $@
+	ar rcs $@ $^
 
-$(BUILD)/test-programs/%: $(BUILD)/u/tests/programs/%.o $(ULIB_OBJS) src/programs/user.ld
+$(BUILD)/programs/%: $(BUILD)/u/src/programs/%.o $(CRT0) $(ULIB) src/programs/user.ld
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(ULIB_OBJS) -lgcc
+	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(CRT0) $(ULIB) -lgcc
+
+$(BUILD)/test-programs/%: $(BUILD)/u/tests/programs/%.o $(CRT0) $(ULIB) src/programs/user.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(CRT0) $(ULIB) -lgcc
 
 # Disk names are the program names in uppercase (DOS 8.3).
 upper = $(shell echo $(1) | tr a-z A-Z)

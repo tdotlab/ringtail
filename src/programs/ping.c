@@ -1,33 +1,17 @@
-// ping [-c COUNT] [-s SIZE] [-W MS] ADDRESS: send ICMP echo requests
+// ping [-c COUNT] [-s SIZE] [-W MS] HOST: send ICMP echo requests
 // a second apart and report each reply's round trip, then a summary.
-// COUNT 0 means until Ctrl+C. There is no DNS yet, so ADDRESS is a
-// dotted IPv4 address like 10.0.2.2.
+// COUNT 0 means until Ctrl+C. HOST is a dotted address like 10.0.2.2
+// or a name, looked up in DNS; a name with several addresses gets the
+// first.
 #include "ulib.h"
+#include "dns.h"
 
 static int usage(void) {
-    dprintf(STDERR_FILENO, "usage: ping [-c COUNT] [-s SIZE] [-W MS] ADDRESS\n"
+    dprintf(STDERR_FILENO, "usage: ping [-c COUNT] [-s SIZE] [-W MS] HOST\n"
                            "  COUNT  how many (default 4, 0 for until Ctrl+C)\n"
                            "  SIZE   data bytes per ping (default 56, at most %d)\n"
                            "  MS     how long to wait for each reply (default 1000)\n", PING_MAX_SIZE);
     return 2;
-}
-
-static int parse_ip(const char* s, unsigned* out) {
-    unsigned ip = 0;
-    for (int part = 0; part < 4; part++) {
-        if (*s < '0' || *s > '9') return -1;
-        unsigned v = 0;
-        int digits = 0;
-        while (*s >= '0' && *s <= '9') {
-            v = v * 10 + (unsigned)(*s++ - '0');
-            if (++digits > 3 || v > 255) return -1;
-        }
-        ip = ip << 8 | v;
-        if (part < 3 && *s++ != '.') return -1;
-    }
-    if (*s) return -1;
-    *out = ip;
-    return 0;
 }
 
 static void print_ms(unsigned us) { printf("%u.%03u", us / 1000, us % 1000); }
@@ -45,13 +29,20 @@ int main(int argc, char** argv) {
         if (++i == argc || parse_uint(argv[i], opt)) return usage();
     }
     if (!host || size > PING_MAX_SIZE || wait_ms < 1 || wait_ms > 10000) return usage();
-    unsigned ip;
-    if (parse_ip(host, &ip)) {
-        dprintf(STDERR_FILENO, "ping: %s is not an address like 10.0.2.2 (there are no names yet)\n", host);
+    dns_result_t r;
+    int found = dns_lookup(host, 0, 0, &r);
+    if (found == -EINTR) return 1;
+    if (found < 0) {
+        dprintf(STDERR_FILENO, "ping: %s: %s\n", host, dns_strerror(found));
         return 2;
     }
+    unsigned ip = r.a.addrs[0];
+    host = r.name;  // as found: "printer" may have become printer.lan
+    char addr[16];
+    snprintf(addr, sizeof addr, IPV4_FMT, IPV4_ARGS(ip));
 
-    printf("PING %s: %u data bytes\n", host, size);
+    if (strcmp(host, addr)) printf("PING %s (%s): %u data bytes\n", host, addr, size);
+    else printf("PING %s: %u data bytes\n", host, size);
     unsigned sent = 0, received = 0, min = 0xFFFFFFFFu, max = 0, total = 0;
     for (uint32_t seq = 1; count == 0 || seq <= count; seq++) {
         ping_t p = { ip, (int)seq, (int)size, (int)wait_ms, 0, 0 };
@@ -68,7 +59,7 @@ int main(int argc, char** argv) {
             total += us;
             if (us < min) min = us;
             if (us > max) max = us;
-            printf("%u bytes from %s: seq=%u ttl=%d time=", size + 8, host, seq, p.ttl);
+            printf("%u bytes from %s: seq=%u ttl=%d time=", size + 8, addr, seq, p.ttl);
             print_ms(us);
             printf(" ms\n");
         } else {

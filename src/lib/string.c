@@ -102,6 +102,24 @@ int parse_uint(const char* s, uint32_t* out) {
     return 0;
 }
 
+int parse_ipv4(const char* s, uint32_t* out) {
+    uint32_t ip = 0;
+    for (int part = 0; part < 4; part++) {
+        if (*s < '0' || *s > '9') return -1;
+        uint32_t v = 0;
+        int digits = 0;
+        while (*s >= '0' && *s <= '9') {
+            v = v * 10 + (uint32_t)(*s++ - '0');
+            if (++digits > 3 || v > 255) return -1;
+        }
+        ip = ip << 8 | v;
+        if (part < 3 && *s++ != '.') return -1;
+    }
+    if (*s) return -1;
+    *out = ip;
+    return 0;
+}
+
 const char* strerror(int err) {
     if (err < 0) err = -err;
     switch (err) {
@@ -130,6 +148,10 @@ const char* strerror(int err) {
     case ENAMETOOLONG: return "name too long";
     case ENOSYS: return "no such system call";
     case ENOTEMPTY: return "directory not empty";
+    case ENOTSOCK: return "not a socket";
+    case EMSGSIZE: return "message too long";
+    case EADDRINUSE: return "address in use";
+    case EADDRNOTAVAIL: return "no network address yet";
     case ENETDOWN: return "network is down";
     case ENETUNREACH: return "network unreachable";
     case ETIMEDOUT: return "timed out";

@@ -36,8 +36,18 @@ typedef struct netdev {
 void net_init(void);
 // For drivers' interrupt handlers: frames have arrived.
 void net_rx_notify(void);
-// SYS_PING, with p already copied into the kernel.
+// From init: wait a little for DHCP and report the address.
+void net_boot_wait(void);
+// The system calls, with their structs already copied into the kernel.
 int net_ping(ping_t* p);
+int net_conf(int op, netconf_t* c);
+struct socket;
+struct socket* udp_socket_new(void);
+void udp_socket_ref(struct socket* s);
+void udp_socket_unref(struct socket* s);
+int udp_bind(struct socket* s, int port);
+int udp_sendto(struct socket* s, uint32_t ip, int port, const uint8_t* kbuf, uint32_t len);
+int udp_recvfrom(struct socket* s, uint32_t* ip, int* port, uint8_t* kbuf, uint32_t size, int timeout_ms);
 void net_format(sbuf_t* sb);  // KINFO_NET
 
 #define IPV4(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))

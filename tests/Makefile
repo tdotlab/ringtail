@@ -1,5 +1,7 @@
 # Host tests: the kernel heap and FAT16 code built as a 32-bit Linux
-# program against a RAM disk. Needs gcc -m32 (gcc-multilib). The
+# program against a RAM disk, and the DHCP and DNS message code (the
+# parts that read bytes off the wire) under the address and
+# undefined-behaviour sanitizers. Needs gcc -m32 (gcc-multilib). The
 # disk image the run leaves behind is checked with fsck.fat when it
 # is installed.
 CC = gcc
@@ -7,16 +9,24 @@ CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fno-builtin -I../src/include
 TEST = test_heap_diskfs
 SRCS = test_heap_diskfs.c ../src/mm/heap.c ../src/fs/diskfs.c ../src/lib/string.c
 
-all: $(TEST)
+NETMSG_SRCS = test_netmsg.c ../src/net/dhcpmsg.c ../src/programs/lib/dnsmsg.c
+NETMSG_CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
+	-I../src/include -I../src/net -I../src/programs/lib
+
+all: $(TEST) test_netmsg
 
 $(TEST): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
 
-run: $(TEST)
+test_netmsg: $(NETMSG_SRCS) ../src/net/dhcpmsg.h ../src/programs/lib/dnsmsg.h
+	$(CC) $(NETMSG_CFLAGS) -o $@ $(NETMSG_SRCS)
+
+run: $(TEST) test_netmsg
 	./$(TEST) || qemu-i386 ./$(TEST)
+	./test_netmsg
 	@if command -v fsck.fat >/dev/null; then \
 		fsck.fat -n test_disk.img >/dev/null && echo "fsck.fat: disk image is clean"; \
 	else echo "fsck.fat not installed, skipping the image check"; fi
 
 clean:
-	rm -f $(TEST) test_disk.img
+	rm -f $(TEST) test_netmsg test_disk.img

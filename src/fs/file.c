@@ -12,6 +12,7 @@
 #include "lib.h"
 #include "mm.h"
 #include "ringtail/abi.h"
+#include "net.h"
 
 #define BOUNCE 4096u
 
@@ -33,11 +34,13 @@ int file_fd_ok(int fd) {
 static void fd_ref(const fd_t* f) {
     if (f->kind == FD_FILE) diskfs_ref(f->node);
     else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_ref(f->pipe, f->kind == FD_PIPE_W);
+    else if (f->kind == FD_SOCKET) udp_socket_ref(f->sock);
 }
 
 static void fd_release(fd_t* f) {
     if (f->kind == FD_FILE) diskfs_unref(f->node);
     else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_unref(f->pipe, f->kind == FD_PIPE_W);
+    else if (f->kind == FD_SOCKET) udp_socket_unref(f->sock);
     f->kind = FD_NONE;
 }
 
@@ -142,6 +145,28 @@ int file_pipe(int* ufds) {
     return 0;
 }
 
+int file_socket(int type) {
+    if (type != SOCK_DGRAM) return -EINVAL;
+    int fd = free_fd(0);
+    if (fd < 0) return fd;
+    struct socket* sk = udp_socket_new();
+    if (!sk) return -ENFILE;
+    fd_t* f = &current->fds[fd];
+    memset(f, 0, sizeof *f);
+    f->kind = FD_SOCKET;
+    f->flags = O_RDWR;
+    f->sock = sk;
+    return fd;
+}
+
+int file_get_socket(int fd, struct socket** s) {
+    fd_t* f = get_fd(fd);
+    if (!f) return -EBADF;
+    if (f->kind != FD_SOCKET) return -ENOTSOCK;
+    *s = f->sock;
+    return 0;
+}
+
 int file_dup2(int oldfd, int newfd) {
     fd_t* f = get_fd(oldfd);
     if (!f || newfd < 0 || newfd >= MAX_FDS) return -EBADF;
@@ -166,6 +191,7 @@ static int console_read(void* ubuf, uint32_t len) {
 int file_read(int fd, void* ubuf, uint32_t len) {
     fd_t* f = get_fd(fd);
     if (!f || (f->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
+    if (f->kind == FD_SOCKET) return -EINVAL;  // sockets take SYS_RECVFROM
     if (len == 0) return 0;
     if (f->kind == FD_CONSOLE_IN) return console_read(ubuf, len);
     if (f->kind != FD_FILE && f->kind != FD_PIPE_R) return -EBADF;
@@ -199,6 +225,7 @@ int file_read(int fd, void* ubuf, uint32_t len) {
 int file_write(int fd, const void* ubuf, uint32_t len) {
     fd_t* f = get_fd(fd);
     if (!f || (f->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
+    if (f->kind == FD_SOCKET) return -EINVAL;  // and SYS_SENDTO
     if (len == 0) return 0;
     if (user_range_ok((uint32_t)ubuf, len, 0)) return -EFAULT;
 

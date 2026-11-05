@@ -10,9 +10,11 @@
 #define PIT_DIVISOR 11932  // 1193182 Hz / 100, rounded
 
 static volatile uint32_t ticks;
+static volatile uint64_t ticks64;
 
 static void timer_irq(void) {
     ticks++;
+    ticks64++;
     need_resched = 1;  // one tick is one time slice
 }
 
@@ -26,6 +28,13 @@ void timer_init(void) {
 }
 
 uint32_t timer_ticks(void) { return ticks; }
+
+uint64_t timer_ticks64(void) {
+    uint32_t f = irq_save();  // two words, so not while the timer adds one
+    uint64_t t = ticks64;
+    irq_restore(f);
+    return t;
+}
 
 uint32_t timer_micros(void) {
     uint32_t f = irq_save();

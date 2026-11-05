@@ -9,6 +9,7 @@
 #include "task.h"
 #include "tty.h"
 #include "fs.h"
+#include "net.h"
 
 #define SHELL "SAKLAS"
 
@@ -18,6 +19,7 @@ void init_main(void* arg) {
         kprintf_color(COLOR_ERROR, "No disk, so no shell to start. Nothing more to do.\n");
         for (;;) task_sleep_ticks(0xFFFFFFFFu);
     }
+    net_boot_wait();
     for (;;) {
         const char* argv[] = { "saklas" };
         uint32_t start = timer_ticks();

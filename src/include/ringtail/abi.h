@@ -55,7 +55,12 @@
 #define SYS_TIME        45  // (rtc_time_t*)           -> 0; the clock, as the CMOS keeps it
 #define SYS_POLL        46  // (ticks)                 -> 1 once terminal input is waiting, 0 if the ticks run out first
 #define SYS_PING        47  // (ping_t*)               -> 0 with the reply's rtt_us and ttl filled in
-#define NUM_SYSCALLS    48
+#define SYS_SOCKET      48  // (SOCK_DGRAM)            -> fd of a new UDP socket
+#define SYS_BIND        49  // (fd, port)              -> the port bound; 0 picks a free one
+#define SYS_SENDTO      50  // (fd, udp_msg_t*)        -> bytes sent
+#define SYS_RECVFROM    51  // (fd, udp_msg_t*)        -> bytes received; ip and port say from where
+#define SYS_NETCONF     52  // (NETCONF_*, netconf_t*) -> 0
+#define NUM_SYSCALLS    53
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -174,6 +179,10 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 #define ENAMETOOLONG  36
 #define ENOSYS        38
 #define ENOTEMPTY     39
+#define ENOTSOCK      88
+#define EMSGSIZE      90
+#define EADDRINUSE    98
+#define EADDRNOTAVAIL 99
 #define ENETDOWN      100
 #define ENETUNREACH   101
 #define ETIMEDOUT     110
@@ -199,5 +208,47 @@ typedef struct { int x, y, buttons; } mouse_state_t;
 // came back changed, -EINTR if the caller was killed while waiting.
 #define PING_MAX_SIZE 1472
 typedef struct { unsigned ip; int seq, size, timeout_ms; int rtt_us, ttl; } ping_t;
+
+// UDP sockets. A socket is a descriptor like a file's: close() frees
+// it, and spawned programs and dup2 share it. SYS_BIND gives it a port
+// (1 to 65535, or 0 for a free one from 49152 up) and returns the port;
+// SYS_SENDTO binds an unbound socket to a free port first. Port 68 is
+// the kernel's DHCP client's.
+//
+// SYS_SENDTO sends len bytes (0 to UDP_MAX_SIZE) from buf to ip:port;
+// ip 255.255.255.255 broadcasts on the local network. SYS_RECVFROM
+// takes the oldest datagram waiting, copying at most len bytes of it to
+// buf (the rest is lost) and filling in ip and port with its sender.
+// It waits timeout_ms for one: 0 returns -EAGAIN at once when none is
+// there, and a negative timeout waits for ever. Datagrams to 127.0.0.1
+// or to the machine's own address go round inside it. A socket holds
+// at most 16 datagrams waiting; more are dropped.
+//
+// Errors: -ENOTSOCK for a descriptor that is not a socket, -EADDRINUSE
+// for a port someone else has, -EMSGSIZE, -ENETDOWN without a card or
+// a link, -EADDRNOTAVAIL before the machine has an address, and
+// -EHOSTUNREACH or -ENETUNREACH as for ping; -ETIMEDOUT when the wait
+// runs out, -EINTR if the caller was killed while waiting.
+#define SOCK_DGRAM 2
+#define UDP_MAX_SIZE 1472
+typedef struct { unsigned ip; int port; void* buf; int len; int timeout_ms; } udp_msg_t;
+
+// SYS_NETCONF. NETCONF_GET fills in the configuration. NETCONF_STATIC
+// sets ip, mask, gw and dns by hand (gw and dns may be 0 for none) and
+// stops the DHCP client; NETCONF_DHCP drops the address and starts it.
+// mode says which of the two is in charge; with DHCP, ip is 0 until a
+// server has answered, lease is the seconds left (-1 for no end) and
+// server the DHCP server. domain is the DNS domain a server gave, for
+// trying names without a dot in it ("printer" as printer.lan).
+#define NETCONF_GET    0
+#define NETCONF_STATIC 1
+#define NETCONF_DHCP   2
+typedef struct {
+    unsigned ip, mask, gw, dns[2];
+    int mode;  // NETCONF_STATIC or NETCONF_DHCP
+    int lease;
+    unsigned server;
+    char domain[64];
+} netconf_t;
 
 #endif

@@ -52,15 +52,17 @@ int diskfs_name_ok(const char* name);
 
 // ---- File descriptors ----
 
-typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W } fd_kind_t;
+typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W, FD_SOCKET } fd_kind_t;
 
 struct pipe;
+struct socket;
 typedef struct {
     fd_kind_t kind;
     int flags;
     int node;            // FD_FILE
     uint32_t offset;     // FD_FILE
     struct pipe* pipe;   // FD_PIPE_R, FD_PIPE_W
+    struct socket* sock; // FD_SOCKET
 } fd_t;
 
 // Pipes (pipe.c). pipe_new returns a pipe with one reader and one
@@ -87,6 +89,9 @@ int file_write(int fd, const void* ubuf, uint32_t len);
 int file_seek(int fd, int32_t off, int whence);
 int file_pipe(int* ufds);            // ufds[0] reads, ufds[1] writes
 int file_dup2(int oldfd, int newfd); // newfd becomes a copy of oldfd
+int file_socket(int type);           // a new UDP socket's descriptor
+// The socket behind fd: 0 with *s set, -EBADF or -ENOTSOCK.
+int file_get_socket(int fd, struct socket** s);
 // Path calls for the current task, relative to its directory. These
 // take kernel strings; the syscalls copy them in first.
 int file_chdir(const char* path);

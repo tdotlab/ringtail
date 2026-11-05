@@ -371,7 +371,60 @@ static void cmd_faults(cmd_t* c) { (void)c; show_kinfo(KINFO_FAULTS); }
 static void cmd_mem(cmd_t* c) { (void)c; show_kinfo(KINFO_MEM); }
 static void cmd_heap(cmd_t* c) { (void)c; show_kinfo(KINFO_HEAP); }
 static void cmd_mmap(cmd_t* c) { (void)c; show_kinfo(KINFO_MMAP); }
-static void cmd_net(cmd_t* c) { (void)c; show_kinfo(KINFO_NET); }
+// net: what the network is doing. net dhcp: get an address from DHCP
+// (again). net static ADDR/BITS [GATEWAY|none] [DNS]: set one by hand.
+static int net_usage(void) {
+    dprintf(STDERR_FILENO, RED "Usage: net, net dhcp, or net static <addr>/<bits> [<gateway>|none] [<dns>]" NORM "\n");
+    return 0;
+}
+
+static void net_static(cmd_t* c) {
+    netconf_t n;
+    memset(&n, 0, sizeof n);
+    char addr[20];
+    const char* slash = strchr(c->argv[2], '/');
+    uint32_t bits;
+    if (!slash || slash - c->argv[2] >= (int)sizeof addr || parse_uint(slash + 1, &bits) || bits < 1 || bits > 30) {
+        net_usage();
+        return;
+    }
+    memcpy(addr, c->argv[2], (size_t)(slash - c->argv[2]));
+    addr[slash - c->argv[2]] = 0;
+    n.mask = 0xFFFFFFFFu << (32 - bits);
+    int bad = parse_ipv4(addr, &n.ip);
+    if (c->argc > 3 && strcmp(c->argv[3], "none")) bad |= parse_ipv4(c->argv[3], &n.gw);
+    if (c->argc > 4) bad |= parse_ipv4(c->argv[4], &n.dns[0]);
+    if (bad || c->argc > 5) { net_usage(); return; }
+    int r = sys_netconf(NETCONF_STATIC, &n);
+    if (r == -EINVAL) dprintf(STDERR_FILENO, RED "net: those addresses do not fit together" NORM "\n");
+    else if (r < 0) err("net", r);
+}
+
+static void net_dhcp(void) {
+    int r = sys_netconf(NETCONF_DHCP, 0);
+    if (r < 0) { err("net", r); return; }
+    print("Asking DHCP... ");
+    // Up to 10 seconds; a key pressed stops the wait, not the asking.
+    uint32_t start = sys_ticks();
+    while (sys_ticks() - start < 1000) {
+        netconf_t n;
+        if (sys_netconf(NETCONF_GET, &n) == 0 && n.ip) {
+            printf(IPV4_FMT "/%d", IPV4_ARGS(n.ip), mask_bits(n.mask));
+            if (n.gw) printf(", gateway " IPV4_FMT, IPV4_ARGS(n.gw));
+            printf(" from " IPV4_FMT "\n", IPV4_ARGS(n.server));
+            return;
+        }
+        if (sys_poll(10) == 1) break;
+    }
+    puts("no answer yet; it keeps asking (see `net`)");
+}
+
+static void cmd_net(cmd_t* c) {
+    if (c->argc == 1) show_kinfo(KINFO_NET);
+    else if (!strcmp(c->argv[1], "dhcp") && c->argc == 2) net_dhcp();
+    else if (!strcmp(c->argv[1], "static") && c->argc >= 3) net_static(c);
+    else net_usage();
+}
 static void cmd_pci(cmd_t* c) { (void)c; show_kinfo(KINFO_PCI); }
 
 static void cmd_echo(cmd_t* c) {
@@ -591,7 +644,7 @@ static const builtin_t builtins[] = {
     { "heap", 0, "", "kernel heap details", cmd_heap },
     { "mmap", 0, "", "boot memory map", cmd_mmap },
     { "pci", 0, "", "PCI devices", cmd_pci },
-    { "net", 0, "", "network card, address and traffic", cmd_net },
+    { "net", 0, "[dhcp|static ...]", "network card, address and traffic; set the address", cmd_net },
     { "uptime", 0, "", "time since boot", cmd_uptime },
     { "date", 0, "", "the date and time", cmd_date },
     { "color", 1, "<name>", "set the text color", cmd_color },

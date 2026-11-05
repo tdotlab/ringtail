@@ -115,12 +115,16 @@ static const call_t calls[] = {
     { SYS_TICKS, "ticks" }, { SYS_GETPID, "getpid" }, { SYS_JOIN, "join" }, { SYS_SBRK, "sbrk" },
     { SYS_TTY_MODE, "tty_mode" }, { SYS_TTY_FG, "tty_fg" }, { SYS_WAIT_JOB, "wait_job" },
     { SYS_KILL, "kill" }, { SYS_READDIR, "readdir" }, { SYS_KINFO, "kinfo" }, { SYS_SET_COLOR, "set_color" },
-    { SYS_DUP2, "dup2" }, { SYS_POLL, "poll" }, { SYS_SLEEP, "sleep" }, { 0, "unknown" },
+    { SYS_DUP2, "dup2" }, { SYS_POLL, "poll" }, { SYS_SLEEP, "sleep" }, { SYS_SOCKET, "socket" },
+    { SYS_BIND, "bind" }, { SYS_SENDTO, "sendto" }, { SYS_RECVFROM, "recvfrom" }, { SYS_NETCONF, "netconf" },
+    { 0, "unknown" },
 };
 #define NCALLS ((int)(sizeof calls / sizeof calls[0]))
 
 static uint32_t stat_ok[64], stat_fault[64], stat_other[64];
 static int gfx_on;  // the fuzzer asked for the display and has not let go
+static int last_sock = -1;  // the socket calls mostly go to the newest socket, or they would never find one
+static int last_port = 9;   // and sends now and then to the port it was bound to, so something arrives
 
 // Words at scratch+128 that look like the argument structs: small
 // coordinates and sizes, a valid string, now and then something nasty.
@@ -146,6 +150,10 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     if (force_gfx) n = (int[]){ SYS_GFX_PIXEL, SYS_GFX_CLEAR, SYS_GFX_RECT, SYS_GFX_LINE, SYS_GFX_TEXT,
                                 SYS_GFX_BLIT, SYS_GFX_FONT, SYS_MOUSE_STATE, SYS_KEY_GET }[rnd() % 9];
     uint32_t a = value(), b = value(), d = value();
+    if ((n == SYS_BIND || n == SYS_SENDTO || n == SYS_RECVFROM) && last_sock < 0) {
+        last_sock = sys_socket(SOCK_DGRAM);
+        if (rnd() & 1) last_port = sys_bind(last_sock, 0);
+    }
 
     switch (n) {
     case SYS_READ: case SYS_WRITE: case SYS_SEEK: case SYS_CLOSE: case SYS_DUP2:
@@ -190,6 +198,39 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         break;
     case SYS_KINFO: a = rnd() % 10; if (rnd() % 2) d = rnd() % 5000; break;
     case SYS_SET_COLOR: a = rnd() % 300; break;
+    case SYS_SOCKET: if (rnd() % 4) a = SOCK_DGRAM; break;
+    case SYS_BIND:
+        a = rnd() % 4 ? (uint32_t)last_sock : fd_value();
+        if (rnd() & 1) b = rnd() % 4 ? 0 : rnd() % 70000;
+        break;
+    case SYS_SENDTO: case SYS_RECVFROM: {
+        // Only to this machine or to addresses that must be refused, so
+        // no junk leaves it, and never a wait that could last: a random
+        // timeout could be "for ever".
+        static const uint32_t ips[] = { 0x7F000001, 0x7F000002, 0x7FFFFFFF, 0, 0xE0000001, 0xF0000001 };
+        udp_msg_t* m = (udp_msg_t*)(scratch + 512);
+        m->ip = ips[rnd() % (sizeof ips / sizeof ips[0])];
+        m->port = rnd() % 3 == 0 ? last_port : rnd() % 2 ? (int)(rnd() % 70000) - 10 : (int)interesting();
+        m->buf = (void*)pointer();
+        // What is sent may be received into scratch and then printed, so
+        // it comes from scratch too, for the reason the print calls do.
+        uint32_t sc = (uint32_t)scratch, p = (uint32_t)m->buf;
+        if (n == SYS_SENDTO && p >= USER_BASE_ADDR && p < USER_TOP_ADDR && (p < sc || p >= sc + sizeof scratch))
+            m->buf = scratch + rnd() % 4000;
+        m->len = rnd() % 3 ? (int)(rnd() % 2000) : (int)interesting();
+        m->timeout_ms = (int)(rnd() % 3);
+        a = rnd() % 4 ? (uint32_t)last_sock : fd_value();
+        b = rnd() % 8 ? (uint32_t)m : (rnd() & 1) ? 0 : 0xC0000000u + (rnd() & 0xFFF);
+        break;
+    }
+    case SYS_NETCONF:
+        // Reading the settings goes anywhere; a change only where it must
+        // fail, or the machine would lose its address in the middle.
+        a = rnd() % 3;
+        if (a == NETCONF_GET) b = pointer();
+        else if (a == NETCONF_STATIC) b = (rnd() & 1) ? 0 : 0xC0000000u + (rnd() & 0xFFF);
+        else a = 3 + rnd() % 100;
+        break;
     default: break;
     }
 
@@ -207,8 +248,10 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         // program's own code and strings (the word FAIL among them) on the
         // console, where a test reading the output would take it for a result.
         uint32_t sc = (uint32_t)scratch;
-        if (*ptr >= USER_BASE_ADDR && *ptr < USER_TOP_ADDR && (*ptr < sc || *ptr >= sc + sizeof scratch) && *len)
+        if (*ptr >= USER_BASE_ADDR && *ptr < USER_TOP_ADDR && (*ptr < sc || *ptr >= sc + sizeof scratch) && *len) {
             *ptr = sc + (rnd() % 4000);
+            *len %= 300;  // the pointer may have been one of the "must fail" ones above, with a huge length
+        }
     }
 
     if (iter >= verbose_from) out("  #%u %s(%x, %x, %x)\n", iter, c->name, a, b, d);
@@ -219,6 +262,8 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         else if (r == -EFAULT) stat_fault[n]++;
         else stat_other[n]++;
     }
+    if (n == SYS_SOCKET && r >= 0) last_sock = r;
+    if (n == SYS_BIND && r > 0) last_port = r;
     if (n == SYS_GFX_BEGIN && r == 0) gfx_on = 1;
     if (n == SYS_GFX_END && r == 0) gfx_on = 0;
     // A killed or interrupted call is not a kernel bug, but this program
@@ -229,6 +274,7 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
 
 static void drop_extra_fds(void) {
     for (int fd = 3; fd < MAX_FDS; fd++) sys_close(fd);
+    last_sock = -1;
 }
 
 // Empty a directory and remove it, however deep the fuzzer nested things.
@@ -250,9 +296,52 @@ static void rm_rf(const char* path, int depth) {
     }
 }
 
+// What was in the root before the fuzzer started, so that whatever
+// it made there by wandering out of /FZ can be found and removed, even
+// under a name read from some random pointer.
+#define ROOT_MAX 128
+static char root_before[ROOT_MAX][NAME_MAX + 1];
+static int nroot = -1;  // -1: the root could not be read in full
+
+static void snapshot_root(void) {
+    int cursor = 0, n = 0;
+    dirent_t e;
+    while (sys_readdir("/", &cursor, &e) == 1) {
+        if (n == ROOT_MAX) return;
+        strlcpy(root_before[n++], e.name, sizeof root_before[0]);
+    }
+    nroot = n;
+}
+
+static int was_there(const char* name) {
+    for (int i = 0; i < nroot; i++)
+        if (!strcmp(root_before[i], name)) return 1;
+    return 0;
+}
+
+static int remove_strays(void) {
+    if (nroot < 0) return 0;
+    int removed = 0;
+    for (int guard = 0; guard < 64; guard++) {
+        int cursor = 0, found = 0;
+        dirent_t e;
+        while (sys_readdir("/", &cursor, &e) == 1)
+            if (!was_there(e.name)) { found = 1; break; }
+        if (!found) break;
+        char p[PATH_MAX];
+        snprintf(p, sizeof p, "/%s", e.name);
+        if (e.flags & DIRENT_DIR) {
+            rm_rf(p, 0);
+            if (sys_rmdir(p) < 0) break;
+        } else if (sys_delete(p) < 0) break;
+        removed++;
+    }
+    return removed;
+}
+
 // Remove everything the fuzzer made. Its working directory is /FZ, but
 // chdir("..") lets it wander into the root, so the root names it uses
-// are cleaned up too. None of them is a real file.
+// are cleaned up too, and anything else new there.
 static void clean_scratch(void) {
     // dup2 may have pointed 0, 1 or 2 at a scratch file, and a file that is
     // open cannot be deleted. Output goes through sys_print, not these.
@@ -303,6 +392,7 @@ int main(int argc, char** argv) {
     // Reading the console would wait for a line; put a file in its place.
     int f = sys_open("WELCOME.TXT", O_RDONLY);
     if (f >= 0) { sys_dup2(f, 0); sys_close(f); }
+    snapshot_root();
     sys_mkdir("/FZ");
     sys_chdir("/FZ");
 
@@ -329,6 +419,8 @@ int main(int argc, char** argv) {
 
     drop_extra_fds();
     clean_scratch();
+    int strays = remove_strays();
+    if (strays) out("fuzz: removed %d stray names from the root\n", strays);
     int heap_after = heap_free_kb();
 
     if (verbose_from != 0xFFFFFFFF || iters >= 1000) {

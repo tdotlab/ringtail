@@ -25,6 +25,9 @@ const char* strerror(int err);
 // Parses an unsigned decimal or 0x-prefixed hex number. Returns 0 on
 // success, -1 on an empty string, a stray character or overflow.
 int parse_uint(const char* s, uint32_t* out);
+// A dotted IPv4 address, exactly four numbers 0-255 ("10.0.2.2"), in
+// host order. 0, or -1 for anything else.
+int parse_ipv4(const char* s, uint32_t* out);
 
 // printf subset: %d %i %u %x %X %p %s %c %%, with optional '0' flag,
 // field width and the 'l' length modifier (ignored, int is 32 bits).

@@ -2284,3 +2284,93 @@ lying lengths but good checksums, every ICMP type) fast enough to overrun
 the ring, after which it still answers, the shell works and no memory is
 gone. Short boots cover the 82545EM, the 82544GC and no card at all.
 Host 244, QEMU 293.
+
+## v0.23.0 "Switchboard"
+
+The network, second milestone: UDP, an address from DHCP, and names.
+`ping example.com` works.
+
+- **Loopback**: anything sent to 127/8 or the machine's own address is
+  queued back to the net task instead of the card, and comes in as if it
+  had arrived. It works with no card at all. `net` counts it.
+- **UDP sockets** (`src/net/udp.c`): a new descriptor kind, made by
+  SYS_SOCKET (48) and used with SYS_BIND (49), SYS_SENDTO (50) and
+  SYS_RECVFROM (51), which take a `udp_msg_t` (address, port, buffer,
+  length, timeout in ms: 0 polls, -1 waits). 32 sockets in all, 16
+  datagrams queued on each and the rest dropped and counted. Bind 0, or
+  sending unbound, takes a random free port from 49152 up; 68 belongs to
+  the DHCP client. A datagram for a closed port gets ICMP port
+  unreachable, unless it was a broadcast. Checksums are checked when the
+  sender gave one and always sent. `dup2` and spawn share a socket; the
+  last close frees its port. New errnos: ENOTSOCK, EMSGSIZE, EADDRINUSE,
+  EADDRNOTAVAIL.
+- **DHCP client** (`src/net/dhcp.c`, the message code in `dhcpmsg.c`):
+  RFC 2131 in the net task. DISCOVER with backoff from 4 to 64 s, the
+  first good offer taken, four tries at REQUEST, then BOUND until T1;
+  RENEWING asks the server straight, REBINDING asks everyone, and a lease
+  that runs out or a NAK starts over (NAKs make it wait 2, 4, 8... s). It
+  asks for its last leased address back. Mask, router, DNS servers,
+  domain, lease, T1 and T2 are taken, each checked (a router off the
+  network or a domain with odd bytes is ignored). Times are 64-bit ticks.
+  init waits up to five seconds for a lease before starting the shell and
+  prints it: `Network: 10.0.2.15/24, gateway 10.0.2.2, DNS 10.0.2.3 (DHCP)`.
+- **SYS_NETCONF** (52): GET reads the address, mask, gateway, DNS
+  servers, domain and DHCP state; STATIC sets them by hand, checking they
+  fit together, and stops DHCP; DHCP starts it again. In Saklas: `net`
+  shows it all, `net static ADDR/BITS [GW|none] [DNS]` and `net dhcp`.
+- **The user library is an archive** (`libu.a`), so a program links only
+  what it calls. Every program shrank; hello went to 14736 bytes.
+- **DNS resolver** (`src/programs/lib/dns.c` over `dnsmsg.c`): A and PTR
+  questions with RD set, to each configured server in turn, two tries of
+  2 s with the same ID. An answer counts only from that server's address
+  and port, with the query's ID and the same question; others are
+  ignored. Aliases are followed through one answer and across new
+  questions, at most 8. A name with no dot is tried under the search
+  domain first. A dotted address is its own answer, `localhost` and 127/8
+  need no server, and a number that is not an address is a bad name.
+  Names in answers are escaped (`\DDD`, `\.`) before anyone prints them.
+  No cache and no TCP: a truncated answer is an error.
+- **host** (`src/programs/host.c`): `host [-p PORT] NAME [SERVER]`, in the
+  words BIND's host uses. **ping** takes names now.
+- **udptest** (`tests/programs/udptest.c`): 38 checks over loopback, and
+  `udptest echo PORT N` for the peer tests.
+
+Wrinkles. The fuzzer left a directory called `670766666666` in the root,
+which the next test's `ls` tripped over. It had wandered out of its
+scratch directory with `chdir("..")` and called `mkdir` on a pointer that
+happened to land in the font's bitmap; the new socket calls had shifted
+its random sequence onto that path. The kernel did as it was told. The
+fuzzer now lists the root before it starts and removes anything new
+afterwards. It also printed megabytes of zeros once: when its print
+guard moved a wild pointer into its scratch buffer, it kept the wild
+length. `net dhcp` after `net static` asked the DHCP server for the
+typed-in address (slirp grants whatever it is asked for), which is not
+what a lease renewal means; it now asks for the last address DHCP gave.
+A mutation check on the DNS parser showed the rule that compression
+pointers only jump backwards is the only thing stopping a pure pointer
+loop, so the host tests hold it to that.
+
+Tests. Host: `tests/test_netmsg.c`, the DHCP and DNS message code under
+ASan and UBSan, with exact-size copies so a one-byte overread is caught,
+plus 200000 mutated DHCP messages and 300000 DNS ones. QEMU, user
+network: the DHCP banner and `net` lines, loopback pings, `ping
+localhost`, names refused as invalid, `udptest`, and `host` against
+`tests/dns_server.py` on the host (addresses, duplicates and other
+classes dropped, aliases in one answer and across two, capitals, forged
+IDs and questions, escape codes, NXDOMAIN, no data, SERVFAIL, REFUSED,
+alias loops, truncation, a compression loop, a short A record, a retry
+after 2 s and giving up after 4, reverse lookups through an RFC 2317
+alias), sockets closed and memory unchanged after, then `net static`
+with its errors and `net dhcp`. The socket calls joined the fuzzer.
+Peer network: `net_peer.py` is now the DHCP and DNS server. It checks
+DISCOVER and REQUEST field by field, renewal at T1 to the server, rebind
+at T2 by broadcast with the same xid, a lease that runs out (address and
+DNS gone, the old address asked for again), NAKs with growing waits,
+five offers and an ACK that must be passed over, and an address set by
+hand. UDP: port unreachable quoting the datagram, silence for broadcasts,
+bad checksums and lying lengths, and `udptest echo` returning a normal,
+an unchecked, a 1472-byte and an empty datagram. DNS: the search domain,
+a trailing dot, `ping printer`, answers from the wrong address or port
+ignored, random source ports, and a failing first server. The garbage
+flood is 4000 frames now, with UDP and DHCP-shaped ones among them.
+Host 244 + 82, QEMU 419.

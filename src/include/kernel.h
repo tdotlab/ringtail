@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.22.0"
-#define RINGTAIL_CODENAME "Sonar"
+#define RINGTAIL_VERSION "0.23.0"
+#define RINGTAIL_CODENAME "Switchboard"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08
