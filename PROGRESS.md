@@ -2133,3 +2133,34 @@ killed mid-poll. For gauge: the snapshot's numbers, task rows and count,
 piping, the usage error, the live screen (title colours, bars, footer),
 refreshing by itself, pause and resume, the rate keys, and q and Ctrl+C
 leaving a cooked terminal. Host 244, QEMU 215.
+
+## A syscall fuzzer
+
+No version bump: it is a test, `tests/programs/fuzz.c`. It runs inside
+the guest, deterministic for a given seed (`fuzz [seed [calls [verbose-from]]]`),
+and calls every non-blocking system call with hostile arguments: kernel
+addresses, read-only code, pointers that straddle a page or wrap past
+4 GB, huge lengths, bad descriptors and flags, awkward paths (renaming
+a directory into itself, `..`, a name past PATH_MAX). A second phase
+does the same to the graphics calls while it holds the display. The
+oracle is crude on purpose: the kernel must not panic or hang, and the
+kernel heap must come back to where it started. The QEMU suite runs
+three seeds and then checks `mem` is unchanged and that its scratch
+directory is gone; fsck at the end covers the filesystem.
+
+Result: 39 seeds of about 6000 calls each found nothing. That is only
+worth something if the fuzzer can see bugs, so it was checked against
+two deliberately broken kernels, both reverted: dropping the wrap-around
+test in `user_range_ok` (a kernel panic on the first seed) and removing
+a `kfree` in `sys_kinfo` (a heap-loss failure on seed 1).
+
+Left out of the random mix because they block or end the program: exit,
+power, join, wait_job, kill and tty_fg on real tasks, reading the console,
+pipe, and spawning real programs. Those are covered by their own tests
+only.
+
+Two things the fuzzer taught about itself: it must close every
+descriptor before cleaning up (an open file cannot be deleted, so a
+stray dup2 left its scratch directory behind), and its own verdict must
+not use the check() counters, since a legitimate stray write can land
+on them. Host 244, QEMU 220.
