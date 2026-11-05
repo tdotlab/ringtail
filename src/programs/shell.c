@@ -72,20 +72,43 @@ static int getbyte(void) {
     return (uint8_t)inbuf[in_pos++];
 }
 
-enum { K_UP = 0x100, K_DOWN, K_OTHER };
+enum { K_UP = 0x100, K_DOWN, K_LEFT, K_RIGHT, K_HOME, K_END, K_DEL, K_WLEFT, K_WRIGHT, K_OTHER };
 
-// One key: a byte, or an arrow decoded from its escape sequence.
-// Other sequences, and Alt+key (ESC then the key), are swallowed.
+// One key: a byte, or a cursor key decoded from its escape sequence
+// (arrows, Home, End, Delete, and Ctrl+Left/Right or Alt+B/F for a
+// word at a time). Other sequences are swallowed.
 static int getkey(void) {
     int c = getbyte();
     if (c != 0x1B) return c;
     c = getbyte();
+    if (c == 'b') return K_WLEFT;   // Alt+B and Alt+F
+    if (c == 'f') return K_WRIGHT;
     if (c != '[' && c != 'O') return c < 0 ? -1 : K_OTHER;
-    int final;
-    do final = getbyte(); while (final >= 0 && !(final >= 0x40 && final <= 0x7E));
-    if (final == 'A') return K_UP;
-    if (final == 'B') return K_DOWN;
-    return final < 0 ? -1 : K_OTHER;
+    int param = 0, mod = 0, field = 0, final;
+    for (;;) {  // ESC [ param ; modifier final
+        final = getbyte();
+        if (final < 0) return -1;
+        if (final >= '0' && final <= '9') {
+            if (field == 0) param = param * 10 + final - '0';
+            else if (field == 1) mod = mod * 10 + final - '0';
+        } else if (final == ';') {
+            field++;
+        } else if (final >= 0x40 && final <= 0x7E) {
+            break;
+        }
+    }
+    int ctrl = mod > 1 && ((mod - 1) & 4);
+    switch (final) {
+    case 'A': return K_UP;
+    case 'B': return K_DOWN;
+    case 'C': return ctrl ? K_WRIGHT : K_RIGHT;
+    case 'D': return ctrl ? K_WLEFT : K_LEFT;
+    case 'H': return K_HOME;
+    case 'F': return K_END;
+    case '~':
+        return param == 1 || param == 7 ? K_HOME : param == 4 || param == 8 ? K_END : param == 3 ? K_DEL : K_OTHER;
+    }
+    return K_OTHER;
 }
 
 // ---- Line editor ----
@@ -111,66 +134,137 @@ static void prompt(void) {
 
 static int complete(char* buf, int n);  // Tab, defined after the built-ins
 
+// Move the cursor left n cells. A line may wrap; the console's
+// backspace goes back across the wrap.
+static void back(int n) {
+    char tmp[LINE_MAX];
+    while (n > 0) {
+        int k = n < (int)sizeof tmp ? n : (int)sizeof tmp;
+        memset(tmp, '\b', (size_t)k);
+        out(tmp, k);
+        n -= k;
+    }
+}
+
+// After an edit: rewrite buf[from..n), blank the `extra` cells the line
+// no longer covers, and put the cursor at pos. The cursor is at the
+// edit point on the way in.
+static void repaint(const char* buf, int from, int n, int extra, int pos) {
+    char tmp[LINE_MAX];
+    out(buf + from, n - from);
+    memset(tmp, ' ', sizeof tmp);
+    for (int k = extra; k > 0; k -= (int)sizeof tmp) out(tmp, k < (int)sizeof tmp ? k : (int)sizeof tmp);
+    back(n + extra - pos);
+}
+
+// Where the cursor ends up after one word left or right of pos.
+static int word_left(const char* buf, int pos) {
+    while (pos > 0 && buf[pos - 1] == ' ') pos--;
+    while (pos > 0 && buf[pos - 1] != ' ') pos--;
+    return pos;
+}
+
+static int word_right(const char* buf, int pos, int n) {
+    while (pos < n && buf[pos] != ' ') pos++;
+    while (pos < n && buf[pos] == ' ') pos++;
+    return pos;
+}
+
 // Returns the line length, -1 if the line was cancelled, -2 when the
-// terminal is gone.
+// terminal is gone. The cursor can be anywhere in the line: pos is
+// where it is and n is how long the line is.
 static int read_line(char* buf) {
     sys_tty_mode(TTY_RAW | TTY_NOSIG);
-    int n = 0;
+    int n = 0, pos = 0;
     int browse = hist_count;  // history entry shown; hist_count is the line being typed
     for (;;) {
         int c = getkey();
         if (c < 0) return -2;
-        if (c == '\n' || c == '\r') {
+        int target = pos;  // set by the keys that only move the cursor
+        switch (c) {
+        case '\n': case '\r':
             print("\n");
             buf[n] = 0;
             return n;
-        }
-        if (c == 0x03) {  // Ctrl+C
+        case 0x03:  // Ctrl+C
+            out(buf + pos, n - pos);
             print("^C\n");
             return -1;
-        }
-        if (c == 0x0C) {  // Ctrl+L
+        case 0x0C:  // Ctrl+L
             print("\x1b[2J\x1b[H");
             prompt();
             out(buf, n);
+            back(n - pos);
             continue;
-        }
-        if (c == 0x7F || c == '\b') {
-            if (n > 0) { n--; erase(1); }
+        case 0x7F: case '\b':  // the character before the cursor
+            if (pos > 0) {
+                memmove(buf + pos - 1, buf + pos, (size_t)(n - pos));
+                pos--, n--;
+                back(1);
+                repaint(buf, pos, n, 1, pos);
+            }
             continue;
-        }
-        if (c == 0x15) {  // Ctrl+U: the whole line
+        case K_DEL:  // the character under it
+            if (pos < n) {
+                memmove(buf + pos, buf + pos + 1, (size_t)(n - pos - 1));
+                n--;
+                repaint(buf, pos, n, 1, pos);
+            }
+            continue;
+        case 0x15:  // Ctrl+U: the whole line
+            out(buf + pos, n - pos);
             erase(n);
-            n = 0;
+            n = pos = 0;
+            continue;
+        case 0x0B:  // Ctrl+K: from the cursor to the end
+            repaint(buf, pos, pos, n - pos, pos);
+            n = pos;
+            continue;
+        case 0x17: {  // Ctrl+W, Ctrl+Backspace: the word before the cursor
+            int k = word_left(buf, pos), cut = pos - k;
+            memmove(buf + k, buf + pos, (size_t)(n - pos));
+            n -= cut;
+            back(cut);
+            pos = k;
+            repaint(buf, pos, n, cut, pos);
             continue;
         }
-        if (c == 0x17) {  // Ctrl+W, Ctrl+Backspace: the word before the cursor
-            int k = n;
-            while (k > 0 && buf[k - 1] == ' ') k--;
-            while (k > 0 && buf[k - 1] != ' ') k--;
-            erase(n - k);
-            n = k;
-            continue;
-        }
-        if (c == K_UP || c == K_DOWN) {
+        case K_UP: case K_DOWN: {
             int oldest = hist_count > HISTORY ? hist_count - HISTORY : 0;
             int next = browse + (c == K_UP ? -1 : 1);
             if (next < oldest || next > hist_count) continue;
             browse = next;
+            out(buf + pos, n - pos);
             erase(n);
             if (browse == hist_count) n = 0;
             else n = (int)strlcpy(buf, history[browse % HISTORY], LINE_MAX);
             out(buf, n);
+            pos = n;
             continue;
         }
-        if (c == '\t') {
+        case '\t':  // completion works on the end of the line
+            out(buf + pos, n - pos);
             n = complete(buf, n);
+            pos = n;
+            continue;
+        case K_LEFT: case 0x02: target = pos > 0 ? pos - 1 : 0; break;
+        case K_RIGHT: case 0x06: target = pos < n ? pos + 1 : n; break;
+        case K_HOME: case 0x01: target = 0; break;
+        case K_END: case 0x05: target = n; break;
+        case K_WLEFT: target = word_left(buf, pos); break;
+        case K_WRIGHT: target = word_right(buf, pos, n); break;
+        default:
+            if (c >= 0x20 && c < 0x7F && n < LINE_MAX - 1) {  // insert at the cursor
+                memmove(buf + pos + 1, buf + pos, (size_t)(n - pos));
+                buf[pos++] = (char)c;
+                n++;
+                repaint(buf, pos - 1, n, 0, pos);
+            }
             continue;
         }
-        if (c >= 0x20 && c < 0x7F && n < LINE_MAX - 1) {
-            buf[n++] = (char)c;
-            out(&buf[n - 1], 1);
-        }
+        if (target < pos) back(pos - target);
+        else out(buf + pos, target - pos);
+        pos = target;
     }
 }
 

@@ -97,6 +97,33 @@ class Machine:
         first_nl = out.find("\n")
         return out[first_nl + 1:] if first_nl >= 0 else ""
 
+    def edit(self, keys):
+        """Send keys without Enter and return what the line then looks
+        like and where the cursor is, by replaying the bytes the shell
+        wrote onto a one-line screen (backspace moves left, characters
+        overwrite)."""
+        def settle():
+            quiet = 0
+            while quiet < 3:
+                before = len(self.buf)
+                self._fill(0.1)
+                quiet = quiet + 1 if len(self.buf) == before else 0
+        settle()  # the tail of the last prompt
+        self.buf = b""
+        self.send(keys)
+        settle()
+        cells, col = [], 0
+        for b in re.sub(rb"\x1b\[[0-9;]*[A-Za-z]", b"", self.buf):  # the prompt's colours
+            if b == 0x08:
+                col = max(col - 1, 0)
+            elif 0x20 <= b < 0x7F:
+                while len(cells) <= col:
+                    cells.append(" ")
+                cells[col] = chr(b)
+                col += 1
+        self.buf = b""
+        return "".join(cells).rstrip(), col
+
     def monitor_cmd(self, cmd):
         """Run a monitor command and return what the monitor printed,
         reading until its next "(qemu)" prompt."""
@@ -193,7 +220,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.19.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.20.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -222,7 +249,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.19.0" in out, out)
+    t.check("and the new shell works", "0.20.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
         out = m.run("run " + prog, timeout=30)
@@ -489,7 +516,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.19.0" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.20.0" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -515,6 +542,44 @@ def tests(m, t):
     for f in ("Alpha One.txt", "alpha two.txt", "Beta.txt"):
         m.run('rm "Tab Test/%s"' % f)
     m.run('rmdir "Tab Test"')
+
+    # Editing in the middle of a line. "echo " is five characters.
+    LEFT, RIGHT, HOME, END, DEL = "\x1b[D", "\x1b[C", "\x1b[H", "\x1b[F", "\x1b[3~"
+    CLEFT, CRIGHT = "\x1b[1;5D", "\x1b[1;5C"
+    cases = [
+        ("insert in the middle", "echo helo" + LEFT + "l", "echo hello", 9, "hello"),
+        ("Home and Right", "echo b" + HOME + RIGHT * 5 + "a", "echo ab", 6, "ab"),
+        ("Delete", "echo abc" + LEFT * 2 + DEL, "echo ac", 6, "ac"),
+        ("Backspace mid-line", "echo abc" + LEFT + "\x7f", "echo ac", 6, "ac"),
+        ("End", "echo abc" + HOME + END + "d", "echo abcd", 9, "abcd"),
+        ("Delete at the end does nothing", "echo ab" + DEL, "echo ab", 7, "ab"),
+        ("Left at the start stops", "echo a" + HOME + LEFT * 3 + "x", "xecho a", 1, None),
+        ("Ctrl+Left by word", "echo one two" + CLEFT * 2 + "x", "echo xone two", 6, "xone two"),
+        ("Ctrl+Right by word", "echo one two" + HOME + CRIGHT * 2 + "x", "echo one xtwo", 10, "one xtwo"),
+        ("Ctrl+K kills to the end", "echo abc def" + CLEFT + "\x0b", "echo abc", 9, "abc"),
+        ("Ctrl+W mid-line", "echo abc def" + CLEFT + "\x17", "echo def", 5, "def"),
+        ("Ctrl+A and Ctrl+E", "echo abc\x01\x05d", "echo abcd", 9, "abcd"),
+    ]
+    for name, keys, shown, col, result in cases:
+        text, c = m.edit(keys)
+        t.check("line editor, %s: display" % name, text == shown and c == col, "%r col %d" % (text, c))
+        m.send("\r")
+        out = plain(m.expect(PROMPT, 5))
+        if result is not None:
+            t.check("line editor, %s: result" % name, result in out.replace("\r", "").split("\n"), out)
+
+    # A line longer than the screen is wide, edited across the wrap, as
+    # the VGA memory shows it.
+    long = "echo " + "a" * 85
+    m.edit(long + LEFT * 20 + "Z" + DEL + DEL)
+    rows = [m.screen_row(r)[0] for r in range(25)]
+    start = next((i for i in reversed(range(25)) if rows[i].startswith("ringtail:/> echo")), None)
+    shown = "".join(rows[start:start + 2]).rstrip() if start is not None else ""
+    want = "ringtail:/> echo " + "a" * 65 + "Z" + "a" * 18
+    t.check("editing across a screen wrap redraws correctly", shown == want, shown)
+    m.send("\r")
+    out = plain(m.expect(PROMPT, 5))
+    t.check("and the wrapped line runs as edited", "a" * 65 + "Z" + "a" * 18 in out, out)
 
     # The clock and file timestamps. QEMU's RTC starts on the host's UTC.
     out = plain(m.run("date"))

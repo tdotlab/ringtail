@@ -2066,3 +2066,24 @@ Tests: 15 new host checks (stamps on create, write, truncate, replace,
 mkdir, readdir, rename; unstamped entries; raw created/accessed fields)
 and 4 QEMU checks (date against the host's UTC, ls on a new file, the
 image's files, and mdir reading the guest's stamps). Host 244, QEMU 163.
+
+## v0.20.0 "Cursor"
+
+A cursor in the shell's line editor. Shell only; no kernel changes.
+
+- Left, Right, Home, End and Delete move or edit anywhere in the line;
+  typing inserts at the cursor and Backspace deletes before it.
+  Ctrl+Left/Right and Alt+B/F go a word at a time. Ctrl+A/E/B/F match
+  Home/End/Left/Right. Ctrl+W deletes the word before the cursor,
+  Ctrl+K from the cursor to the end, Ctrl+U the whole line.
+- getkey decodes `ESC [ param ; modifier final` properly (and the
+  `ESC [ 1 ~` / `4 ~` / `ESC O H` spellings other terminals send).
+- Edits repaint only the text after the cursor, blank what the line no
+  longer covers and step back with backspaces, which the console
+  carries across a wrapped line. Up/Down and Tab jump to the end of
+  the line first; completion still works on the end only.
+
+Tests: 24 QEMU checks. They replay the serial output onto a one-line
+screen model and check the text and cursor column after each edit, run
+the edited line, and read the VGA memory for a line wrapped across two
+rows. (The model caught a wrong expectation of mine, not a shell bug.)

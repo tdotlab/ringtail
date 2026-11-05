@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.19.0 "Timekeeper"**. See PROGRESS.md for the history.
+Current version: **v0.20.0 "Cursor"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -145,8 +145,11 @@ tests          host unit tests, the QEMU integration suite, test programs
 ## Using it
 
 Type `help` at the `ringtail:/>` prompt (it shows the current directory) for the command list. The editor
-keeps the last 10 lines (Up and Down), Ctrl+C cancels a line or kills the
-foreground program, and Ctrl+L clears the screen. Tab completes commands,
+keeps the last 10 lines (Up and Down). Left, Right, Home, End, Delete and
+Backspace work anywhere in the line, Ctrl+Left/Right (or Alt+B/F) jump a
+word, and Ctrl+A/E/B/F do what Home/End/Left/Right do. Ctrl+W deletes the word before the cursor, Ctrl+K the rest of
+the line and Ctrl+U the whole line. Ctrl+C cancels a line or kills the
+foreground program, and Ctrl+L clears the screen. Tab (which works on the end of the line) completes commands,
 programs and paths, ignoring case and quoting names with spaces; a second
 Tab with several matches lists them.
 
