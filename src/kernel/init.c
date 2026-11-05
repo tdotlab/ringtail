@@ -30,6 +30,7 @@ void init_main(void* arg) {
         tty_set_foreground(id);
         int status = task_join(id);
         task_wait_job(id);
+        tty_set_foreground(current->job);  // clears up after a shell that died in raw mode
         kprintf_color(COLOR_DIM, "[the shell ended (status %d); starting a new one]\n", status);
         // A shell that dies at once would otherwise restart in a tight loop.
         if (timer_ticks() - start < TIMER_HZ) task_sleep_ticks(TIMER_HZ);

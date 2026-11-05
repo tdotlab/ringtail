@@ -1,7 +1,7 @@
 // Per-task file descriptors. A program starts with console input on
 // fd 0 and console output on 1 and 2, or with copies of its parent's
-// descriptors; the rest are diskfs files. Copies of a file descriptor
-// each keep their own offset. All buffers passed in are user
+// descriptors; the rest are diskfs files and pipe ends. Copies of a
+// file descriptor each keep their own offset. All buffers passed in are user
 // pointers; data moves through a kernel bounce buffer, so the disk
 // code never touches user memory.
 #include "fs.h"
@@ -29,6 +29,13 @@ int file_fd_ok(int fd) {
 
 static void fd_ref(const fd_t* f) {
     if (f->kind == FD_FILE) diskfs_ref(f->node);
+    else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_ref(f->pipe, f->kind == FD_PIPE_W);
+}
+
+static void fd_release(fd_t* f) {
+    if (f->kind == FD_FILE) diskfs_unref(f->node);
+    else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_unref(f->pipe, f->kind == FD_PIPE_W);
+    f->kind = FD_NONE;
 }
 
 void files_inherit(task_t* child, task_t* parent, const int std[3]) {
@@ -41,10 +48,13 @@ void files_inherit(task_t* child, task_t* parent, const int std[3]) {
 }
 
 void files_close_all(task_t* t) {
-    for (int i = 0; i < MAX_FDS; i++) {
-        if (t->fds[i].kind == FD_FILE) diskfs_unref(t->fds[i].node);
-        t->fds[i].kind = FD_NONE;
-    }
+    for (int i = 0; i < MAX_FDS; i++) fd_release(&t->fds[i]);
+}
+
+static int free_fd(int from) {
+    for (int i = from; i < MAX_FDS; i++)
+        if (current->fds[i].kind == FD_NONE) return i;
+    return -EMFILE;
 }
 
 static fd_t* get_fd(int fd) {
@@ -61,10 +71,8 @@ int file_open(const char* uname, int flags) {
     if (flags & ~(O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND)) return -EINVAL;
     if ((flags & O_TRUNC) && acc == O_RDONLY) return -EINVAL;
 
-    int fd = -1;
-    for (int i = 0; i < MAX_FDS; i++)
-        if (current->fds[i].kind == FD_NONE) { fd = i; break; }
-    if (fd < 0) return -EMFILE;
+    int fd = free_fd(0);
+    if (fd < 0) return fd;
 
     int node = diskfs_lookup(name);
     if (node >= 0 && (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) return -EEXIST;
@@ -89,9 +97,42 @@ int file_open(const char* uname, int flags) {
 int file_close(int fd) {
     fd_t* f = get_fd(fd);
     if (!f) return -EBADF;
-    if (f->kind == FD_FILE) diskfs_unref(f->node);
-    f->kind = FD_NONE;
+    fd_release(f);
     return 0;
+}
+
+int file_pipe(int* ufds) {
+    int fds[2];
+    fds[0] = free_fd(0);
+    if (fds[0] < 0) return fds[0];
+    fds[1] = free_fd(fds[0] + 1);
+    if (fds[1] < 0) return fds[1];
+    if (user_range_ok((uint32_t)ufds, sizeof fds, 1)) return -EFAULT;
+    struct pipe* p = pipe_new();
+    if (!p) return -ENOMEM;
+    if (copy_to_user(ufds, fds, sizeof fds)) {
+        pipe_unref(p, 0);
+        pipe_unref(p, 1);
+        return -EFAULT;
+    }
+    fd_t* r = &current->fds[fds[0]];
+    fd_t* w = &current->fds[fds[1]];
+    memset(r, 0, sizeof *r);
+    memset(w, 0, sizeof *w);
+    r->kind = FD_PIPE_R; r->flags = O_RDONLY; r->pipe = p;
+    w->kind = FD_PIPE_W; w->flags = O_WRONLY; w->pipe = p;
+    return 0;
+}
+
+int file_dup2(int oldfd, int newfd) {
+    fd_t* f = get_fd(oldfd);
+    if (!f || newfd < 0 || newfd >= MAX_FDS) return -EBADF;
+    if (oldfd == newfd) return newfd;
+    fd_t copy = *f;
+    fd_ref(&copy);  // before releasing newfd, in case both share a pipe
+    fd_release(&current->fds[newfd]);
+    current->fds[newfd] = copy;
+    return newfd;
 }
 
 static int console_read(void* ubuf, uint32_t len) {
@@ -109,11 +150,19 @@ int file_read(int fd, void* ubuf, uint32_t len) {
     if (!f || (f->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
     if (len == 0) return 0;
     if (f->kind == FD_CONSOLE_IN) return console_read(ubuf, len);
-    if (f->kind != FD_FILE) return -EBADF;
+    if (f->kind != FD_FILE && f->kind != FD_PIPE_R) return -EBADF;
     if (user_range_ok((uint32_t)ubuf, len, 1)) return -EFAULT;
 
     uint8_t* bounce = kmalloc(BOUNCE);
     if (!bounce) return -ENOMEM;
+    if (f->kind == FD_PIPE_R) {
+        // Whatever is there now, waiting only if nothing is.
+        struct pipe* p = f->pipe;
+        int n = pipe_read(p, bounce, MIN(len, BOUNCE));
+        if (n > 0 && copy_to_user(ubuf, bounce, (size_t)n)) n = -EFAULT;
+        kfree(bounce);
+        return n;
+    }
     uint32_t done = 0;
     int err = 0;
     while (done < len) {
@@ -148,6 +197,13 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
             done += chunk;
             continue;
         }
+        if (f->kind == FD_PIPE_W) {
+            int n = pipe_write(f->pipe, bounce, chunk);
+            if (n <= 0) { err = n; break; }
+            done += (uint32_t)n;
+            if ((uint32_t)n < chunk) break;  // the readers went away
+            continue;
+        }
         if (f->flags & O_APPEND) f->offset = diskfs_size(f->node);
         int n = diskfs_pwrite(f->node, bounce, chunk, f->offset);
         if (n <= 0) { err = n; break; }
@@ -163,7 +219,7 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
 int file_seek(int fd, int32_t off, int whence) {
     fd_t* f = get_fd(fd);
     if (!f) return -EBADF;
-    if (f->kind != FD_FILE) return -EINVAL;  // consoles do not seek
+    if (f->kind != FD_FILE) return -EINVAL;  // consoles and pipes do not seek
     int64_t base;
     switch (whence) {
     case SEEK_SET: base = 0; break;

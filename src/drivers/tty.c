@@ -74,20 +74,23 @@ static int try_getc(void) {
 static struct { int to, from, mode; } handover[HANDOVER_MAX];
 static int handovers;
 
-static void switch_to_job(int job, int new_mode) {
+// cleanup: the job losing the terminal is finished with it, so if it
+// was in raw mode, whatever it left on the screen is cleared. Not when
+// a job lends the terminal out: the shell's line editor is raw, and
+// running a program must not wipe the screen.
+static void switch_to_job(int job, int new_mode, int cleanup) {
     uint32_t f = irq_save();
     int was_raw = (mode & TTY_RAW) != 0;
     fg_job = job;
     mode = new_mode;
     pending_pos = pending_len = 0;  // half-read input belongs to the old job
     irq_restore(f);
-    // A raw-mode program may have left the screen in any state.
-    if (was_raw) console_reset();
+    if (was_raw && cleanup) console_reset();
 }
 
 void tty_set_foreground(int job) {
     handovers = 0;
-    switch_to_job(job, 0);
+    switch_to_job(job, 0, 1);
 }
 
 static int handover_locked(int job) {
@@ -102,7 +105,7 @@ static int handover_locked(int job) {
         handover[handovers].from = me;
         handover[handovers].mode = mode;
         handovers++;
-        switch_to_job(job, 0);
+        switch_to_job(job, 0, 0);
         return 0;
     }
     // Taking it back: only by a job that gave it away, and only once
@@ -114,7 +117,7 @@ static int handover_locked(int job) {
             if (task_job_alive(handover[k].to)) return -EBUSY;
         int m = handover[i].mode;
         handovers = i;
-        switch_to_job(me, m);
+        switch_to_job(me, m, 1);
         return 0;
     }
     return -EPERM;

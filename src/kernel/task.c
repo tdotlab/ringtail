@@ -93,12 +93,16 @@ static void check_canary(task_t* t) {
 // after the task already exited and was reaped still gets its status.
 // Ids are never reused, so an entry cannot be mistaken for another task.
 #define EXITED_CACHE 64
-static struct { int id, status; } exited[EXITED_CACHE];
+// The job and parent are kept too, so a pipeline can still add to a
+// job whose leader has already finished.
+static struct { int id, status, job, parent; } exited[EXITED_CACHE];
 static int exited_pos;
 
 static void reap(task_t* t) {
     exited[exited_pos].id = t->id;
     exited[exited_pos].status = t->exit_status;
+    exited[exited_pos].job = t->job;
+    exited[exited_pos].parent = t->parent;
     exited_pos = (exited_pos + 1) % EXITED_CACHE;
     // Unlink. The list is circular and the idle task is never reaped,
     // so it always has a predecessor.
@@ -303,6 +307,9 @@ int task_job_mine(int job) {
     uint32_t f = irq_save();
     task_t* leader = task_find(job);
     int ok = leader && leader->job == job && leader->parent == current->id;
+    for (int i = 0; !leader && i < EXITED_CACHE; i++)
+        if (exited[i].id == job)
+            ok = exited[i].job == job && exited[i].parent == current->id;
     irq_restore(f);
     return ok;
 }

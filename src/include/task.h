@@ -95,8 +95,9 @@ int task_current_id(void);
 int task_is_user(void);
 // The task table as text, for the tasks command.
 void task_format(sbuf_t* sb);
-// 1 if the job exists and the current task may add tasks to it or
-// hand it the terminal: its own job, or one whose leader it started.
+// 1 if the job exists (or its leader ended recently) and the current
+// task may add tasks to it or hand it the terminal: its own job, or
+// one whose leader it started.
 int task_job_mine(int job);
 const char* task_state_name(task_state_t s);
 

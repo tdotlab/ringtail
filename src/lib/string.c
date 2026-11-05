@@ -108,6 +108,7 @@ const char* strerror(int err) {
     case EMFILE: return "too many open files";
     case EFBIG: return "file too large";
     case ENOSPC: return "disk full";
+    case EPIPE: return "broken pipe";
     case ENAMETOOLONG: return "name too long";
     case ENOSYS: return "no such system call";
     }

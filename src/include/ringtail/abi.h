@@ -44,7 +44,9 @@
 #define SYS_KINFO       34  // (KINFO_*, buf, size)    -> length of the full text; buf gets as much as fits, NUL-terminated
 #define SYS_SET_COLOR   35  // (VGA attribute)         -> 0; the console's default colour
 #define SYS_POWER       36  // (POWER_*)               -> does not return
-#define NUM_SYSCALLS    37
+#define SYS_PIPE        37  // (int fds[2])            -> 0; fds[0] reads, fds[1] writes
+#define SYS_DUP2        38  // (oldfd, newfd)          -> newfd, now a copy of oldfd (closed first if open)
+#define NUM_SYSCALLS    39
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -96,6 +98,7 @@ typedef struct { char name[16]; unsigned size; } dirent_t;
 #define STDIN_FILENO  0     // console input, foreground only; line at a time unless TTY_RAW
 #define STDOUT_FILENO 1     // console output
 #define STDERR_FILENO 2     // console output, for errors
+#define MAX_FDS 16  // descriptors per program
 
 // open() flags. Values match Linux so they look familiar.
 #define O_RDONLY 0x0000
@@ -128,6 +131,7 @@ typedef struct { char name[16]; unsigned size; } dirent_t;
 #define EMFILE        24
 #define EFBIG         27
 #define ENOSPC        28
+#define EPIPE         32
 #define ENAMETOOLONG  36
 #define ENOSYS        38
 

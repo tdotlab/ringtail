@@ -44,6 +44,8 @@ static inline int sys_readdir(int* cursor, dirent_t* d) { return SC2(SYS_READDIR
 static inline int sys_kinfo(int what, char* buf, uint32_t size) { return SC3(SYS_KINFO, what, buf, size); }
 static inline int sys_set_color(int attr) { return SC1(SYS_SET_COLOR, attr); }
 static inline int sys_power(int what) { return SC1(SYS_POWER, what); }
+static inline int sys_pipe(int fds[2]) { return SC1(SYS_PIPE, fds); }
+static inline int sys_dup2(int oldfd, int newfd) { return SC2(SYS_DUP2, oldfd, newfd); }
 static inline int sys_tty_mode(int mode) { return SC1(SYS_TTY_MODE, mode); }
 static inline int sys_save(const char* name, const void* buf, uint32_t len) { return SC3(SYS_SAVE, name, buf, len); }
 static inline int sys_join(int id) { return SC1(SYS_JOIN, id); }

@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.13.0 "Userland"**. See PROGRESS.md for the history.
+Current version: **v0.14.0 "Plumbing"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -92,7 +92,9 @@ parent's standard input, output and error (descriptors 0-2), and spawn
 can remap them or put the program in a new or existing job. The shell is
 an ordinary program: everything it shows comes through syscalls such as
 `readdir`, `kinfo` (version, memory, heap, tasks, faults, memory map,
-disk) and `kill`.
+disk) and `kill`. Pipes are 4 KB kernel buffers: a reader waits for data
+and sees end of file once every writer has closed, and a writer waits
+for room. `dup2` copies a descriptor onto another number.
 
 Filesystem: FAT16, root directory only, DOS 8.3 names. The FAT and the
 directory are cached in memory and written back after each operation.
@@ -124,7 +126,12 @@ keeps the last 10 lines (Up and Down), Ctrl+C cancels a line or kills the
 foreground program, and Ctrl+L clears the screen.
 
 `run <program> [args...]`, or just the program's name, starts a program
-from the disk, and a trailing `&` runs it in the background. `tasks` lists what is running and
+from the disk, and a trailing `&` runs it in the background.
+`a | b` pipes one program's output into the next, `< FILE` feeds the
+first command a file, and `> FILE` or `>> FILE` writes or appends the
+last command's output. A built-in can start a pipeline (`ls | grep TXT`,
+`help | grep file`) or be redirected (`echo hi > NOTE.TXT`), but not
+come after a `|`. Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
 `kill <id>` stops it. `ls`, `cat`, `touch`, `write <file> <text>` and
 `rm` work on files. `mem`, `heap` and `mmap` show memory, `uptime` the
 time and timer ticks, and `faults` the fault log. `color <name>` sets
@@ -139,6 +146,8 @@ Programs on the disk:
 | gui | Desktop: a paged launcher for every program, and page icons for .TXT and .LEM files that open them in Octavo. Esc quits. |
 | shell | The command line. init starts it at boot and again whenever it ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
+| wc | Counts lines, words and bytes of files, or of its input. |
+| grep | `grep [-i] TEXT [files]`: the lines containing TEXT (plain text, not patterns). |
 | hello | Hello world, and the starting point for your own |
 
 To write your own, copy `src/programs/hello.c`. Every `.c` file in
@@ -175,6 +184,7 @@ are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 
 These are deliberate, or simply not done yet. Programs get the x87 FPU
 (its state is saved per task) but not SSE. There are no subdirectories or long file names, no
-`fork`/`exec` (programs start other programs with `spawn`), no pipes, no
-signals beyond kill, and no SMP. The only display modes are VGA text and
+`fork`/`exec` (programs start other programs with `spawn`), no
+signals beyond kill (so a program writing to a pipe nobody reads gets
+EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and
 mode 13h.

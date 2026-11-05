@@ -1865,18 +1865,37 @@ Tests: 97 host checks, 83 QEMU checks (new: bare program names, sleep,
 exit and respawn, kernel tasks refusing kill, the shell refusing to kill
 itself by its real id).
 
-## Plan (in progress)
+## v0.14.0 "Plumbing"
 
-Agreed order. Tick each off as it lands; delete this section when all
-three are done.
+Pipes and redirection. `a | b | c` runs up to eight commands joined by
+pipes, all in one job, so Ctrl+C stops the whole pipeline. `< FILE`
+feeds the first command, `> FILE` and `>> FILE` take the last one's
+output. A built-in can start a pipeline or be redirected: the shell
+points its own stdout at the pipe or file with dup2 while it runs, and
+built-ins then leave out colour and screen-only lines (ls drops its
+summary), so `ls | wc` counts files.
 
-1. [x] Small cleanup. The desktop's Welcome icon opens WELCOME.TXT in
-   Octavo. The emergency kill moves off triple Ctrl+C (which Octavo
-   uses for copy) to Ctrl+backslash (one byte, so serial has it too).
-2. [x] Shell to user space. New syscalls for what the kernel shell
-   did directly (run a program and wait, list the directory, hand over
-   the foreground, and the rest the built-ins need); the shell becomes
-   SHELL on the disk and the kernel shell goes away.
-3. [ ] Pipes and redirection: `a | b`, `a > FILE`, `a < FILE`.
+Kernel:
+- `pipe`: a 4 KB ring buffer, refcounted per end across tasks. A read
+  waits for data and returns 0 once no writer is left; a write waits
+  for room and gets EPIPE once no reader is left. Both wake on kill.
+- `dup2`, and EPIPE in the errno list. MAX_FDS moved into the ABI.
+- Children inherit pipe ends through the spawn descriptor map, with
+  the references counted, and the shell closes every end it does not
+  need, so readers see end of file.
+- The reaper remembers each task's job and parent, so a pipeline can
+  still add to a job whose first program has already finished.
+- Bug found by the new tests: the shell's line editor is raw, and
+  handing the terminal from a raw job reset the console, so every
+  program run cleared the screen. The reset now happens only when the
+  terminal comes back (or init takes it after a shell dies).
 
-Later: subdirectories.
+New programs: `wc` and `grep [-i] TEXT` (plain text, not patterns).
+
+Tests: 97 host checks, 100 QEMU checks. New: pipetest (ordering,
+wrap-around, EOF, EPIPE, dup2, EMFILE, bad pointers, a 20000-byte
+transfer through wc, joining a job after its leader ended), and shell
+pipelines, every redirection, the error messages, and Ctrl+C on a
+pipeline leaving no tasks behind.
+
+Next idea: subdirectories.

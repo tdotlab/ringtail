@@ -328,6 +328,16 @@ static int sys_set_color(uint32_t color, uint32_t b, uint32_t c) {
     return 0;
 }
 
+static int sys_pipe(uint32_t ufds, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    return file_pipe((int*)ufds);
+}
+
+static int sys_dup2(uint32_t oldfd, uint32_t newfd, uint32_t c) {
+    (void)c;
+    return file_dup2((int)oldfd, (int)newfd);
+}
+
 static int sys_power(uint32_t what, uint32_t b, uint32_t c) {
     (void)b; (void)c;
     if (what == POWER_REBOOT) { kprintf("Rebooting...\n"); machine_reboot(); }
@@ -407,6 +417,8 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_KINFO] = sys_kinfo,
     [SYS_SET_COLOR] = sys_set_color,
     [SYS_POWER] = sys_power,
+    [SYS_PIPE] = sys_pipe,
+    [SYS_DUP2] = sys_dup2,
 };
 
 void syscall_handle(regs_t* r) {

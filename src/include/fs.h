@@ -4,6 +4,7 @@
 #define RINGTAIL_FS_H
 
 #include <stdint.h>
+#include "ringtail/abi.h"  // MAX_FDS
 
 #define FS_NAME_MAX 13  // "NAME8CHR.EXT" plus NUL
 
@@ -34,16 +35,27 @@ void diskfs_stats(uint32_t* clusters, uint32_t* free_clusters, uint32_t* cluster
 int diskfs_name_ok(const char* name);
 
 // ---- File descriptors ----
-#define MAX_FDS 16
 
-typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE } fd_kind_t;
+typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W } fd_kind_t;
 
+struct pipe;
 typedef struct {
     fd_kind_t kind;
     int flags;
-    int node;
-    uint32_t offset;
+    int node;            // FD_FILE
+    uint32_t offset;     // FD_FILE
+    struct pipe* pipe;   // FD_PIPE_R, FD_PIPE_W
 } fd_t;
+
+// Pipes (pipe.c). pipe_new returns a pipe with one reader and one
+// writer counted. The read and write calls take kernel buffers and
+// may block; a write returns only when all of it is in, or with the
+// count so far once readers are gone (EPIPE if none went in).
+struct pipe* pipe_new(void);
+void pipe_ref(struct pipe* p, int writer);
+void pipe_unref(struct pipe* p, int writer);  // frees it with the last end
+int pipe_read(struct pipe* p, uint8_t* kbuf, uint32_t len);
+int pipe_write(struct pipe* p, const uint8_t* kbuf, uint32_t len);
 
 struct task;
 void files_init_std(struct task* t);
@@ -57,5 +69,7 @@ int file_close(int fd);
 int file_read(int fd, void* ubuf, uint32_t len);
 int file_write(int fd, const void* ubuf, uint32_t len);
 int file_seek(int fd, int32_t off, int whence);
+int file_pipe(int* ufds);            // ufds[0] reads, ufds[1] writes
+int file_dup2(int oldfd, int newfd); // newfd becomes a copy of oldfd
 
 #endif

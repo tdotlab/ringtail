@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.13.0"
-#define RINGTAIL_CODENAME "Userland"
+#define RINGTAIL_VERSION "0.14.0"
+#define RINGTAIL_CODENAME "Plumbing"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08
