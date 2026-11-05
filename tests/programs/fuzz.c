@@ -138,6 +138,7 @@ static void shuffle_struct(void) {
 
 static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     shuffle_struct();
+    if (rnd() % 8 == 0) sys_chdir("/FZ");  // chdir(\"..\") may have left it
     if (rnd() % 6 == 0) sys_open("a", O_RDWR | O_CREAT);
     const call_t* c = &calls[rnd() % NCALLS];
     int n = c->n;
@@ -230,39 +231,48 @@ static void drop_extra_fds(void) {
     for (int fd = 3; fd < MAX_FDS; fd++) sys_close(fd);
 }
 
-// Remove everything the fuzzer may have made in /FZ, two levels deep.
-static void clean_scratch(void) {
-    static const char* const names[] = { "a/b", "b/a", "a/x", "b/x", "a", "b", "a b", "x.y.z", " lead", "dot", "A?" };
-    sys_chdir("/");
-    for (int pass = 0; pass < 3; pass++) {
-        char p[PATH_MAX];
-        for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
-            snprintf(p, sizeof p, "/FZ/%s", names[i]);
-            sys_delete(p);
-            sys_rmdir(p);
-        }
-        // Whatever else: list /FZ and remove each entry.
+// Empty a directory and remove it, however deep the fuzzer nested things.
+static void rm_rf(const char* path, int depth) {
+    char child[PATH_MAX];
+    for (int guard = 0; guard < 64; guard++) {
         int cursor = 0;
-        dirent_t d;
-        while (sys_readdir("/FZ", &cursor, &d) > 0) {
-            snprintf(p, sizeof p, "/FZ/%s", d.name);
-            if (d.flags & DIRENT_DIR) {
-                // Empty a nested directory, then remove it.
-                char q[PATH_MAX];
-                int c2 = 0;
-                dirent_t e;
-                while (sys_readdir(p, &c2, &e) > 0) {
-                    snprintf(q, sizeof q, "%s/%s", p, e.name);
-                    sys_delete(q);
-                    sys_rmdir(q);
-                }
-                sys_rmdir(p);
-            } else {
-                sys_delete(p);
-            }
+        dirent_t e;
+        if (sys_readdir(path, &cursor, &e) <= 0) break;
+        snprintf(child, sizeof child, "%s/%s", path, e.name);
+        int r;
+        if (e.flags & DIRENT_DIR) {
+            if (depth < 6) rm_rf(child, depth + 1);
+            r = sys_rmdir(child);
+        } else {
+            r = sys_delete(child);
         }
+        if (r < 0) break;
     }
+}
+
+// Remove everything the fuzzer made. Its working directory is /FZ, but
+// chdir("..") lets it wander into the root, so the root names it uses
+// are cleaned up too. None of them is a real file.
+static void clean_scratch(void) {
+    // dup2 may have pointed 0, 1 or 2 at a scratch file, and a file that is
+    // open cannot be deleted. Output goes through sys_print, not these.
+    for (int fd = 0; fd < MAX_FDS; fd++) sys_close(fd);
+    static const char* const names[] = { "a", "b", "a b", "x.y.z", " lead", "dot", "a/b", "b/a" };
+    sys_chdir("/");
+    rm_rf("/FZ", 0);
     sys_rmdir("/FZ");
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
+        char p[PATH_MAX];
+        snprintf(p, sizeof p, "/%s", names[i]);
+        sys_delete(p);
+        sys_rmdir(p);
+        // a directory called a or b may hold things
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        const char* d = i ? "/b" : "/a";
+        rm_rf(d, 0);
+        sys_rmdir(d);
+    }
 }
 
 static int heap_free_kb(void) {
