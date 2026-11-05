@@ -53,7 +53,8 @@
 #define SYS_RENAME      43  // (from, to)              -> 0; moves too; to must not exist
 #define SYS_STAT        44  // (path, dirent_t*)       -> 0
 #define SYS_TIME        45  // (rtc_time_t*)           -> 0; the clock, as the CMOS keeps it
-#define NUM_SYSCALLS    46
+#define SYS_POLL        46  // (ticks)                 -> 1 once terminal input is waiting, 0 if the ticks run out first
+#define NUM_SYSCALLS    47
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)

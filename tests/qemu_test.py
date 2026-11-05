@@ -220,7 +220,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.20.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.21.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -249,7 +249,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.20.0" in out, out)
+    t.check("and the new shell works", "0.21.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest"]:
         out = m.run("run " + prog, timeout=30)
@@ -516,7 +516,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.20.0" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.21.0" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -697,6 +697,94 @@ def tests(m, t):
     m.send("\x1b[A\r")
     out = m.expect(PROMPT, 5)
     t.check("Up arrow recalls the last command", out.count("first") >= 2, out)
+
+    # SYS_POLL: wait for terminal input, but only so long.
+    m.send("run polldemo\r")
+    out = m.expect(rb"ready", 5)
+    mm = re.search(r"timeout: (\d+) after (\d+) ticks", out)
+    t.check("a poll with nothing waiting times out with 0", mm and mm.group(1) == "0", out)
+    t.check("after about the time asked for", mm and 30 <= int(mm.group(2)) <= 45, out)
+    t.check("a poll of zero ticks answers at once", "zero: 0" in out, out)
+    time.sleep(0.5)
+    m.send("x")
+    out = m.expect(PROMPT, 5)
+    t.check("a key ends the poll early with 1", "input: 1 key 78" in out, out)
+    t.check("and the key is still there to read, then nothing waits", "again: 0" in out, out)
+    m.send("run polldemo hang\r")
+    m.expect(rb"polling", 5)
+    m.send("\x1c")
+    out = m.expect(PROMPT, 5)
+    t.check("a program in a long poll can be killed", "poll ended" not in out, out)
+
+    # Gauge, the system monitor. gauge -1 is one plain snapshot.
+    out = m.run("gauge -1")
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.21.0" in out and " up " in out, out)
+    mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
+    t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
+    t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
+            re.search(r"Disk\s+\[[#.]{30}\]\s+\d+%", out), out)
+    t.check("and the task table", re.search(r"^\s*\d+\s+\d+\s+user\s+running\s+\d+K\s+gauge$", out, re.M) and
+            re.search(r"^\s*\d+\s+\d+\s+kernel\s+\w+\s+-\s+idle$", out, re.M), out)
+    t.check("with a count that matches the rows",
+            (c := re.search(r"Tasks\s+(\d+):", out)) and
+            len(re.findall(r"^\s*\d+\s+\d+\s+(?:user|kernel)\s", out, re.M)) == int(c.group(1)), out)
+    out = m.run("gauge -1 | grep saklas")
+    t.check("gauge -1 can be piped", len(plain(out).splitlines()) == 1 and "user" in out, out)
+    out = m.run("gauge nonsense")
+    t.check("gauge refuses what it does not understand", "usage: gauge" in out, out)
+
+    m.send("gauge\r")
+    first = m.wait_row(0, " Gauge ")
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.21.0"), repr(first))
+    title, attrs = m.screen_row(0)
+    t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
+    t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
+    bar, battr = m.screen_row(2)
+    t.check("usage bars are drawn with block characters", "\xb0" in bar or "\xdb" in bar, repr(bar))
+    t.check("memory and the tasks are on screen", "Frames" in bar and "gauge" in "".join(
+        m.screen_row(r)[0] for r in range(8, 14)), repr(bar))
+
+    def uptime_on_screen():
+        mm = re.search(r"up (\d+):(\d\d):(\d\d)", m.screen_row(0)[0])
+        return int(mm.group(1)) * 3600 + int(mm.group(2)) * 60 + int(mm.group(3)) if mm else -1
+
+    def settle(seconds):
+        end = time.time() + seconds
+        while time.time() < end:
+            m._fill(0.1)  # keep the serial port drained, as a terminal would
+
+    before = uptime_on_screen()
+    settle(2.5)
+    after = uptime_on_screen()
+    t.check("gauge refreshes by itself", after >= before + 2, f"{before} -> {after}")
+    m.send("p")
+    settle(0.5)
+    t.check("p pauses it", "PAUSED" in m.screen_row(24)[0], repr(m.screen_row(24)[0]))
+    frozen = uptime_on_screen()
+    settle(2.5)
+    t.check("a paused gauge stands still", uptime_on_screen() == frozen, f"{frozen} -> {uptime_on_screen()}")
+    m.send("p")
+    settle(1.5)
+    t.check("and p starts it again", uptime_on_screen() > frozen and "PAUSED" not in m.screen_row(24)[0],
+            f"{frozen} -> {uptime_on_screen()}")
+    m.send("-")
+    settle(0.5)
+    t.check("- slows it down", "every 2 s" in m.screen_row(24)[0], repr(m.screen_row(24)[0]))
+    m.send("++")
+    settle(0.5)
+    t.check("+ speeds it up", "every 0.5 s" in m.screen_row(24)[0], repr(m.screen_row(24)[0]))
+    m.send("q")
+    m.expect(PROMPT, 5)
+    row0, _ = m.screen_row(0)
+    t.check("q leaves gauge and clears the screen", "Gauge" not in row0 and "q quit" not in m.screen_row(24)[0], repr(row0))
+    out = m.run("echo cooked again")
+    t.check("the terminal is cooked again after gauge", "cooked again" in out, out)
+    m.send("gauge\r")
+    m.wait_row(0, " Gauge ")
+    m.send("\x03")
+    m.expect(PROMPT, 5)
+    out = m.run("echo after ctrl-c")
+    t.check("Ctrl+C quits gauge too, leaving a usable terminal", "after ctrl-c" in out, out)
 
     # The desktop: graphics mode, then Esc back to text.
     m.send("run kenoma\r")

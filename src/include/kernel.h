@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.20.0"
-#define RINGTAIL_CODENAME "Cursor"
+#define RINGTAIL_VERSION "0.21.0"
+#define RINGTAIL_CODENAME "Gauge"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08

@@ -5,4 +5,5 @@ Try:  ls               the files on this disk
       run octavo       a text editor (Ctrl+Q quits)
       run kenoma       a small desktop (Esc leaves)
       tasks            what is running
+      run gauge        a live system monitor (q quits)
       help             everything else

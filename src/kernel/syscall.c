@@ -256,6 +256,23 @@ static int sys_wait(uint32_t lx, uint32_t ly, uint32_t lb) {
     return r;
 }
 
+// Wait up to `ticks` for the terminal to have input for the caller (the
+// foreground job), so a program can redraw on a timer and still react
+// to a key at once. Capped at an hour. Nothing is read: the caller does
+// that with SYS_READ. A program that is not in the foreground just
+// sleeps the time out.
+static int sys_poll(uint32_t ticks, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    if (ticks > 3600u * TIMER_HZ) ticks = 3600u * TIMER_HZ;
+    uint32_t end = timer_ticks() + ticks;
+    for (;;) {
+        if (current->job == tty_foreground() && tty_pending()) return 1;
+        if (current->killed) return -EINTR;
+        if ((int32_t)(timer_ticks() - end) >= 0) return 0;
+        task_sleep_ticks(1);
+    }
+}
+
 // ---- Files and tasks ----
 
 static int sys_seek(uint32_t fd, uint32_t off, uint32_t whence) {
@@ -488,6 +505,7 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_RENAME] = sys_rename,
     [SYS_STAT] = sys_stat,
     [SYS_TIME] = sys_time,
+    [SYS_POLL] = sys_poll,
 };
 
 void syscall_handle(regs_t* r) {

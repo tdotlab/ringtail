@@ -2097,3 +2097,39 @@ visible world the archons rule. Names were checked against GitHub repo
 names for anything over 100 stars (Archon and Gam were turned down,
 Archon as too solemn and Gam for the 4k-star Google Workspace CLI).
 Octavo stays as it is. No behaviour changed.
+
+## v0.21.0 "Gauge"
+
+A system monitor, and the one syscall it needed.
+
+- **gauge** (`src/programs/gauge.c`): a text-mode display of frames, heap
+  and disk usage as bars, a one-line task summary, and the task table
+  with states coloured (running, ready, blocked). The title row has the
+  version, uptime and the clock. Redrawn every second; q, Esc or Ctrl+C
+  quits, p pauses, + and - step the rate between 0.25 and 5 seconds.
+  `gauge -1` prints a single plain-text snapshot (no escapes, `#` bars)
+  for pipes and scripts. It reads the kernel's `kinfo` text, so there is
+  no new reporting code in the kernel, and it shows up in Kenoma's
+  launcher on its own.
+- **SYS_POLL(ticks)**: waits up to that many ticks for terminal input for
+  the caller (capped at an hour) and returns 1 if some is waiting, 0 if
+  the time ran out, -EINTR if the task was killed. It reads nothing; the
+  program then calls `read`. Without it a program could block on a key or
+  sleep, but not both, so a timed display had no way to notice `q` before
+  its next refresh.
+- Each frame is built whole, every row positioned with an escape and
+  padded to the screen's width instead of erased first, and written with
+  one call, so nothing flickers.
+
+Wrinkle: keys typed together arrive in one `read`, so the key loop goes
+through every byte it gets (an early version looked at single-byte reads
+only and dropped `++`). Also, with nobody reading the serial port a
+redraw crawls (the console waits on the UART for every character),
+which a test harness has to avoid by draining it while a display runs.
+
+Tests: 27 new QEMU checks. polldemo checks the poll timeout and its
+length, the instant return for 0, early return on a key, and being
+killed mid-poll. For gauge: the snapshot's numbers, task rows and count,
+piping, the usage error, the live screen (title colours, bars, footer),
+refreshing by itself, pause and resume, the rate keys, and q and Ctrl+C
+leaving a cooked terminal. Host 244, QEMU 215.

@@ -6,7 +6,7 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h.
 
-Current version: **v0.20.0 "Cursor"**. See PROGRESS.md for the history.
+Current version: **v0.21.0 "Gauge"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -82,7 +82,9 @@ Terminal: programs read the keyboard (or the serial port) through
 standard input, a line at a time by default. Raw mode hands over every
 key as it comes, with arrows, Home/End, PgUp/PgDn, Delete and F1-F12 as
 xterm escape sequences and Alt as an ESC prefix; with TTY_NOSIG, Ctrl+C
-is an ordinary byte, and Ctrl+\ is the kill switch that always works. The console understands the common ANSI escapes for cursor
+is an ordinary byte, and Ctrl+\ is the kill switch that always works. `poll`
+waits up to a given number of ticks for input, so a program can redraw on a
+timer and still answer a key at once. The console understands the common ANSI escapes for cursor
 motion, erasing, colours and hiding the cursor, on screen and on serial
 alike.
 
@@ -177,6 +179,7 @@ Programs on the disk:
 | octavo | Text editor. `run octavo [file]`. |
 | kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
 | saklas | The command line (the shell). init starts it at boot and again whenever it ends. |
+| gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | sleep | `sleep <seconds>`, up to an hour. |
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
 | wc | Counts lines, words and bytes of files, or of its input. |
