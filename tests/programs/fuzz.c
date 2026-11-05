@@ -262,6 +262,7 @@ static void clean_scratch(void) {
             }
         }
     }
+    sys_rmdir("/FZ");
 }
 
 static int heap_free_kb(void) {
