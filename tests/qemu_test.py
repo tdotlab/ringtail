@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.1" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.2" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -257,7 +257,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.1" in out, out)
+    t.check("and the new shell works", "0.24.2" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -330,6 +330,7 @@ def tests(m, t):
 
     dns_tests(m, t)
     tcp_tests(m, t)
+    text_tests(m, t)
     netconf_tests(m, t)
 
     # The fuzzer throws hostile arguments at every non-blocking system call.
@@ -601,7 +602,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.1" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.2" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -803,7 +804,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.1" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.2" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -820,7 +821,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.1"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.2"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1077,6 +1078,29 @@ def tcp_tests(m, t):
         t.check("fetch -o saves a big file", "saved 300000 bytes to big.bin" in out, out)
         out = plain(m.run("wc big.bin"))
         t.check("all of it", "300000 big.bin" in out, out)
+
+        def counts(c):
+            r = re.search(r"(\d+)\s+(\d+)\s+(\d+)", plain(m.run(c, timeout=60)))
+            return (int(r.group(1)), int(r.group(3))) if r else None
+
+        def lines_of(data):
+            parts = data.split(b"\n")
+            return [p + b"\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+        def shape(data):
+            return (data.count(b"\n"), len(data))
+
+        ls = lines_of(BIG)
+        # The tail of a file bigger than the 64 KB tail keeps before trimming.
+        for c, want in [("tail -c 100 big.bin | wc", BIG[-100:]),
+                        ("tail -c 70000 big.bin | wc", BIG[-70000:]),
+                        ("tail -c +299901 big.bin | wc", BIG[299900:]),
+                        ("tail -n 5 big.bin | wc", b"".join(ls[-5:])),
+                        ("tail -n 1000 big.bin | wc", b"".join(ls[-1000:])),
+                        ("tail -n +1100 big.bin | wc", b"".join(ls[1099:])),
+                        ("head -c 70000 big.bin | wc", BIG[:70000]),
+                        ("head -n 1000 big.bin | wc", b"".join(ls[:1000]))]:
+            t.check(c + " counts what it should", counts(c) == shape(want), f"{counts(c)} != {shape(want)}")
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))
         out = plain(m.run("cat gone.bin"))
         t.check("a failed -o leaves no file", "no such file" in out, out)
@@ -1145,6 +1169,146 @@ def tcp_tests(m, t):
     t.check("nc to a closed port", "connection refused" in out and "exit status 1" in out, out)
     out = plain(m.run("net"))
     t.check("net lists TCP", "TCP:" in out and "opened" in out, out)
+
+
+def _rows(m):
+    """The screen, as its 25 rows without trailing blanks."""
+    return [m.screen_row(i)[0].rstrip() for i in range(25)]
+
+
+def text_tests(m, t):
+    """head, tail and more, on the output of help (30 lines) and a few
+    small files."""
+    def run(c, timeout=20):  # output as it is, indentation included
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    # help leaves its three footer lines off when it is redirected, so
+    # the file is the reference, not what help prints on the screen.
+    t.check("help > h.txt (setting up)", run("help > h.txt") == "")
+    text = run("cat h.txt")
+    lines = text.split("\n")
+    full = text + "\n"
+    t.check("there is enough help to page", len(lines) >= 26 and all(l == l.rstrip() for l in lines), str(len(lines)))
+    for c in ["head -n 24 h.txt > h24.txt", "head -c 5 h.txt > nonl.txt",
+              "write w150.txt " + "x" * 150, "write w80.txt " + "y" * 80]:
+        t.check(f"{c[:30]} (setting up)", run(c) == "", c)
+    j = "\n".join
+
+    # head
+    t.check("head -n 3", run("head -n 3 h.txt") == j(lines[:3]))
+    t.check("head -n3 and -3 are the same", run("head -n3 h.txt") == j(lines[:3]) == run("head -3 h.txt"))
+    t.check("head defaults to ten lines", run("head h.txt") == j(lines[:10]))
+    t.check("head -c counts bytes", run("head -c 12 h.txt") == text[:12].rstrip())
+    t.check("head -n 0 prints nothing", run("head -n 0 h.txt") == "")
+    t.check("head -n more than there is prints it all", run("head -n 500 h.txt") == text)
+    t.check("head names its files when there are two",
+            run("head -n 2 h.txt h24.txt") == "==> h.txt <==\n" + j(lines[:2]) + "\n\n==> h24.txt <==\n" + j(lines[:2]))
+    t.check("and -q does not", run("head -q -n 1 h.txt h24.txt") == lines[0] + "\n" + lines[0])
+    t.check("head reads a pipe", run("cat h.txt | head -n 2") == j(lines[:2]))
+    t.check("and - means standard input", run("cat h.txt | head -n 1 -") == lines[0])
+    out = run("head -n -1 h.txt")
+    t.check("head rejects a negative count", "invalid number of lines: '-1'" in out and "exit status 2" in out, out)
+    out = run("head nosuch")
+    t.check("head says when a file is missing", "head: nosuch: no such file" in out and "exit status 1" in out, out)
+    out = run("head -z h.txt")
+    t.check("head rejects an unknown option", "usage: head" in out and "exit status 2" in out, out)
+
+    # tail
+    t.check("tail -n 3", run("tail -n 3 h.txt") == j(lines[-3:]))
+    t.check("tail -3 is the same", run("tail -3 h.txt") == j(lines[-3:]))
+    t.check("tail defaults to ten lines", run("tail h.txt") == j(lines[-10:]))
+    t.check("tail -n +K starts at line K", run("tail -n +%d h.txt" % (len(lines) - 1)) == j(lines[-2:]))
+    t.check("tail -c counts bytes", run("tail -c 20 h.txt") == full[-20:].rstrip())
+    t.check("tail -c +K starts at byte K", run("tail -c +%d h.txt" % (len(full) - 9)) == full[-10:].rstrip())
+    t.check("tail -n 0 prints nothing", run("tail -n 0 h.txt") == "")
+    t.check("tail -n more than there is prints it all", run("tail -n 500 h.txt") == text)
+    t.check("a last line with no newline counts as a line", run("tail -n 1 nonl.txt") == text[:5] == run("tail -n +1 nonl.txt"))
+    t.check("tail -c on it", run("tail -c 3 nonl.txt") == text[2:5])
+    t.check("tail names its files when there are two",
+            run("tail -n 1 h.txt h24.txt") == "==> h.txt <==\n" + lines[-1] + "\n\n==> h24.txt <==\n" + lines[23])
+    t.check("tail reads a pipe", run("cat h.txt | tail -n 2") == j(lines[-2:]))
+    t.check("head and tail together", run("head -n 5 h.txt | tail -n 1") == lines[4])
+    out = run("tail -f h.txt")
+    t.check("tail has no -f", "usage: tail" in out and "exit status 2" in out, out)
+    out = run("tail nosuch")
+    t.check("tail says when a file is missing", "tail: nosuch: no such file" in out and "exit status 1" in out, out)
+
+    # more: the keys come from the terminal, so a pipe can feed it
+    first = sum(len(l) + 1 for l in lines[:24])
+    pct = lambda n: "--More--(%d%%)" % (sum(len(l) + 1 for l in lines[:n]) * 100 // len(full))
+
+    def start(c, want="--More--"):
+        m.send(c + "\r")
+        return m.wait_row(24, want, 10)
+
+    row = start("more h.txt", pct(24))
+    t.check("more stops after a screenful and says how far it has got", row.strip() == pct(24), row)
+    rows = _rows(m)
+    t.check("the screen holds exactly the first 24 lines", rows[:24] == lines[:24], j(rows))
+    m.send("\r")
+    row = m.wait_row(24, pct(25), 10)
+    rows = _rows(m)
+    t.check("Enter shows one more line", row.strip() == pct(25) and rows[:24] == lines[1:25], j(rows))
+    m.send("\x1b[B")
+    row = m.wait_row(24, pct(26), 10)
+    t.check("and so does Down", row.strip() == pct(26) and _rows(m)[:24] == lines[2:26], row)
+    m.send(" ")
+    m.expect(PROMPT, 10)
+    rows = _rows(m)
+    t.check("Space shows the next screen, and more ends with the file", rows[:24] == lines[6:30] and rows[24].startswith("ringtail:/>"), j(rows))
+    start("more h.txt", pct(24))
+    m.send("\x1b[6~")
+    m.expect(PROMPT, 10)
+    t.check("PgDn does the same", _rows(m)[:24] == lines[6:30])
+    start("more h.txt", pct(24))
+    m.send("q")
+    m.expect(PROMPT, 10)
+    rows = _rows(m)
+    t.check("q quits and leaves the page on the screen", rows[:24] == lines[:24] and rows[24].startswith("ringtail:/>"), j(rows))
+    start("more h.txt", pct(24))
+    m.send("\x03")
+    m.expect(PROMPT, 10)
+    rows = _rows(m)
+    t.check("Ctrl+C at the prompt quits the same way, without wiping the screen",
+            rows[:24] == lines[:24] and not any("^C" in r for r in rows), j(rows))
+    row = start("cat h.txt | more")
+    t.check("more reads a pipe, and without a size gives no percentage", row.strip() == "--More--", row)
+    t.check("from the first line", _rows(m)[:24] == lines[:24])
+    m.send("q")
+    m.expect(PROMPT, 10)
+    t.check("quitting does not leave the pipeline running", "more" not in run("tasks"))
+    m.send("run sleep 100 | more\r")
+    time.sleep(1)
+    m.send("\x03")
+    m.expect(PROMPT, 10)
+    out = run("tasks")
+    t.check("Ctrl+C while the input is stalled ends the pipeline", "sleep" not in out and "more" not in out, out)
+    out = run("more h.txt | wc")
+    t.check("more copies when its output is a pipe", re.search(r"^\s*%d\s+\d+\s+%d$" % (len(lines), len(full)), out), out)
+    t.check("or a file", run("more h.txt > out.txt") == "" and
+            re.search(r"^\s*%d\s+\d+\s+%d " % (len(lines), len(full)), run("wc out.txt")))
+    out = run("more nosuch")
+    t.check("more says when a file is missing", "more: nosuch: no such file" in out and "exit status 1" in out, out)
+    out = run("more -x")
+    t.check("more rejects an unknown option", "usage: more" in out and "exit status 2" in out, out)
+    out = run("more")
+    t.check("and has nothing to show without a file or a pipe", "usage: more" in out and "exit status 2" in out, out)
+
+    # Counting rows the way the console lays them out: a 150-character
+    # line takes two, and an 80-character one only one.
+    for name, body in [("w150.txt", [80, 70]), ("w80.txt", [80])]:
+        names = [name] * 10
+        want = []
+        for k in range(10):
+            want += ([""] if k else []) + ["==> %s <==" % name] + ["x" * n if name == "w150.txt" else "y" * n for n in body]
+        row = start("more " + " ".join(names))
+        rows = _rows(m)
+        t.check(f"more counts wrapped rows ({name} x10)", rows[:24] == want[:24] and row.startswith("--More--"), j(rows))
+        m.send("q")
+        m.expect(PROMPT, 10)
+
+    for c in ["rm h.txt", "rm h24.txt", "rm nonl.txt", "rm out.txt", "rm w150.txt", "rm w80.txt"]:
+        t.check(f"{c} (cleaning up)", run(c) == "", c)
 
 
 def netconf_tests(m, t):

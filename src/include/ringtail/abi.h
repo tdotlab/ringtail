@@ -11,7 +11,7 @@
 #define SYS_PRINT       1   // (buf, len)              -> len
 #define SYS_EXIT        2   // (status)                -> does not return
 #define SYS_SLEEP       3   // (seconds)               -> 0
-#define SYS_OPEN        4   // (name, flags)           -> fd
+#define SYS_OPEN        4   // (name, flags)           -> fd; DEV_TTY is the terminal
 #define SYS_READ        5   // (fd, buf, len)          -> bytes read, 0 at EOF
 #define SYS_WRITE       6   // (fd, buf, len)          -> bytes written
 #define SYS_CLOSE       7   // (fd)                    -> 0
@@ -143,6 +143,14 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 #define TTY_NOSIG 2
 
 // Standard descriptors. Every program starts with these open.
+// open(DEV_TTY, O_RDONLY) is the keyboard and open(DEV_TTY, O_WRONLY)
+// the screen, whatever the standard descriptors point at, so a program
+// at the end of a pipe can still ask the person at the terminal a
+// question. It behaves as standard input does: foreground jobs only,
+// and in the terminal's current mode. It is not a file and hides any
+// file of that name; O_RDWR and the creating flags are refused.
+#define DEV_TTY "/dev/tty"
+
 #define STDIN_FILENO  0     // console input, foreground only; line at a time unless TTY_RAW
 #define STDOUT_FILENO 1     // console output
 #define STDERR_FILENO 2     // console output, for errors

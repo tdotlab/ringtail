@@ -2448,3 +2448,52 @@ answering afterwards. By hand through QEMU's port forwarding with curl:
 the same, plus HEAD, POST, a byte-identical big file, and a client that
 never finishes its request. QEMU 460.
 
+## v0.24.2 "Handshake"
+
+`head`, `tail` and `more`, with the standard names and flags.
+
+`head [-n N | -c N] [-q] [FILE...]` stops reading as soon as it has
+enough, so `cat big | head` does not wait for big. `tail [-n [+]N | -c [+]N]`
+reads to the end but keeps only the lines or bytes it was asked for (it
+trims once it holds 64 KB more than that), so a 300000-byte file costs
+little memory; `+N` streams everything from the Nth line or byte. Neither
+has -f: nothing here can say when a file has grown. `head -n -N` (GNU) is
+not supported.
+
+`more [FILE...]` pages at 80x25. Counting screens means knowing what the
+console will do with each byte, so `more` carries a small model of it:
+tabs to the next multiple of 8, the last column wrapping only when another
+character arrives, and escape sequences taking no room. When the next
+character would wrap into the prompt's row, `more` does the wrap itself
+and then asks, so a screen is never one line short or long. Space and PgDn
+give a screen, Enter and Down a line, q a quit; plain files show a
+percentage.
+
+The kernel gained one thing for it: opening `/dev/tty` (`DEV_TTY`) gives
+the terminal itself, O_RDONLY for keys and O_WRONLY for output, whatever
+descriptors 0 and 1 point at. That is what lets a pager at the end of a
+pipe wait for a key. It is not a file and hides any file of that name;
+O_RDWR and the creating flags are refused with EINVAL.
+
+The terminal is raw only while the prompt waits for a key, with TTY_NOSIG
+so Ctrl+C arrives as a byte and means quit. The first version stayed raw
+for the whole run, and Ctrl+C then killed a raw job, which makes the
+kernel wipe the screen, taking the page being read with it. Between
+prompts the terminal is cooked, so Ctrl+C still kills `more` and the
+pipeline behind it if the input has stalled. When output is not the
+screen, or there is no terminal to ask, `more` copies like cat.
+
+Known limits: no scrolling back and no search in `more`, which counts
+rows from where it started, as the classic one does. `help | more` pages
+only the command lines, because `help` leaves its footer off when its
+output is not a terminal.
+
+Tested in QEMU: head and tail on counts, `-N`, `+N`, bytes, several files,
+headings and -q, stdin, empty input, a missing file and bad numbers, plus
+a 300000-byte file through both; `more` on a screen exactly full, one
+over, a line of exactly 80 columns, tabs, escape sequences, files
+without a final newline, two files, a pipe, redirected output, Enter,
+Down, PgDn, q and Ctrl+C (screen intact afterwards); `/dev/tty` from a
+program with its descriptors redirected, and its refusals.
+Host 244 + 82 + 163, QEMU 527.
+

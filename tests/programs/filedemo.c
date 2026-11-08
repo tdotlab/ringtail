@@ -41,6 +41,18 @@ int main(int argc, char** argv) {
     check(sys_open("BAD*.TXT", O_RDWR | O_CREAT) == -EINVAL, "a forbidden character gives EINVAL");
     check(sys_open("DEMO.TXT", O_RDONLY | O_TRUNC) == -EINVAL, "truncating read-only gives EINVAL");
 
+    // The terminal by name, for a program whose standard input is a pipe.
+    int tt = sys_open(DEV_TTY, O_WRONLY);
+    check(tt >= 0 && sys_fdtype(tt) == FDTYPE_TTY, "/dev/tty opens for writing, and is the terminal");
+    check(sys_read(tt, buf, 1) == -EBADF, "and cannot be read through that descriptor");
+    if (tt >= 0) sys_close(tt);
+    tt = sys_open(DEV_TTY, O_RDONLY);
+    check(tt >= 0 && sys_fdtype(tt) == FDTYPE_TTY, "/dev/tty opens for reading too");
+    check(sys_write(tt, buf, 1) == -EBADF, "and cannot be written through that one");
+    if (tt >= 0) sys_close(tt);
+    check(sys_open(DEV_TTY, O_RDWR) == -EINVAL, "but not both ways at once");
+    check(sys_open(DEV_TTY, O_WRONLY | O_CREAT) == -EINVAL, "or with creating flags");
+
     int opened = 0, last = 0;
     int held[32];
     for (int i = 0; i < 32; i++) {

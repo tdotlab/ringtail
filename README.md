@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.1 "Handshake"**. See PROGRESS.md for the history.
+Current version: **v0.24.2 "Handshake"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -116,7 +116,9 @@ is an ordinary byte, and Ctrl+\ is the kill switch that always works. `poll`
 waits up to a given number of ticks for input, so a program can redraw on a
 timer and still answer a key at once. The console understands the common ANSI escapes for cursor
 motion, erasing, colours and hiding the cursor, on screen and on serial
-alike.
+alike. Opening `/dev/tty` (`DEV_TTY`) gives the terminal itself, read-only for
+keys or write-only for output, whatever standard input and output are
+redirected to; that is how `more` can wait for a key at the end of a pipe.
 
 System calls: `int 0x80`, with the number in eax, arguments in ebx, ecx
 and edx, and the result in eax. A failed call returns a negative errno.
@@ -271,6 +273,9 @@ Programs on the disk:
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
 | wc | Counts lines, words and bytes of files, or of its input. |
 | grep | `grep [-i] TEXT [files]`: the lines containing TEXT (plain text, not patterns). |
+| head | `head [-n N \| -c N] [-q] [FILE...]`: the first 10 lines of each file, or of its input; `-N` is `-n N`. Stops reading once it has enough. |
+| tail | `tail [-n [+]N \| -c [+]N] [-q] [FILE...]`: the last 10 lines, or everything from line N on with `+N`. Reads to the end, keeping only what it needs. No -f. |
+| more | `more [FILE...]`: one screenful at a time, with a percentage for plain files. Space or PgDn for a screen, Enter or Down for a line, q or Ctrl+C to quit. Reads keys from `/dev/tty`, so it works on a pipe; when output is not the screen it behaves like cat. |
 | hello | Hello world, and the starting point for your own |
 
 To write your own, copy `src/programs/hello.c`. Every `.c` file in

@@ -96,6 +96,17 @@ int file_open(const char* uname, int flags) {
     int fd = free_fd(0);
     if (fd < 0) return fd;
 
+    // The terminal by name: it reaches the keyboard when standard input
+    // is a pipe. One direction per descriptor, as the standard ones are.
+    if (strcmp(name, DEV_TTY) == 0) {
+        if (acc == O_RDWR || (flags & ~O_ACCMODE)) return -EINVAL;
+        fd_t* t = &current->fds[fd];
+        memset(t, 0, sizeof *t);
+        t->kind = acc == O_RDONLY ? FD_CONSOLE_IN : FD_CONSOLE_OUT;
+        t->flags = acc;
+        return fd;
+    }
+
     // The node comes referenced, so nobody can delete it under us.
     int node = diskfs_lookup(current->cwd, name);
     if (node >= 0 && (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
