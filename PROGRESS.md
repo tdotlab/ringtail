@@ -2497,3 +2497,38 @@ Down, PgDn, q and Ctrl+C (screen intact afterwards); `/dev/tty` from a
 program with its descriptors redirected, and its refusals.
 Host 244 + 82 + 163, QEMU 527.
 
+## v0.24.3 "Handshake"
+
+`sort` and `uniq`, with the standard names and flags.
+
+`sort [-bcfnrsu] [-k F1[,F2]] [-t SEP] [-o FILE] [FILE...]` reads every
+input into one buffer, indexes the lines (24 bytes each, no allocation per
+line, which matters because the user malloc is first-fit), and runs a
+stable merge sort. Order is bytewise; -f folds to upper case as GNU does,
+-n reads blanks, a minus sign, digits and a fraction and compares them
+digit by digit so no number overflows, and anything that is not a number
+counts as zero. Lines equal on the key then go by the whole line, as in
+GNU sort, unless -s or -u is given; -u keeps the first of each run in
+input order. -c reports the first disorder with its line number and exits
+1, -o may name an input because nothing is written until everything is
+read, and options may follow the files. There is one key: `-k2,2n` is
+the same as `-k 2,2 -n`, character offsets in a key (`-k 1.2`) and a
+second -k are refused with a message. A last line without a newline gets
+one; a file that cannot be read ends sort with status 2 and no output.
+
+`uniq [-c | -d | -u] [-i] [-f N] [-s N] [-w N] [INPUT [OUTPUT]]` streams
+two lines at a time through buffers that grow, so line length and input
+size are unlimited. It keeps the first line of each run, `-c` pads the
+count to 7 columns like GNU, and it flushes before it waits for more
+input, so it can sit at the end of a slow pipe.
+
+Neither changes the kernel. Tested in QEMU against Python reference
+implementations of the same ordering: every flag on small files (case,
+numbers with blanks, signs, fractions, junk and negative zero, keys,
+separators, leading blanks, -s and -u first-of-run, -c and -o including
+over an input), their errors, and then 6000 lines sorted four ways and
+checked with `sort -c`, a line count and eight lines read back from each
+result, plus a 300000-byte binary file through three sort modes and long
+lines through uniq.
+Host 244 + 82 + 163, QEMU 599.
+

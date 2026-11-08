@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.2" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.3" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -257,7 +257,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.2" in out, out)
+    t.check("and the new shell works", "0.24.3" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -602,7 +602,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.2" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.3" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -804,7 +804,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.2" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.3" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -821,7 +821,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.2"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.3"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1006,12 +1006,26 @@ def _dns_tests(m, t, srv):
 
 BIG = bytes((i * 7919 + (i >> 8)) & 255 for i in range(300000))
 
+# Data for sort and uniq, served as pages and fetched into the guest.
+WORDS = ["pear", "apple", "Banana", "apple", "cherry", "Apple"]
+NUMS = ["10", "9", "-3", "2.50", "2.5", "  7", "abc", "-0", "007"]
+TBL = ["b 2 x", "a 10 y", "c 1 z", "b 3 w", "a 9 v"]
+COLON = ["a:3", "b:1", "c:2", "d:10"]
+BLANKS = ["x  b", "x a", "x   c"]
+DUPS = ["x", "x", "y", "X", "z", "z", "z", "", "", "q"]  # the last has no newline
+ROWS = ["%d %d w%d" % ((i * 7919) % 1500, i, i % 97) for i in range(6000)]
+LONG = ["a" * 3000, "a" * 3000, "a" * 2999 + "b"]
+DATA = {"words": WORDS, "nums": NUMS, "tbl": TBL, "colon": COLON, "blanks": BLANKS, "dups": DUPS,
+        "rows": ROWS, "long": LONG}
+
 
 class _Http(http.server.BaseHTTPRequestHandler):
     """A few pages for fetch: plain, redirected three ways, missing,
     cut short, and big."""
     def do_GET(self):
         pages = {"/hello.txt": b"hello from the host\n", "/rel/b": b"relative ok\n", "/big.bin": BIG}
+        for name, rows in DATA.items():
+            pages["/%s.txt" % name] = "\n".join(rows).encode() + (b"" if name == "dups" else b"\n")
         moves = {"/moved": "/hello.txt", "/rel/a": "b", "/loop": "/loop",
                  "/abs": "http://10.0.2.2:%d/hello.txt" % self.server.server_port}
         if self.path in moves:
@@ -1046,6 +1060,152 @@ def _echo_once(srv, got):
                 break
             got.append(d)
             c.sendall(d.upper())
+
+
+def sortuniq_tests(m, t, url):
+    """sort and uniq, on small files with every flag and then on 6000
+    lines and a 300000-byte binary file. The guest has no cmp, so a big
+    result is checked as sorted (sort -c), counted, and read at a few
+    places."""
+    import itertools
+    from fractions import Fraction
+
+    def run(c, timeout=30):  # output as it is, indentation included
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    def want(rows):
+        return "\n".join(rows).rstrip()
+
+    def num(l):  # what sort -n reads off the front of a line
+        r = re.match(r"[ \t]*(-?\d+(\.\d*)?|-?\.\d+)", l)
+        return Fraction(r.group(1)) if r else Fraction(0)
+
+    def bytewise(l):
+        return l.encode()
+
+    def first_of_each(rows, key):  # sort -u: the first line of each run of equal keys, in key order
+        seen = {}
+        for r in rows:
+            seen.setdefault(key(r), r)
+        return [seen[k] for k in sorted(seen)]
+
+    for f in DATA:
+        out = run("fetch -o %s.txt %s/%s.txt" % (f, url, f), timeout=60)
+        t.check("fetch %s.txt (setting up)" % f, "saved" in out, out)
+
+    # text order is bytes: capitals first
+    t.check("sort", run("sort words.txt") == want(sorted(WORDS, key=bytewise)))
+    t.check("sort -r reverses it", run("sort -r words.txt") == want(sorted(WORDS, key=bytewise, reverse=True)))
+    t.check("sort -u drops repeats", run("sort -u words.txt") == want(sorted(set(WORDS), key=bytewise)))
+    ci = lambda l: l.upper().encode()
+    t.check("sort -f ignores case, then falls back to the bytes",
+            run("sort -f words.txt") == want(sorted(WORDS, key=lambda l: (ci(l), bytewise(l)))))
+    t.check("sort -fu keeps the first of each, in input order",
+            run("sort -fu words.txt") == want(first_of_each(WORDS, ci)))
+    t.check("-s keeps input order for equal keys", run("sort -fs words.txt") == want(sorted(WORDS, key=ci)))
+    t.check("sort reads a pipe", run("cat words.txt | sort") == want(sorted(WORDS, key=bytewise)))
+    t.check("and - means standard input", run("cat words.txt | sort -r -") == want(sorted(WORDS, key=bytewise, reverse=True)))
+    t.check("sort puts two files together", run("sort words.txt words.txt | wc").split()[0] == "12")
+    t.check("options may follow the files", run("sort words.txt -r") == run("sort -r words.txt"))
+
+    nk = lambda l: (num(l), bytewise(l))
+    t.check("sort -n: blanks, signs, fractions, junk as zero, -0 as 0",
+            run("sort -n nums.txt") == want(sorted(NUMS, key=nk)))
+    t.check("sort -nr", run("sort -nr nums.txt") == want(sorted(NUMS, key=nk, reverse=True)))
+    t.check("sort -nu keeps the first of each value", run("sort -nu nums.txt") == want(first_of_each(NUMS, num)))
+
+    f2 = lambda l: l.split()[1]
+    t.check("-k 2 sorts on field 2 and what follows, blank included",
+            run("sort -k 2 tbl.txt") == want(sorted(TBL, key=lambda l: (" " + f2(l) + " " + l.split()[2]).encode())))
+    t.check("-k 2n", run("sort -k 2n tbl.txt") == want(sorted(TBL, key=lambda l: (int(f2(l)), bytewise(l)))))
+    t.check("-k2,2n, with the flag after the key", run("sort -k2,2n tbl.txt") == run("sort -n -k 2,2 tbl.txt") ==
+            want(sorted(TBL, key=lambda l: (int(f2(l)), bytewise(l)))))
+    t.check("-k 3,3 -r", run("sort -k 3,3 -r tbl.txt") == want(sorted(TBL, key=lambda l: l.split()[2], reverse=True)))
+    t.check("-u -k1,1 keeps the first line of each key",
+            run("sort -u -k1,1 tbl.txt") == want(first_of_each(TBL, lambda l: l.split()[0])))
+    t.check("-t : -k 2n", run("sort -t : -k 2n colon.txt") == want(sorted(COLON, key=lambda l: int(l.split(":")[1]))))
+    t.check("blanks lead a field", run("sort -k 2 blanks.txt") == want(["x   c", "x  b", "x a"]))
+    t.check("and -b skips them", run("sort -b -k 2 blanks.txt") == want(["x a", "x  b", "x   c"]))
+
+    # -c, -o, and what goes wrong
+    out = run("sort -c words.txt")
+    t.check("sort -c names the first line out of order", out == "sort: words.txt:2: disorder: apple\n[exit status 1]", out)
+    t.check("sort words.txt -o sorted.txt (setting up)", run("sort words.txt -o sorted.txt") == "")
+    t.check("sort -c is quiet when it is in order", run("sort -c sorted.txt") == "")
+    out = run("sort -cu sorted.txt")
+    t.check("and -cu counts a repeat as disorder", "sorted.txt:4: disorder: apple" in out and "exit status 1" in out, out)
+    t.check("-o may name an input", run("sort -r -o sorted.txt sorted.txt") == "" and
+            run("cat sorted.txt | wc").split()[0] == "6" and run("sort -c -r sorted.txt") == "")
+    out = run("sort nosuch")
+    t.check("sort says when a file is missing", "sort: nosuch: no such file" in out and "exit status 2" in out, out)
+    out = run("sort -k 0 words.txt")
+    t.check("sort rejects a bad key", "sort: invalid key: '0'" in out and "exit status 2" in out, out)
+    out = run("sort -k 1 -k 2 words.txt")
+    t.check("and a second key", "only one -k key" in out and "exit status 2" in out, out)
+    out = run("sort -z words.txt")
+    t.check("sort rejects an unknown option", "usage: sort" in out and "exit status 2" in out, out)
+
+    # uniq
+    run_len = lambda rows: [(len(list(g)), k) for k, g in itertools.groupby(rows)]
+    counted = want(["%7d %s" % c for c in run_len(DUPS)])
+    t.check("uniq -c", run("uniq -c dups.txt") == counted, run("uniq -c dups.txt"))
+    t.check("uniq collapses runs, a last line without a newline too",
+            run("uniq dups.txt") == want([k for _, k in run_len(DUPS)]))
+    t.check("uniq -d", run("uniq -d dups.txt") == "x\nz")
+    t.check("uniq -u", run("uniq -u dups.txt") == "y\nX\nq")
+    t.check("uniq -i", run("uniq -i dups.txt") == want(["x", "y", "X", "z", "", "q"]))
+    t.check("sort | uniq -c", run("sort dups.txt | uniq -c") ==
+            want(["%7d %s" % c for c in run_len(sorted(DUPS, key=bytewise))]))
+    t.check("uniq -f 1 skips a field", run("uniq -f 1 tbl.txt") == want(TBL))
+    t.check("uniq -s 1 -w 1 compares one character", run("uniq -s 1 -w 1 words.txt") == want(WORDS))
+    t.check("-w 1 makes neighbours alike", run("uniq -w 1 dups.txt") == want(["x", "y", "X", "z", "", "q"]))
+    t.check("uniq reads a pipe", run("cat dups.txt | uniq -d") == "x\nz")
+    t.check("uniq INPUT OUTPUT", run("uniq dups.txt out.txt") == "" and run("cat out.txt") == want([k for _, k in run_len(DUPS)]))
+    t.check("uniq grows its buffers for long lines",
+            run("uniq -c long.txt | wc").split()[:2] == ["2", "4"] and run("uniq -d long.txt | wc").split()[0] == "1")
+    out = run("uniq nosuch")
+    t.check("uniq says when a file is missing", "uniq: nosuch: no such file" in out and "exit status 1" in out, out)
+    out = run("uniq -f x dups.txt")
+    t.check("uniq rejects a bad count", "invalid number of fields to skip: 'x'" in out and "exit status 2" in out, out)
+    out = run("uniq -z")
+    t.check("uniq rejects an unknown option", "usage: uniq" in out and "exit status 2" in out, out)
+    out = run("uniq a b c")
+    t.check("and a third operand", "extra operand 'c'" in out and "exit status 2" in out, out)
+
+    # bigger
+    def at(f, k):
+        return run("tail -n +%d %s | head -n 1" % (k, f))
+
+    def spot(label, f, ref):
+        n = len(ref)
+        t.check("%s: %d lines" % (label, n), run("wc " + f).split()[0] == str(n), run("wc " + f))
+        bad = [k for k in (1, 2, 3, 777, 1500, n // 2, n - 1, n) if at(f, k) != ref[k - 1]]
+        t.check("%s: the lines at 1, 2, 3, 777, ... are right" % label, not bad, str(bad))
+
+    by_num = sorted(ROWS, key=lambda l: (num(l), bytewise(l)))
+    by_text = sorted(ROWS, key=bytewise)
+    t.check("sort -n on 6000 lines (setting up)", run("sort -n rows.txt > byn.txt", timeout=120) == "")
+    t.check("sort -nc says it is in order", run("sort -nc byn.txt") == "")
+    spot("sort -n", "byn.txt", by_num)
+    t.check("sort on 6000 lines (setting up)", run("sort rows.txt > byt.txt", timeout=120) == "")
+    t.check("sort -c says it is in order", run("sort -c byt.txt") == "")
+    spot("sort", "byt.txt", by_text)
+    t.check("sort -r on the sorted file reverses it (setting up)", run("sort -r byt.txt > rev.txt", timeout=120) == "")
+    spot("sort -r", "rev.txt", by_text[::-1])
+    uniq_keys = first_of_each(ROWS, lambda l: int(l.split()[0]))
+    t.check("sort -u -k1,1n gives the first row of each key (setting up)",
+            run("sort -u -k1,1n rows.txt > byk.txt", timeout=120) == "")
+    spot("sort -u -k1,1n", "byk.txt", uniq_keys)
+    t.check("every row differs, so uniq -c has 6000 lines", run("sort -n rows.txt | uniq -c | wc", timeout=120).split()[0] == "6000")
+
+    data = BIG if BIG.endswith(b"\n") else BIG + b"\n"
+    for c in ["sort big.bin | wc", "sort -r big.bin | wc", "sort -n big.bin | wc"]:
+        r = re.search(r"(\d+)\s+(\d+)\s+(\d+)", run(c, timeout=120))
+        t.check(c + " keeps every byte of a binary file", r and (int(r.group(1)), int(r.group(3))) == (data.count(b"\n"), len(data)),
+                r.group(0) if r else "")
+
+    for f in list(DATA) + ["byn", "byt", "rev", "byk", "sorted", "out"]:
+        run("rm %s.txt" % f)
 
 
 def tcp_tests(m, t):
@@ -1101,6 +1261,7 @@ def tcp_tests(m, t):
                         ("head -c 70000 big.bin | wc", BIG[:70000]),
                         ("head -n 1000 big.bin | wc", b"".join(ls[:1000]))]:
             t.check(c + " counts what it should", counts(c) == shape(want), f"{counts(c)} != {shape(want)}")
+        sortuniq_tests(m, t, url)
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))
         out = plain(m.run("cat gone.bin"))
         t.check("a failed -o leaves no file", "no such file" in out, out)
