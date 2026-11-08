@@ -1,9 +1,11 @@
-// cat FILE...    write files, one after another
+// cat [-n] [FILE...]    write files, one after another
 //
 // Each FILE in turn, or standard input for "-". With no FILE, standard
 // input is what is read, unless that is the keyboard, which would only
 // wait: then cat shows its usage. A file that cannot be read is
 // reported and the rest still follow; the status is 1 if any failed.
+// -n puts a line number in front of every line, counting on from one
+// file to the next.
 //
 // On the screen, a last line with no newline gets one so the prompt
 // starts clean. Into a pipe or a file the bytes pass on exactly, so
@@ -11,11 +13,14 @@
 #include "ulib.h"
 
 static int usage(void) {
-    dprintf(STDERR_FILENO, "usage: cat FILE...\n");
+    dprintf(STDERR_FILENO, "usage: cat [-n] [FILE...]\n");
     return 2;
 }
 
 static int last = '\n';
+static int numbered;
+static uint32_t line_no;
+static int at_start = 1;
 
 // All of it, or give up: a reader that has gone away ends cat quietly.
 static void put(const char* p, uint32_t n) {
@@ -30,11 +35,28 @@ static void put(const char* p, uint32_t n) {
     }
 }
 
+// buf with a number before each line. Out takes up to eight bytes more
+// than it was given for every newline, so it is sized for that.
+static void put_numbered(const char* buf, int n) {
+    char out[1024 * 9];
+    uint32_t o = 0;
+    for (int i = 0; i < n; i++) {
+        if (at_start) {
+            o += (uint32_t)snprintf(out + o, 16, "%6u\t", ++line_no);
+            at_start = 0;
+        }
+        out[o++] = buf[i];
+        if (buf[i] == '\n') at_start = 1;
+    }
+    put(out, o);
+}
+
 static int copy(int fd, const char* name) {
     char buf[1024];
     int n;
     while ((n = sys_read(fd, buf, sizeof buf)) > 0) {
-        put(buf, (uint32_t)n);
+        if (numbered) put_numbered(buf, n);
+        else put(buf, (uint32_t)n);
         last = buf[n - 1];
     }
     if (n < 0) {
@@ -45,15 +67,14 @@ static int copy(int fd, const char* name) {
 }
 
 int main(int argc, char** argv) {
-    int a = 1, dd = 0;
-    if (a < argc && !strcmp(argv[a], "--")) a++, dd = 1;
-    for (int i = a; i < argc; i++)
-        if (!dd && argv[i][0] == '-' && argv[i][1]) return usage();
-    if (a == argc && sys_fdtype(STDIN_FILENO) == FDTYPE_TTY) return usage();
+    char got[32];
+    if (getflags(&argc, argv, "n", got)) return usage();
+    numbered = has_flag(got, 'n');
+    if (argc == 1 && sys_fdtype(STDIN_FILENO) == FDTYPE_TTY) return usage();
 
     int bad = 0;
-    for (int i = a; i < argc || i == a; i++) {
-        int stdin_arg = a == argc || !strcmp(argv[i], "-");
+    for (int i = 1; i < argc || i == 1; i++) {
+        int stdin_arg = argc == 1 || !strcmp(argv[i], "-");
         const char* name = stdin_arg ? "standard input" : argv[i];
         int fd = stdin_arg ? STDIN_FILENO : sys_open(argv[i], O_RDONLY);
         if (fd < 0) {

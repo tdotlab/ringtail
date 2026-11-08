@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.6 "Handshake"**. See PROGRESS.md for the history.
+Current version: **v0.24.7 "Handshake"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -244,8 +244,8 @@ or be redirected (`help > h.txt`), but not come after a `|` or take `<`.
 Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
 `kill <id>` stops it. The file commands (`ls`, `cat`, `echo`, `touch`, `rm`,
 `mkdir`, `rmdir`, `mv`, `cp`) are programs on the disk like any other, so they
-pipe, take `<`, and run under `find -exec`; `cat a b > c` joins files, and
-quote text for `echo` to keep its spacing. `write <file> <text>` stays a built-in, and `cd` and `pwd` work on the current directory. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
+pipe, take `<`, and run under `find -exec`; `cat a b > c` joins files, `rm -r`, `cp -r`, `mkdir -p` and `ls -R` work on
+trees, and quote text for `echo` to keep its spacing. `write <file> <text>` stays a built-in, and `cd` and `pwd` work on the current directory. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
 `/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `date` the clock, `uptime` the
 time since boot and timer ticks, and `faults` the fault log. `pci` lists the PCI devices, and `net` shows
@@ -270,15 +270,15 @@ Programs on the disk:
 | httpd | `httpd [-p PORT] [-q] [DIR]`: serves DIR (default: the current directory) over HTTP on port 8080, one connection at a time. A directory gives its index.html or a listing; `..` is refused. Logs each request unless -q. Ctrl+C stops it. |
 | nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
-| ls | `ls [DIR]`: lists a directory with sizes and dates, and a free-space line on the terminal. |
-| cat | `cat [FILE...]`: copies files, or its input (also `-`), to the output. Bytes pass through exactly. |
-| echo | `echo [-n] [TEXT...]`: prints its arguments, one space apart. |
-| touch | `touch FILE...`: creates empty files; an existing one is an error. |
-| rm | `rm FILE...`: deletes files (a directory is refused). |
-| mkdir | `mkdir DIR...`: makes directories. |
+| ls | `ls [-R] [PATH...]`: lists files and directories with sizes and dates; a file is listed as itself, `-R` goes down. A free-space line on the terminal. |
+| cat | `cat [-n] [FILE...]`: copies files, or its input (also `-`), to the output; `-n` numbers the lines. Bytes pass through exactly. |
+| echo | `echo [-n] [-e \| -E] [TEXT...]`: prints its arguments, one space apart; `-e` reads `\n \t \xHH` and friends. |
+| touch | `touch [-c] FILE...`: creates empty files; one that exists is left alone (it keeps its old date; there is no call to set one). |
+| rm | `rm [-f] [-r] FILE...`: deletes files; `-r` takes whole directories, `-f` ignores missing ones. `.`, `..` and `/` are never removed. |
+| mkdir | `mkdir [-p] DIR...`: makes directories; `-p` makes the parents too and accepts one that exists. |
 | rmdir | `rmdir DIR...`: removes empty directories. |
-| mv | `mv SRC DST` or `mv SRC... DIR`: renames or moves a file or a whole directory. |
-| cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |
+| mv | `mv [-f \| -n] SRC DST` or `mv ... SRC... DIR`: renames or moves a file or a whole directory, replacing a file already there (`-n` keeps it). |
+| cp | `cp [-r] [-f \| -n] SRC DST` or `cp ... SRC... DIR`: copies files, and with `-r` whole directories; replaces an existing file unless `-n`. |
 | wc | Counts lines, words and bytes of files, or of its input. |
 | grep | `grep [-i] TEXT [files]`: the lines containing TEXT (plain text, not patterns). |
 | head | `head [-n N \| -c N] [-q] [FILE...]`: the first 10 lines of each file, or of its input; `-N` is `-n N`. Stops reading once it has enough. |

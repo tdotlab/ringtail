@@ -88,3 +88,97 @@ void fs_error(const char* prog, const char* what, int e) {
     const char* why = e == -EINVAL && !name_ok(what) ? "not a valid file name" : strerror(e);
     dprintf(STDERR_FILENO, "%s: %s: %s\n", prog, what, why);
 }
+
+dirent_t* read_dir(const char* path, uint32_t* count, int* err) {
+    dirent_t* list = 0;
+    uint32_t n = 0, cap = 0;
+    int cursor = 0, r = 0;
+    *err = 0;
+    for (;;) {
+        if (n == cap) {
+            uint32_t want = cap ? cap * 2 : 32;
+            dirent_t* p = realloc(list, want * sizeof *list);
+            if (!p) {
+                r = -ENOMEM;
+                break;
+            }
+            list = p;
+            cap = want;
+        }
+        r = sys_readdir(path, &cursor, &list[n]);
+        if (r <= 0) break;
+        if (strcmp(list[n].name, ".") && strcmp(list[n].name, "..")) n++;
+    }
+    if (r < 0) {
+        free(list);
+        *err = r;
+        return 0;
+    }
+    *count = n;
+    return list;
+}
+
+int join_path(char* out, size_t size, const char* dir, const char* name) {
+    size_t dl = strlen(dir), nl = strlen(name);
+    int slash = dl && dir[dl - 1] != '/';
+    if (dl + (size_t)slash + nl >= size) return -ENAMETOOLONG;
+    memcpy(out, dir, dl);
+    if (slash) out[dl] = '/';
+    memcpy(out + dl + slash, name, nl + 1);
+    return 0;
+}
+
+int path_inside(const char* dir_path, uint32_t id) {
+    char p[PATH_MAX];
+    if (strlen(dir_path) >= sizeof p) return 0;
+    memcpy(p, dir_path, strlen(dir_path) + 1);
+    dirent_t d;
+    // Start from the nearest part that exists: cut components off the
+    // end until stat works, then climb with "..".
+    for (int guard = 0; sys_stat(p, &d) < 0; guard++) {
+        char* s = strrchr(p, '/');
+        if (guard > 64) return 0;
+        if (!s) {
+            memcpy(p, ".", 2);
+            break;
+        }
+        if (s == p) { s[1] = 0; break; }
+        *s = 0;
+    }
+    uint32_t last = 0xFFFFFFFFu;
+    for (int up = 0; up < 64; up++) {
+        if (sys_stat(p, &d) < 0) return 0;
+        if (d.id == id) return 1;
+        if (up && d.id == last) return 0;  // the root: ".." of itself
+        last = d.id;
+        size_t l = strlen(p);
+        if (l + 4 >= sizeof p) return 0;
+        memcpy(p + l, l && p[l - 1] == '/' ? ".." : "/..", 4);
+    }
+    return 0;
+}
+
+int getflags(int* argc, char** argv, const char* known, char* got) {
+    int n = 1, only_ops = 0, ng = 0;
+    got[0] = 0;
+    for (int i = 1; i < *argc; i++) {
+        const char* s = argv[i];
+        if (!only_ops && !strcmp(s, "--")) {
+            only_ops = 1;
+            continue;
+        }
+        if (!only_ops && s[0] == '-' && s[1]) {
+            for (const char* o = s + 1; *o; o++) {
+                if (!strchr(known, *o)) return (unsigned char)*o;
+                if (!strchr(got, *o) && ng < 31) {
+                    got[ng++] = *o;
+                    got[ng] = 0;
+                }
+            }
+            continue;
+        }
+        argv[n++] = argv[i];
+    }
+    *argc = n;
+    return 0;
+}

@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.6" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.7" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -259,7 +259,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.6" in out, out)
+    t.check("and the new shell works", "0.24.7" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -471,7 +471,7 @@ def tests(m, t):
     out = m.run("cat NOTE.TXT")
     t.check("write then cat", "hello   world" in out, out)
     out = m.run("touch note.txt")
-    t.check("touch of an existing file is an error", "already exists" in out, out)
+    t.check("touch of an existing file is fine and leaves it alone", plain(out) == "" and "hello   world" in m.run("cat note.txt"), out)
     out = m.run("touch bad*name")
     t.check("bad names are rejected", "not a valid file name" in out, out)
     m.run("rm note.txt")
@@ -534,8 +534,8 @@ def tests(m, t):
     t.check("mv renames", plain(out) == "" and "moving text" in m.run("cat m2.txt"), out)
     out = m.run("mv m2.txt docs")
     t.check("mv into a directory", "moving text" in m.run("cat docs/m2.txt"), out)
-    out = m.run("mv docs/m2.txt docs/a.txt")
-    t.check("mv onto an existing file is refused", "already exists" in out, out)
+    out = m.run("mv -n docs/m2.txt docs/a.txt")
+    t.check("mv -n leaves an existing file alone", plain(out) == "" and "moving text" in m.run("cat docs/m2.txt"), out)
     m.run("mkdir docs/in")
     out = m.run("mv docs docs/in")
     t.check("mv of a directory into itself is refused", "inside itself" in out, out)
@@ -606,7 +606,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.6" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.7" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -808,7 +808,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.6" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.7" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -825,7 +825,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.6"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.7"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1243,15 +1243,15 @@ def coreutils_tests(m, t):
     t.check("mkdir reports one that exists and still makes the rest",
             "mkdir: ca: already exists" in out and "[exit status 1]" in out and "cd/" in run("ls") and "ce/" in run("ls"), out)
     t.check("mkdir with nothing shows the usage", "usage: mkdir" in run("mkdir"))
-    t.check("mkdir -p is refused, not made a directory", "usage: mkdir" in run("mkdir -p x/y") and "-p" not in run("ls"))
+    t.check("an unknown mkdir option shows the usage", "usage: mkdir" in run("mkdir -Z x") and "-Z" not in run("ls"))
     out = run("mkdir bad*name")
     t.check("a bad name says so", "not a valid file name" in out, out)
 
     run("touch ta tb tc")
     t.check("touch takes several", all(f in run("ls") for f in ["ta ", "tb ", "tc "]))
     out = run("touch td ta te")
-    t.check("touch reports one that exists, the rest are made",
-            "touch: ta: already exists" in out and "[exit status 1]" in out and re.search(r"\bte\b", run("ls")), out)
+    t.check("touch leaves one that exists alone and makes the rest",
+            out == "" and re.search(r"\bte\b", run("ls")) and re.search(r"\btd\b", run("ls")), out)
     t.check("touch with nothing shows the usage", "usage: touch" in run("touch"))
 
     run("write cat1.txt one")
@@ -1264,8 +1264,7 @@ def coreutils_tests(m, t):
     t.check("ls DIR lists what is in it", "x.txt" in out and "KB free" in out, out)
     out = run("ls nope")
     t.check("ls of a missing directory", "ls: nope: no such file" in out and "[exit status 1]" in out, out)
-    t.check("ls -l is refused with the usage", "usage: ls [DIR]" in run("ls -l"))
-    t.check("ls with two directories too", "usage: ls [DIR]" in run("ls ca cb"))
+    t.check("an unknown ls option shows the usage", "usage: ls" in run("ls -Z"))
     out = run("ls | sort | head -n 3")
     t.check("ls feeds a pipeline", len(out.split("\n")) == 3, out)
     t.check("ls takes a path with a slash", "x.txt" in run("ls /ca") and "x.txt" in run("ls ./ca"))
@@ -1274,8 +1273,7 @@ def coreutils_tests(m, t):
     t.check("rm reports a missing one and still removes the rest",
             "rm: nope.txt: no such file" in out and "[exit status 1]" in out and "cat1" not in run("ls") and "cat2" not in run("ls"), out)
     out = run("rm ca")
-    t.check("rm of a directory is refused with a hint", "is a directory (rmdir removes an empty one)" in out, out)
-    t.check("rm -r is refused, not taken for a file", "usage: rm" in run("rm -r ca"))
+    t.check("rm of a directory is refused with a hint", "is a directory (rm -r removes it" in out, out)
     t.check("rm with nothing shows the usage", "usage: rm" in run("rm"))
     t.check("rm -- takes a name that starts with a dash", run("touch ./-dash") == "" and run("rm -- -dash") == "" and "-dash" not in run("ls"))
 
@@ -1301,15 +1299,188 @@ def coreutils_tests(m, t):
     t.check("mv with one argument shows the usage", "usage: mv" in out and "[exit status 2]" in out, out)
     out = run("mv nope mvdir")
     t.check("mv of a missing file", "mv: nope: no such file" in out and "[exit status 1]" in out, out)
-    out = run("mv tz mvdir/ta")
-    t.check("mv onto an existing file is refused", "already exists" in out, out)
-    t.check("mv -f is refused, not taken for a file", "usage: mv" in run("mv -f tz mvdir"))
+    run("write tz.txt new")
+    run("write mvdir/tz.txt old")
+    t.check("mv -n leaves an existing file alone and says nothing",
+            run("mv -n tz.txt mvdir") == "" and run("cat mvdir/tz.txt") == "old" and run("cat tz.txt") == "new")
+    t.check("mv replaces an existing file", run("mv tz.txt mvdir") == "" and run("cat mvdir/tz.txt") == "new"
+            and "tz.txt" not in run("ls"))
+    run("write tz.txt newer")
+    t.check("mv -f says so out loud and does the same",
+            run("mv -f tz.txt mvdir/tz.txt") == "" and run("cat mvdir/tz.txt") == "newer")
+    run("mkdir mvsub")
+    out = run("mv mvsub mvdir/tz.txt")
+    t.check("a directory does not replace a file", "never replaced" in out and "[exit status 1]" in out, out)
+    run("write tzz.txt file")
+    run("mkdir mvdir/tzz.txt")
+    out = run("mv tzz.txt mvdir")
+    t.check("a file does not replace a directory", "never replaced" in out and "[exit status 1]" in out and "file" in run("cat tzz.txt"), out)
+    run("rm tzz.txt")
+    run("rmdir mvdir/tzz.txt")
+    run("write same.txt s")
+    out = run("mv same.txt ./same.txt")
+    t.check("mv onto itself says so", "same file" in out and "[exit status 1]" in out and run("cat same.txt") == "s", out)
+    run("rm same.txt")
+    t.check("mv -f with -n is refused", "usage: mv" in run("mv -f -n tz mvdir"))
+    t.check("mv -Z shows the usage", "usage: mv" in run("mv -Z tz mvdir"))
+    run("rm mvdir/tz.txt")
+    run("rmdir mvsub")
 
     run("find mvdir -name 't?' -exec rm {} ;")
     out = run("ls mvdir")
     t.check("find -exec rm works now", not any(f in out for f in ["ta ", "tb ", "tc "]), out)
     for c in ["rm tz", "rm te", "rmdir mvdir", "rm ca/x.txt", "rmdir ca"]:
         run(c)
+
+
+def flags_tests(m, t):
+    """The options the eight programs (and cp) learned in v0.24.7: touch -c
+    and an existing file, mkdir -p, rm -f and -r, cp -r and -n, mv's
+    replace and -n, ls with several paths and -R, cat -n, echo -e."""
+    def run(c, timeout=30):
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    def flat(c):  # blanks and tabs collapsed, for output that has tabs in it
+        return re.sub(r"\s+", " ", run(c)).strip()
+
+    # ---- echo ----
+    lines = run("echo -e 'a\\tb\\nc'").split("\n")
+    t.check("echo -e reads escapes", len(lines) == 2 and re.sub(r"\s+", " ", lines[0]) == "a b" and lines[1] == "c", lines)
+    t.check("without -e they stay as typed", run("echo 'a\\nb'") == "a\\nb")
+    t.check("-E is the same as the default", run("echo -E 'a\\nb'") == "a\\nb")
+    t.check("\\c stops the output, newline and all", run("echo -e 'x\\cy' | wc").split()[2] == "1")
+    t.check("-n and -e may be bundled", run("echo -ne 'hi' | wc").split()[2] == "2")
+    t.check("octal and hex bytes", run("echo -e '\\0101\\x42\\x4a'") == "ABJ")
+    t.check("a backslash before nothing known stays", run("echo -e 'a\\qb'") == "a\\qb")
+    t.check("a word that is not all n, e and E is text", run("echo -x hi") == "-x hi" and run("echo -- hi") == "-- hi")
+    t.check("echo -e writes a reader that left quietly", run("echo -e 'a\\nb' | head -n 1") == "a")
+
+    # ---- cat -n ----
+    run("echo -e 'a\\nb' > fl1.txt")
+    run("write fl2.txt abc")
+    t.check("cat -n numbers lines", flat("cat -n fl1.txt") == "1 a 2 b")
+    t.check("and keeps counting into the next file", flat("cat -n fl1.txt fl2.txt") == "1 a 2 b 3 abc")
+    t.check("cat -n on standard input", flat("echo hi | cat -n") == "1 hi")
+    t.check("cat -n into a pipe is exactly the numbered bytes", run("cat -n fl2.txt | wc").split()[2] == "11")
+    t.check("cat -n of an empty line still numbers it", flat("echo -e 'x\\n\\ny' | cat -n") == "1 x 2 3 y")
+    t.check("a bad cat option shows the usage", "usage: cat [-n]" in run("cat -Z fl1.txt"))
+    run("rm fl1.txt fl2.txt")
+
+    # ---- touch ----
+    t.check("touch -c makes nothing", run("touch -c flnew.txt") == "" and "flnew" not in run("ls"))
+    t.check("touch makes it", run("touch flnew.txt") == "" and "flnew.txt" in run("ls"))
+    t.check("and again is fine", run("touch flnew.txt flnew.txt") == "")
+    run("write flnew.txt keep")
+    t.check("touch leaves the contents alone", run("touch flnew.txt") == "" and run("cat flnew.txt") == "keep")
+    t.check("touch of a directory is fine too", run("mkdir fld") == "" and run("touch fld") == "")
+    t.check("a bad touch option shows the usage", "usage: touch [-c]" in run("touch -Z a"))
+    out = run("touch flnew.txt/x")
+    t.check("touch under a file is an error", "[exit status 1]" in out, out)
+    run("rm flnew.txt")
+    run("rmdir fld")
+
+    # ---- mkdir -p ----
+    t.check("mkdir -p makes the parents", run("mkdir -p flp/a/b/c") == "" and "c/" in run("ls flp/a/b"))
+    t.check("and an existing one is no error", run("mkdir -p flp/a/b/c flp/a") == "")
+    out = run("mkdir flp/a")
+    t.check("without -p an existing one still is", "already exists" in out and "[exit status 1]" in out, out)
+    t.check("mkdir -p takes a trailing slash and several", run("mkdir -p flp/t/ flp/u/v") == "" and "v/" in run("ls flp/u"))
+    t.check("mkdir -p with an absolute path", run("mkdir -p /flp/abs/x") == "" and "x/" in run("ls /flp/abs"))
+    run("touch flp/file")
+    out = run("mkdir -p flp/file/x flp/after")
+    t.check("mkdir -p through a file fails and the next still goes ahead",
+            "flp/file/x: not a directory" in out and "[exit status 1]" in out and "after/" in run("ls flp"), out)
+    t.check("mkdir -p of a bad name says so", "not a valid file name" in run("mkdir -p flp/bad*name"))
+
+    # ---- rm -f and -r ----
+    t.check("rm -f of nothing is quiet", run("rm -f flp/nothing") == "" and run("rm -f") == "")
+    t.check("rm -f still removes", run("rm -f flp/nothing flp/file") == "" and not re.search(r"\bfile\b", run("ls flp")))
+    out = run("rm flp/nothing")
+    t.check("without -f a missing file is an error", "no such file" in out and "[exit status 1]" in out, out)
+    run("write flp/a/f.txt hi")
+    run("write flp/a/b/g.txt hi")
+    out = run("rm flp/a")
+    t.check("rm of a directory without -r says how", "rm -r removes it" in out and "a/" in run("ls flp"), out)
+    t.check("rm -r removes a whole tree", run("rm -r flp") == "" and "flp" not in run("ls"))
+    run("touch fr1")
+    t.check("rm -r on a plain file just removes it", run("rm -r fr1") == "" and "fr1" not in run("ls"))
+    run("mkdir -p frx/y")
+    t.check("rm -R and -fr", run("rm -fR frx") == "" and "frx" not in run("ls") and run("rm -fr frx nothing") == "")
+    out = run("rm -r .")
+    t.check("rm -r . is refused", "will not remove" in out and "[exit status 1]" in out, out)
+    run("mkdir flz")
+    t.check("so are .. and / and trailing-slash spellings",
+            all("will not remove" in run("rm -rf " + p) for p in ["..", "/", "./", ".//", "flz/.."]) and "WELCOME.TXT" in run("ls"))
+    run("rmdir flz")
+    run("mkdir flr")
+    run("write flr/x hi")
+    run("cd flr")
+    out = run("rm -r /flr")
+    run("cd ..")
+    t.check("rm -r of the directory you are in empties it and says why it stays",
+            "in use" in out and "[exit status 1]" in out and "x" not in run("ls flr"), out)
+    run("rmdir flr")
+    t.check("an unknown rm option shows the usage", "usage: rm [-f] [-r]" in run("rm -Z a"))
+
+    # ---- cp -r and -n ----
+    run("mkdir -p fs/sub")
+    run("write fs/a.txt AAA")
+    run("write fs/sub/b.txt BBB")
+    out = run("cp fs fd")
+    t.check("cp of a directory without -r says how", "cp -r copies it" in out and "[exit status 1]" in out and not re.search(r"\bfd/", run("ls")), out)
+    t.check("cp -r copies a tree", run("cp -r fs fd") == "" and run("cat fd/a.txt") == "AAA" and run("cat fd/sub/b.txt") == "BBB")
+    t.check("onto an existing directory it goes inside", run("cp -r fs fd") == "" and run("cat fd/fs/sub/b.txt") == "BBB")
+    run("write fs/sub/c.txt CCC")
+    t.check("a directory copied onto a directory of that name merges",
+            run("cp -R fs/sub fd") == "" and run("cat fd/sub/c.txt") == "CCC" and run("cat fd/sub/b.txt") == "BBB")
+    out = run("cp -r fs fs/sub")
+    t.check("a directory cannot go into itself", "into itself" in out and "[exit status 1]" in out and "fs/" not in run("ls fs/sub"), out)
+    t.check("nor a long way down inside itself", "into itself" in run("cp -r fs fs/sub/deep") and "deep" not in run("ls fs/sub"))
+    t.check("nor from inside it", "into itself" in run("cp -r /fs/sub /fs/sub/x") and not re.search(r"\bx/", run("ls fs/sub")))
+    run("cd fs")
+    out = run("cp -r . sub/z")
+    run("cd ..")
+    t.check("nor . into a part of itself", "into itself" in out and "z" not in run("ls fs/sub"), out)
+    t.check("cp -r of a file is a plain copy", run("cp -r fs/a.txt fd/plain.txt") == "" and run("cat fd/plain.txt") == "AAA")
+    run("write fn1 one")
+    run("write fn2 two")
+    t.check("cp -n leaves an existing target alone", run("cp -n fn1 fn2") == "" and run("cat fn2") == "two")
+    t.check("cp -f replaces it", run("cp -f fn1 fn2") == "" and run("cat fn2") == "one")
+    t.check("cp -n with -f is refused", "usage: cp" in run("cp -n -f fn1 fn2"))
+    t.check("an unknown cp option shows the usage", "usage: cp" in run("cp -Z fn1 fn2"))
+    run("rm fn1 fn2")
+    run("mkdir fb")
+    for k in range(0, 50, 10):
+        run("touch " + " ".join("fb/f%02d" % i for i in range(k, k + 10)))
+    t.check("a directory of 50 entries (past the first 32) copies whole",
+            run("cp -r fb fc") == "" and run("ls fc | wc").split()[0] == "50" and run("ls fb | wc").split()[0] == "50")
+    t.check("and rm -r takes it away", run("rm -r fb fc") == "" and not re.search(r"\bfb/", run("ls")))
+    t.check("a tree copy and its removal leave no trace", run("rm -r fs fd") == "" and not re.search(r"\bfs/|\bfd/", run("ls")))
+
+    # ---- ls ----
+    run("mkdir -p lr/s")
+    run("write lr/x.txt xx")
+    run("write lr/s/y.txt yy")
+    out = run("ls lr/x.txt")
+    t.check("ls of a file lists that file, by the name given", "lr/x.txt" in out and "lr:" not in out, out)
+    out = run("ls lr/x.txt lr")
+    t.check("files come first, then each directory under its name",
+            out.index("lr/x.txt") < out.index("lr:") and "s/" in out, out)
+    out = run("ls lr lr/s")
+    t.check("two directories have headings and a blank between",
+            "lr:" in out and "lr/s:" in out and "\n\nlr/s:" in out and "y.txt" in out, out)
+    out = run("ls nope lr")
+    t.check("a missing path is reported and the rest listed",
+            "ls: nope: no such file" in out and "x.txt" in out and "[exit status 1]" in out, out)
+    out = run("ls -R lr")
+    t.check("ls -R goes down", "lr:" in out and "lr/s:" in out and "y.txt" in out and "x.txt" in out, out)
+    t.check("ls -R into a pipe is only lines", run("ls -R lr | wc").split()[0] == "6")
+    t.check("-l -1 -a -A are taken and change nothing",
+            all(run("ls " + f + " lr") == run("ls lr") for f in ["-l", "-1", "-a", "-A", "-la"]))
+    t.check("ls -R on a file is the file", "x.txt" in run("ls -R lr/x.txt") and "lr:" not in run("ls -R lr/x.txt"))
+    t.check("an unknown ls option shows the usage", "usage: ls [-R]" in run("ls -Z"))
+    run("rm -r lr")
+    t.check("and it is gone", "lr/" not in run("ls"))
 
 
 def tools_tests(m, t, url):
@@ -1652,6 +1823,7 @@ def tcp_tests(m, t):
             t.check(c + " counts what it should", counts(c) == shape(want), f"{counts(c)} != {shape(want)}")
         sortuniq_tests(m, t, url)
         coreutils_tests(m, t)
+        flags_tests(m, t)
         tools_tests(m, t, url)
         find_tests(m, t, url)
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))

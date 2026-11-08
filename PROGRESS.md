@@ -2649,3 +2649,47 @@ and quoting and pipes, cat on stdin and `-` and several files, every program's
 multiple operands, errors and exit statuses, `--` with a dash-leading name,
 rmdir of the current directory, `find -exec rm`, and cleanup.
 Host 244 + 82 + 163, QEMU 771.
+
+## v0.24.7 "Handshake"
+
+Smoothing the rough edges left by the last few releases. The eight programs
+that left the shell in v0.24.6 refused most options on purpose, to keep that
+release a pure move; this one gives them the ones people actually reach for.
+
+- `touch` no longer errors on a file that exists; it leaves it alone (there is
+  still no call to set a time, so it keeps its old date). `-c` creates nothing.
+- `mkdir -p` makes the parents and accepts an existing directory.
+- `rm -f` is quiet about missing files, `rm -r` (or `-R`) takes whole trees.
+  `.`, `..` and `/` are refused however they are spelled.
+- `cp -r` copies directories (merging into one that exists), `-n` keeps an
+  existing target, `-f` is accepted. A directory cannot be copied into itself:
+  the check climbs from the destination through `..` comparing directory ids,
+  so `cp -r . sub/z` and `cp -r /a /a/b/c` are caught however they are written.
+  A directory's entries are read before its copy is made, so nothing copied
+  into it is itself copied.
+- `mv` replaces an existing file, as it does everywhere else, with `-n` to
+  keep it and `-f` accepted. A directory is never replaced, nor a file by one,
+  and a move onto itself says so. A name that differs only in case is a
+  rename, not a clash, since the disk ignores case. Every check is made before
+  the old target is deleted, but the delete and the rename are two steps.
+- `ls` takes several paths and files (files first, then each directory under
+  its name), `-R` goes down, and `-l -1 -a -A` are accepted and change
+  nothing, since the listing is always the long form and the disk has no
+  hidden files.
+- `cat -n` numbers lines, continuing across files. `echo -e` reads
+  `\n \t \r \a \b \e \\ \0NNN \xHH` and `\c`, `-E` is the default, and the
+  flags bundle (`-ne`) the way they do elsewhere. echo now checks its writes.
+
+In the user library: `getflags` splits bundled single-letter flags from
+operands anywhere before `--` (all of the above use it), `read_dir` returns a
+directory's entries whole, `join_path`, and `path_inside`.
+
+Behaviour that changed from v0.24.6: `touch` on an existing file and `mv`
+onto one used to be errors. Both are the usual behaviour now.
+
+New `flags_tests`: 70 checks, one or more per option above, including a
+directory of 50 entries (past the 32 at which the entry list first grows)
+copied and removed whole, `rm -r` of the current directory, every spelling of
+`.` and `..`, and a copy into itself from four directions. Three checks from
+older releases that asserted the refusals were updated.
+Host 244 + 82 + 163, QEMU 841.

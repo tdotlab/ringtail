@@ -123,6 +123,29 @@ int name_ok(const char* path);
 // bare "invalid argument".
 void fs_error(const char* prog, const char* what, int e);
 
+// Splits single-letter flags from operands. `known` lists the letters
+// the program takes. Arguments such as -rf, anywhere before a "--", are
+// flags (a lone "-" is an operand); the letters seen go into got (at
+// least 32 bytes, a string), and "--" itself is dropped. On return argv
+// holds the program name and then only the operands, *argc counting
+// them. Returns 0, or the first letter not in `known`.
+int getflags(int* argc, char** argv, const char* known, char* got);
+static inline int has_flag(const char* got, char c) { return strchr(got, c) != 0; }
+
+// Every entry of a directory, read before the caller touches any (so
+// it may delete or create while it walks). Returns a malloc'd array of
+// *count entries in the disk's order, to be free()d, or 0 with *err set
+// to a negative errno. "." and ".." are left out.
+dirent_t* read_dir(const char* path, uint32_t* count, int* err);
+
+// dir + "/" + name into out (no doubled slash). 0, or -ENAMETOOLONG.
+int join_path(char* out, size_t size, const char* dir, const char* name);
+
+// Whether `dir` is the directory with id `id`, or lies inside it.
+// Walks up through ".." from dir's parent; used to stop `cp -r a a/b`.
+// A dir that does not exist yet is judged by its parent.
+int path_inside(const char* dir_path, uint32_t id);
+
 // Self-checking programs: check() prints one result line, and
 // check_summary() prints the total and returns an exit status.
 int check(int ok, const char* what);
