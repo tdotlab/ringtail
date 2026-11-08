@@ -2426,3 +2426,25 @@ redirect, a redirect loop, a 404, a short body, https refused, and
 300000 bytes saved with -o; `nc` through an echo server and to a closed
 port. The new calls joined the fuzzer.
 Host 244 + 82 + 163, QEMU 436.
+
+## v0.24.1 "Handshake"
+
+`httpd [-p PORT] [-q] [DIR]`, the first program to use `listen` and
+`accept` for real. It answers GET and HEAD over HTTP/1.0, one connection
+at a time: a file with its length and a type guessed from the extension,
+a directory's index.html or else a generated listing (names escaped for
+HTML and for URLs), a 301 for a directory named without its slash, and
+404, 400, 405, 403 and 414 for what they say. The path is percent-decoded
+and every part checked, so `..` however it is written (plain, `%2e%2e`,
+or a `%2f` smuggled into a name) gets a 403 and nothing outside DIR can
+be reached. A client that has not finished its request after 10 s gets a
+408, and one that half-closes early is answered with what it sent.
+Requests are logged to the screen unless -q.
+
+Tested on the guest's own loopback with `fetch` and `nc`: a file, headers,
+index.html, the listing, the redirect, a name with a space, a 404, four
+spellings of `..`, a 300000-byte file, garbage, and the server still
+answering afterwards. By hand through QEMU's port forwarding with curl:
+the same, plus HEAD, POST, a byte-identical big file, and a client that
+never finishes its request. QEMU 460.
+

@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.0 "Handshake"**. See PROGRESS.md for the history.
+Current version: **v0.24.1 "Handshake"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -265,6 +265,7 @@ Programs on the disk:
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
 | fetch | `fetch [-i] [-o FILE] URL`: gets a page over HTTP/1.0, following up to five redirects. -i shows the headers, -o saves the body. No https. |
+| httpd | `httpd [-p PORT] [-q] [DIR]`: serves DIR (default: the current directory) over HTTP on port 8080, one connection at a time. A directory gives its index.html or a listing; `..` is refused. Logs each request unless -q. Ctrl+C stops it. |
 | nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
 | cp | `cp SRC DST` or `cp SRC... DIR`: copies files, replacing an existing target. |

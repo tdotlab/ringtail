@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.0" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.1" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -257,7 +257,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.0" in out, out)
+    t.check("and the new shell works", "0.24.1" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -601,7 +601,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.0" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.1" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -803,7 +803,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.0" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.1" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -820,7 +820,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.0"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.1"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1080,6 +1080,46 @@ def tcp_tests(m, t):
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))
         out = plain(m.run("cat gone.bin"))
         t.check("a failed -o leaves no file", "no such file" in out, out)
+
+        # httpd, served and fetched on the guest's own loopback.
+        for c in ["mkdir www", "mkdir www/sub", "write www/hi.txt hello", "write www/sub/index.html indexed page",
+                  'cp www/hi.txt "www/My Notes.txt"', "cp big.bin www/big.bin"]:
+            m.run(c, timeout=20)
+        out = m.run("run httpd -q www &")
+        srv = re.search(r"\[(\d+)\] started", out)
+        t.check("httpd starts in the background", srv, out)
+        time.sleep(1)
+        get = lambda path, opts="": plain(m.run(f"fetch {opts} 127.0.0.1:8080{path}", timeout=30))
+        t.check("httpd serves a file", get("/hi.txt").strip() == "hello", get("/hi.txt"))
+        out = get("/hi.txt", "-i")
+        t.check("with its length and type", "Content-Length: 6" in out and "text/plain" in out, out)
+        out = get("/sub/")
+        t.check("a directory gives its index.html", out.strip() == "indexed page", out)
+        out = get("/")
+        t.check("or a listing, with names escaped for URLs",
+                'href="My%20Notes.txt"' in out and 'href="sub/"' in out and "(6 bytes)" in out, out)
+        out = get("/sub")
+        t.check("a directory without a slash is sent to the one with it", "indexed page" in out, out)
+        t.check("a name with a space", get("/My%20Notes.txt").strip() == "hello", get("/My%20Notes.txt"))
+        t.check("a missing file is a 404", "HTTP 404" in get("/nope"), get("/nope"))
+        for bad in ["/../x", "/%2e%2e/x", "/sub%2f..%2fhi.txt", "/sub/../hi.txt"]:
+            out = get(bad)
+            t.check(f"{bad} is refused", "HTTP 403" in out and "hello" not in out, out)
+        out = get("/big.bin", "-o got.bin")
+        out = plain(m.run("wc got.bin", timeout=20))
+        t.check("httpd serves a 300000-byte file whole", "300000 got.bin" in out, out)
+        m.run("write req.txt POST", timeout=10)
+        out = plain(m.run("nc 127.0.0.1 8080 < req.txt", timeout=30))
+        t.check("garbage is a 400", "400 Bad Request" in out, out)
+        out = get("/hi.txt")
+        t.check("and httpd still answers after it", out.strip() == "hello", out)
+        if srv:
+            out = m.run("kill " + srv.group(1))
+            t.check("httpd can be killed", "Killed task" in out, out)
+        for c in ["rm www/sub/index.html", "rmdir www/sub", "rm www/hi.txt", 'rm "www/My Notes.txt"', "rm www/big.bin",
+                  "rmdir www", "rm got.bin", "rm req.txt"]:
+            out = m.run(c, timeout=20)
+            t.check(f"{c} (cleaning up)", plain(out).strip() == "", out)
     finally:
         web.shutdown()
         web.server_close()
