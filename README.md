@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.7 "Handshake"**. See PROGRESS.md for the history.
+Current version: **v0.24.8 "Handshake"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -279,8 +279,8 @@ Programs on the disk:
 | rmdir | `rmdir DIR...`: removes empty directories. |
 | mv | `mv [-f \| -n] SRC DST` or `mv ... SRC... DIR`: renames or moves a file or a whole directory, replacing a file already there (`-n` keeps it). |
 | cp | `cp [-r] [-f \| -n] SRC DST` or `cp ... SRC... DIR`: copies files, and with `-r` whole directories; replaces an existing file unless `-n`. |
-| wc | Counts lines, words and bytes of files, or of its input. |
-| grep | `grep [-i] TEXT [files]`: the lines containing TEXT (plain text, not patterns). |
+| wc | `wc [-lwcmL] [files]`: lines, words, bytes (or just the ones asked for), and `-L` the longest line; a total for several files. |
+| grep | `grep [options] PATTERN [files]`: the lines matching a basic regular expression (`-E` extended, `-F` plain text), with `-i -v -w -x -c -l -L -n -o -m -q -s -H -h -e -f -r -A -B -C`. Lines of any length, "Binary file X matches" for binary files. No back-references. |
 | head | `head [-n N \| -c N] [-q] [FILE...]`: the first 10 lines of each file, or of its input; `-N` is `-n N`. Stops reading once it has enough. |
 | tail | `tail [-n [+]N \| -c [+]N] [-q] [FILE...]`: the last 10 lines, or everything from line N on with `+N`. Reads to the end, keeping only what it needs. No -f. |
 | sort | `sort [-bcfnrsu] [-k F1[,F2]] [-t SEP] [-o FILE] [FILE...]`: sorts lines bytewise, or as numbers with -n, backwards with -r, ignoring case with -f. -u drops repeats, -c only checks, -o may name an input. One -k key, with the usual field rules. Ties go by the whole line unless -s or -u. Holds all its input in memory. |

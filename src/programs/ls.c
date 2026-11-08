@@ -65,6 +65,7 @@ static void list_dir(const char* path, int header) {
         status = 1;
         return;
     }
+    sort_dirents(list, n);
     listed = 1;
     if (!first) printf("\n");
     first = 0;

@@ -182,3 +182,26 @@ int getflags(int* argc, char** argv, const char* known, char* got) {
     *argc = n;
     return 0;
 }
+
+// Bottom-up merge sort of the entries by name, ignoring case (the disk
+// does). Stable; allocation failure leaves them as they were.
+void sort_dirents(dirent_t* list, uint32_t count) {
+    if (count < 2) return;
+    dirent_t* tmp = malloc(count * sizeof *tmp);
+    if (!tmp) return;
+    dirent_t *src = list, *dst = tmp;
+    for (uint32_t w = 1; w < count; w *= 2) {
+        for (uint32_t lo = 0; lo < count; lo += 2 * w) {
+            uint32_t mid = lo + w < count ? lo + w : count, hi = lo + 2 * w < count ? lo + 2 * w : count;
+            uint32_t i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) dst[k++] = strcasecmp(src[j].name, src[i].name) < 0 ? src[j++] : src[i++];
+            while (i < mid) dst[k++] = src[i++];
+            while (j < hi) dst[k++] = src[j++];
+        }
+        dirent_t* t = src;
+        src = dst;
+        dst = t;
+    }
+    if (src != list) memcpy(list, src, count * sizeof *list);
+    free(tmp);
+}

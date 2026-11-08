@@ -1,7 +1,8 @@
 # Host tests: the kernel heap and FAT16 code built as a 32-bit Linux
 # program against a RAM disk; the DHCP and DNS message code (the parts
-# that read bytes off the wire) and the TCP engine, run against a
-# simulated network, under the address and undefined-behaviour
+# that read bytes off the wire), the TCP engine (run against a
+# simulated network) and the regular-expression engine grep uses (run
+# against GNU grep's answers), under the address and undefined-behaviour
 # sanitizers. Needs gcc -m32 (gcc-multilib). The
 # disk image the run leaves behind is checked with fsck.fat when it
 # is installed.
@@ -16,7 +17,9 @@ NETMSG_CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefine
 
 TCP_SRCS = test_tcp.c ../src/net/tcp.c
 
-all: $(TEST) test_netmsg test_tcp
+REGEX_SRCS = test_regex.c ../src/programs/lib/regex.c
+
+all: $(TEST) test_netmsg test_tcp test_regex
 
 $(TEST): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
@@ -27,13 +30,17 @@ test_netmsg: $(NETMSG_SRCS) ../src/net/dhcpmsg.h ../src/programs/lib/dnsmsg.h
 test_tcp: $(TCP_SRCS) ../src/net/tcp.h
 	$(CC) $(NETMSG_CFLAGS) -o $@ $(TCP_SRCS)
 
-run: $(TEST) test_netmsg test_tcp
+test_regex: $(REGEX_SRCS) ../src/programs/lib/regex.h regex_cases.h
+	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(REGEX_SRCS)
+
+run: $(TEST) test_netmsg test_tcp test_regex
 	./$(TEST) || qemu-i386 ./$(TEST)
 	./test_netmsg
 	./test_tcp
+	./test_regex
 	@if command -v fsck.fat >/dev/null; then \
 		fsck.fat -n test_disk.img >/dev/null && echo "fsck.fat: disk image is clean"; \
 	else echo "fsck.fat not installed, skipping the image check"; fi
 
 clean:
-	rm -f $(TEST) test_netmsg test_tcp test_disk.img
+	rm -f $(TEST) test_netmsg test_tcp test_regex test_disk.img

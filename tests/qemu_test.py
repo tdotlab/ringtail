@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.7" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.8" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -259,7 +259,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.7" in out, out)
+    t.check("and the new shell works", "0.24.8" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -606,7 +606,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.7" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.8" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -808,7 +808,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.7" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.8" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -825,7 +825,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.7"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.8"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1768,6 +1768,212 @@ def find_tests(m, t, url):
     t.check("-delete on the lot", run("find ft -delete") == "" and "no such file" in run("find ft"))
 
 
+def grepwc_tests(m, t):
+    """v0.24.8: grep on real regular expressions (the engine itself is
+    checked against GNU grep by tests/test_regex.c) with its output and
+    exit-status options, and wc with flags."""
+    def run(c, timeout=30):
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    def st(c):  # (output, exit status): the shell prints [exit status N] for a failure
+        out = run(c)
+        mm = re.search(r"\n?\[exit status (\d+)\]$", out)
+        return (out[:mm.start()] if mm else out), (int(mm.group(1)) if mm else 0)
+
+    def words(c):
+        return re.sub(r"\s+", " ", run(c)).strip()
+
+    run("echo -e 'one two\\nthree\\n\\nfour five six' > gw.txt")   # 4 lines, 6 words, 29 bytes
+
+    # ---- wc ----
+    t.check("wc with no flags is lines, words, bytes, 7 wide", run("wc gw.txt") == "      4       6      29 gw.txt", run("wc gw.txt"))
+    t.check("wc -l names the file", run("wc -l gw.txt") == "4 gw.txt")
+    t.check("a single number from standard input is bare", run("wc -l < gw.txt") == "4" and run("cat gw.txt | wc -w") == "6" and run("cat gw.txt | wc -c") == "29")
+    t.check("wc -m counts the same bytes", run("wc -m < gw.txt") == "29")
+    t.check("the columns come in a fixed order whatever the flags", words("wc -cl gw.txt") == "4 29 gw.txt" and words("wc -wl gw.txt") == "4 6 gw.txt")
+    t.check("flags may be bundled or apart", words("wc -lwc gw.txt") == words("wc -l -w -c gw.txt") == "4 6 29 gw.txt")
+    t.check("wc -L is the longest line", words("wc -L gw.txt") == "13 gw.txt")
+    t.check("and a tab runs to the next multiple of 8", run("echo -e 'ab\\tc' | wc -L") == "9" and run("echo -e '\\tc' | wc -L") == "9")
+    t.check("a carriage return starts the line over", run("echo -e 'abcdef\\rxy' | wc -L") == "6")
+    t.check("all four", words("wc -lwcL gw.txt") == "4 6 29 13 gw.txt")
+    t.check("\\v, \\f and \\r separate words", run("echo -e 'a\\013b\\014c\\rd' | wc -w") == "4")
+    t.check("empty input is all zeros", words("echo -n | wc") == "0 0 0")
+    t.check("a last line without a newline is a word but not a line", words("echo -n 'a b' | wc") == "0 2 3")
+    run("echo -e 'x\\ny' > gw2.txt")
+    out = run("wc -l gw.txt gw2.txt")
+    t.check("several files get a total, 7 wide", [re.sub(r"\s+", " ", l).strip() for l in out.split("\n")] == ["4 gw.txt", "2 gw2.txt", "6 total"] and out.split("\n")[0].startswith("      4"), out)
+    out = run("wc -L gw.txt gw2.txt")
+    t.check("the total of -L is the longest of all", words("wc -L gw.txt gw2.txt").endswith("13 total"), out)
+    t.check("- is standard input", run("echo hi | wc -c -") == "3 -" and words("echo hi | wc - gw2.txt").startswith("1 1 3 -"))
+    out, rc = st("wc -l nosuch gw2.txt")
+    t.check("a missing file is reported and the rest counted", "nosuch: no such file" in out and "2 gw2.txt" in out and rc == 1, out)
+    out, rc = st("wc -Z gw.txt")
+    t.check("a bad wc option shows the usage", "usage: wc [-lwcmL]" in out and rc == 2, out)
+    t.check("wc -- -x? takes -- as the end of options", run("wc -l -- gw2.txt") == "2 gw2.txt")
+    out, rc = st("wc gw2.txt dd")
+    t.check("a directory is an error, not a count", rc == 1 and "dd" in out, out)
+
+    # ---- grep: syntax ----
+    run("echo -e 'abc\\nABC\\na.c\\nxabcx\\nabcabc\\nfoo bar\\n(paren)\\na|b\\naaa' > gr.txt")
+    def g(c):  # the output of a grep as a list of lines
+        o = st(c)[0]
+        return o.split("\n") if o else []
+    t.check("plain text still works", g("grep abc gr.txt") == ["abc", "xabcx", "abcabc"])
+    t.check(". matches any character", g("grep 'a.c' gr.txt") == ["abc", "a.c", "xabcx", "abcabc"])
+    t.check("\\. and [.] are a dot", g("grep 'a\\.c' gr.txt") == ["a.c"] and g("grep 'a[.]c' gr.txt") == ["a.c"])
+    t.check("anchors", g("grep '^abc' gr.txt") == ["abc", "abcabc"] and g("grep 'abc$' gr.txt") == ["abc", "abcabc"] and g("grep '^abc$' gr.txt") == ["abc"])
+    t.check("a bracket expression and a range", g("grep '^[a-c]*$' gr.txt") == ["abc", "abcabc", "aaa"] and g("grep -c '[[:upper:]]' gr.txt") == ["1"])
+    t.check("basic syntax: ( | + ? are plain", g("grep '(paren)' gr.txt") == ["(paren)"] and g("grep 'a|b' gr.txt") == ["a|b"])
+    t.check("basic syntax: \\| \\( \\) \\+ \\?", g("grep -c 'foo\\|bar' gr.txt") == ["1"] and g("grep '^\\(abc\\)\\+$' gr.txt") == ["abc", "abcabc"] and g("grep -c '^ab\\?c$' gr.txt") == ["1"])
+    t.check("intervals", g("grep 'a\\{3\\}' gr.txt") == ["aaa"] and g("grep -E '^a{1,2}b' gr.txt") == ["abc", "abcabc"])
+    t.check("-E: | ( ) + ?", g("grep -E 'foo|^a.c$' gr.txt") == ["abc", "a.c", "foo bar"] and g("grep -E '^(abc)+$' gr.txt") == ["abc", "abcabc"] and g("grep -Ec '^ab?c$' gr.txt") == ["1"])
+    t.check("-E: \\( is a plain (", g("grep -E '\\(paren\\)' gr.txt") == ["(paren)"])
+    t.check("-F takes it all literally", g("grep -F 'a.c' gr.txt") == ["a.c"] and g("grep -F '(paren)' gr.txt") == ["(paren)"] and g("grep -F 'a|b' gr.txt") == ["a|b"])
+    t.check("-G is the default again", g("grep -E -G 'a|b' gr.txt") == ["a|b"])
+    t.check("\\w \\W \\s \\b \\< \\>", g("grep -c '\\w\\s\\w' gr.txt") == ["1"] and g("grep 'foo\\>' gr.txt") == ["foo bar"] and g("grep '\\<bar' gr.txt") == ["foo bar"] and g("grep -c 'o\\Bo' gr.txt") == ["1"])
+    t.check("* at the start is a plain *", g("grep -c '*' gr.txt") == ["0"] and run("echo 'a*b' | grep '*b'") == "a*b")
+    t.check("longest match wins with alternatives", run("echo abcd | grep -oE 'ab|abcd|abc'") == "abcd")
+    t.check("a back-reference is refused and says so", "back-references are not supported" in run("grep '\\(a\\)\\1' gr.txt"))
+    out, rc = st("grep '\\(' gr.txt")
+    t.check("a bad pattern is exit 2 with GNU's message", out == "grep: Unmatched ( or \\(" and rc == 2, out)
+    out, rc = st("grep '[a' gr.txt")
+    t.check("an open bracket is too", "grep: Unmatched [" in out and rc == 2, out)
+    out, rc = st("grep -E 'a{2,1}' gr.txt")
+    t.check("and a backwards interval", "Invalid content" in out and rc == 2, out)
+
+    # ---- grep: selecting ----
+    t.check("-i", g("grep -i abc gr.txt") == ["abc", "ABC", "xabcx", "abcabc"] and g("grep -y ABC gr.txt")[0] == "abc")
+    t.check("-i reaches ranges and classes", g("grep -ic '^[a-c]*$' gr.txt") == ["4"] and g("grep -ic '[[:lower:]]' gr.txt") == ["9"])
+    t.check("-v lists the others", g("grep -v -e abc -e 'a.' gr.txt") == ["ABC"] and g("grep -vc abc gr.txt") == ["6"])
+    t.check("-w", g("grep -w abc gr.txt") == ["abc"] and g("grep -w a gr.txt") == ["a.c", "a|b"])
+    t.check("-w finds a later match when the first is inside a word", run("echo 'xfoo foo' | grep -ow foo") == "foo" and st("echo 'foox' | grep -w foo") == ("", 1))
+    t.check("-x", g("grep -x abc gr.txt") == ["abc"] and g("grep -xE 'a.c|foo' gr.txt") == ["abc", "a.c"] and g("grep -xF a.c gr.txt") == ["a.c"])
+    t.check("-e twice", g("grep -e foo -e paren gr.txt") == ["foo bar", "(paren)"])
+    t.check("-e takes a pattern that looks like an option", run("echo 'a -x b' | grep -e -x") == "a -x b" and run("echo 'a -x b' | grep -- -x") == "a -x b")
+    run("echo -e 'foo\\n(p' > gpat.txt")
+    t.check("-f reads patterns", g("grep -F -f gpat.txt gr.txt") == ["foo bar", "(paren)"])
+    run("echo -n > gempty.txt")
+    out, rc = st("grep -f gempty.txt gr.txt")
+    t.check("-f of an empty file matches nothing", out == "" and rc == 1, out)
+    t.check("and with -v, everything", g("grep -vc -f gempty.txt gr.txt") == ["9"])
+    t.check("an empty pattern matches every line", g("grep -c '' gr.txt") == ["9"] and g("grep -c -e '' -e zzz gr.txt") == ["9"])
+    t.check("-f combined with -e", g("grep -c -F -f gpat.txt -e abc gr.txt") == ["5"])
+    t.check("-m stops early", g("grep -m 2 abc gr.txt") == ["abc", "xabcx"] and g("grep -m1 -c abc gr.txt") == ["1"])
+    out, rc = st("grep -m 0 abc gr.txt")
+    t.check("-m 0 selects nothing", out == "" and rc == 1, out)
+
+    # ---- grep: output ----
+    t.check("-n", g("grep -n abc gr.txt") == ["1:abc", "4:xabcx", "5:abcabc"])
+    t.check("-c", g("grep -c abc gr.txt") == ["3"] and g("grep -c zzz gr.txt") == ["0"])
+    t.check("-o prints each match on a line", g("grep -o abc gr.txt") == ["abc"] * 4)
+    out = g("grep -on abc gr.txt")
+    t.check("-o with -n prefixes every match", out == ["1:abc", "4:abc", "5:abc", "5:abc"], str(out))
+    t.check("-o skips empty matches", run("echo abc | grep -o 'x*'") == "")
+    t.check("-o with -i keeps the original case", run("echo 'AbC abc' | grep -oi abc") == "AbC\nabc")
+    t.check("-ov prints nothing", run("grep -ov abc gr.txt") == "")
+    t.check("-l and -L", g("grep -l abc gr.txt gw.txt") == ["gr.txt"] and g("grep -L abc gr.txt gw.txt") == ["gw.txt"])
+    out, rc = st("grep -L abc gr.txt")
+    t.check("-L exits 1 when every file matched", out == "" and rc == 1, out)
+    out, rc = st("grep -L zzz gr.txt")
+    t.check("and 0 when one was listed", out == "gr.txt" and rc == 0, out)
+    t.check("-l stops at the first match", g("grep -l -c abc gr.txt") == ["gr.txt"])
+    t.check("-q is silent", run("grep -q abc gr.txt") == "")
+    out, rc = st("grep -q zzz gr.txt")
+    t.check("and -q exit status is 1 for no match", out == "" and rc == 1, out)
+    out, rc = st("grep -q abc nosuch gr.txt")
+    t.check("-q with a match is 0 even after an error", rc == 0, out)
+    t.check("two files get names", g("grep -n one gr.txt gw.txt") == ["gw.txt:1:one two"] and g("grep -c abc gr.txt gw.txt") == ["gr.txt:3", "gw.txt:0"])
+    t.check("-h hides them, -H shows them", g("grep -h abc gr.txt gw.txt")[0] == "abc" and g("grep -H one gw.txt") == ["gw.txt:one two"])
+    t.check("standard input is (standard input)", run("echo hi | grep -H hi") == "(standard input):hi" and run("echo hi | grep -c hi - gw.txt") == "(standard input):1\ngw.txt:0")
+    t.check("- reads standard input", run("echo hello | grep -n ell -") == "1:hello")
+    t.check("no newline at the end of the file is added", run("echo -n 'a b' | grep b | wc -c") == "4")
+
+    # ---- grep: context ----
+    run("echo -e 'a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj' > gc.txt")
+    t.check("-A", g("grep -A1 -e b gc.txt") == ["b", "c"] and g("grep -A 2 -e b gc.txt") == ["b", "c", "d"])
+    t.check("-B", g("grep -B1 -e c gc.txt") == ["b", "c"])
+    t.check("-C and -N", g("grep -C1 e gc.txt") == ["d", "e", "f"] and g("grep -1 e gc.txt") == ["d", "e", "f"])
+    t.check("-n marks matches with : and context with -", g("grep -n -C1 e gc.txt") == ["4-d", "5:e", "6-f"])
+    t.check("groups that are apart get --", g("grep -C1 -e b -e i gc.txt") == ["a", "b", "c", "--", "h", "i", "j"])
+    t.check("adjacent and overlapping groups are one", g("grep -C1 -e c -e e gc.txt") == ["b", "c", "d", "e", "f"] and g("grep -A1 -e b -e d gc.txt") == ["b", "c", "d", "e"])
+    t.check("a match inside the context is a match", g("grep -n -A2 -e b -e c gc.txt") == ["2:b", "3:c", "4-d", "5-e"])
+    t.check("context at the edges", g("grep -B3 a gc.txt") == ["a"] and g("grep -A3 j gc.txt") == ["j"])
+    t.check("file names in context lines", g("grep -H -C1 e gc.txt") == ["gc.txt-d", "gc.txt:e", "gc.txt-f"])
+    t.check("-- between files too", g("grep -A1 -e a -e one gc.txt gw.txt") == ["gc.txt:a", "gc.txt-b", "--", "gw.txt:one two", "gw.txt-three"])
+    t.check("-m with trailing context", g("grep -m1 -A1 -e a -e b gc.txt") == ["a", "b"])
+    t.check("-v with context", g("grep -v -A1 -e '[a-g]' gc.txt") == ["h", "i", "j"] and g("grep -vc -e '[a-g]' gc.txt") == ["3"])
+    t.check("-c ignores the context options", g("grep -c -C2 e gc.txt") == ["1"])
+    out, rc = st("grep -A x e gc.txt")
+    t.check("a bad context length", "invalid context length" in out and rc == 2, out)
+    out, rc = st("grep -m x e gc.txt")
+    t.check("a bad -m", "invalid max count" in out and rc == 2, out)
+    t.check("a large -B does not matter", g("grep -B 5000 c gc.txt") == ["a", "b", "c"])
+
+    # ---- grep: lines of any length, binary files ----
+    run("echo -n xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx > gl1")   # 80
+    run("cat gl1 gl1 gl1 gl1 gl1 gl1 gl1 gl1 gl1 gl1 > gl2")   # 800
+    run("cat gl2 gl2 gl2 gl2 gl2 gl2 gl2 gl2 gl2 gl2 > gl3")   # 8000
+    run("echo needle >> gl3")
+    run("echo tail >> gl3")
+    t.check("a line of 8000 bytes", run("grep -c needle gl3") == "1" and run("grep needle gl3 | wc -c") == "8007" and run("grep -o needle gl3") == "needle")
+    t.check("and one found by an anchored pattern at its far end", run("grep -c 'x*needle$' gl3") == "1" and run("grep -c '^x*needle$' gl3") == "1")
+    t.check("the line after it is intact", run("grep tail gl3") == "tail" and run("grep -n tail gl3") == "2:tail")
+    run("echo -e 'ab\\x00cd match\\nplain match' > gb.dat")
+    t.check("binary file: just says so", run("grep match gb.dat") == "Binary file gb.dat matches")
+    t.check("-a prints it anyway", run("grep -a plain gb.dat") == "plain match")
+    t.check("-c and -l do not mind", run("grep -c match gb.dat") == "2" and run("grep -l match gb.dat") == "gb.dat")
+    out, rc = st("grep zzz gb.dat")
+    t.check("and exits 1", out == "" and rc == 1, out)
+
+    # ---- grep: files, directories ----
+    for c in ["mkdir gt", "mkdir gt/sub", "echo needle one > gt/a.txt", "echo nothing > gt/b.txt", "echo needle two > gt/sub/c.txt", "echo Needle three > gt/sub/D.txt"]:
+        run(c)
+    out, rc = st("grep needle gt")
+    t.check("a directory without -r is an error", "gt: is a directory" in out and rc == 2, out)
+    t.check("-s keeps quiet about it", st("grep -s needle gt") == ("", 2))
+    t.check("-r walks it, sorted, with names", g("grep -r needle gt") == ["gt/a.txt:needle one", "gt/sub/c.txt:needle two"])
+    t.check("-r -i", g("grep -ri needle gt") == ["gt/a.txt:needle one", "gt/sub/c.txt:needle two", "gt/sub/D.txt:Needle three"])
+    t.check("-rl", g("grep -rl needle gt") == ["gt/a.txt", "gt/sub/c.txt"])
+    t.check("-rL", g("grep -rL needle gt") == ["gt/b.txt", "gt/sub/D.txt"])
+    t.check("-rc", g("grep -rc needle gt") == ["gt/a.txt:1", "gt/b.txt:0", "gt/sub/c.txt:1", "gt/sub/D.txt:0"])
+    t.check("-rh", g("grep -rh needle gt") == ["needle one", "needle two"])
+    t.check("-R is the same", g("grep -Rl needle gt") == ["gt/a.txt", "gt/sub/c.txt"])
+    t.check("-r on a plain file has no name", g("grep -r needle gt/a.txt") == ["needle one"])
+    t.check("-r on two paths", g("grep -rn nothing gt/b.txt gt/sub") == ["gt/b.txt:1:nothing"])
+    t.check("a trailing slash does not double", g("grep -rl needle gt/") == ["gt/a.txt", "gt/sub/c.txt"])
+    run("cd gt")
+    t.check("-r with no file is ., with bare names", g("grep -r needle") == ["a.txt:needle one", "sub/c.txt:needle two"])
+    t.check("-r . keeps the ./", g("grep -rl needle .") == ["./a.txt", "./sub/c.txt"])
+    run("cd ..")
+    t.check("a missing file does not stop the others, but exits 2", st("grep -c abc nosuch gr.txt")[1] == 2 and "gr.txt:3" in run("grep -c abc nosuch gr.txt"))
+    out, rc = st("grep abc nosuch gr.txt")
+    t.check("and the message names it", "grep: nosuch: no such file" in out and "gr.txt:abc" in out and rc == 2, out)
+    t.check("-s hides that message, not the exit status", "nosuch" not in run("grep -s abc nosuch gr.txt") and st("grep -s abc nosuch gr.txt")[1] == 2)
+    t.check("grep reading a pipe", run("echo 'x y' | grep -o 'y'") == "y" and run("cat gr.txt | grep -c abc") == "3")
+    t.check("grep -m 1 ends the pipeline's reader early", run("cat gw.txt | grep -m 1 t") == "one two")
+    out, rc = st("grep --help")
+    t.check("an unknown long option shows the usage", "usage: grep" in out and rc == 2, out)
+    for f in ["gw.txt", "gw2.txt", "gr.txt", "gc.txt", "gpat.txt", "gempty.txt", "gl1", "gl2", "gl3", "gb.dat"]:
+        run("rm " + f)
+    run("rm -r gt")
+
+    # ---- ls sorts by name ----
+    run("mkdir lsd")
+    for c in ["touch lsd/zeta", "touch lsd/Alpha", "touch lsd/beta", "mkdir lsd/Mid", "touch lsd/Mid/y", "touch lsd/Mid/X", "mkdir lsd/aaa", "touch lsd/aaa/b", "touch lsd/aaa/a"]:
+        run(c)
+    def names(c):
+        return [m_.group(1).rstrip("/") for l in run(c).split("\n") for m_ in [re.match(r"^\s+(\S+)/?\s+(?:<dir>|\d+)\s", l)] if m_]
+    t.check("ls lists in name order, case ignored", names("ls lsd") == ["aaa", "Alpha", "beta", "Mid", "zeta"], str(names("ls lsd")))
+    out = run("ls -R lsd")
+    t.check("-R goes down in that order too", [l for l in out.split("\n") if l.endswith(":")] == ["lsd:", "lsd/aaa:", "lsd/Mid:"], out)
+    t.check("and each directory is sorted", names("ls lsd/Mid") == ["X", "y"] and names("ls lsd/aaa") == ["a", "b"])
+    for i in range(39, -1, -1):
+        run("touch lsd/f%02d" % i)
+    got = names("ls lsd")
+    t.check("a directory of 45 entries, made in reverse, comes out sorted", got == sorted(got, key=str.lower) and len(got) == 45, str(got))
+    run("rm -r lsd")
+
+
 def tcp_tests(m, t):
     """fetch and nc against servers on the host, which the guest
     reaches as 10.0.2.2."""
@@ -1824,6 +2030,7 @@ def tcp_tests(m, t):
         sortuniq_tests(m, t, url)
         coreutils_tests(m, t)
         flags_tests(m, t)
+        grepwc_tests(m, t)
         tools_tests(m, t, url)
         find_tests(m, t, url)
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))

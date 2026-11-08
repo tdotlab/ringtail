@@ -2693,3 +2693,54 @@ copied and removed whole, `rm -r` of the current directory, every spelling of
 `.` and `..`, and a copy into itself from four directions. Three checks from
 older releases that asserted the refusals were updated.
 Host 244 + 82 + 163, QEMU 841.
+
+## v0.24.8 "Handshake"
+
+`grep` and `wc` were the two text tools still stuck at what the shell once
+needed: grep did plain text and `-i`, cut lines at 1024 bytes and could not be
+told anything; wc always printed three 7-wide columns.
+
+- A regular-expression engine, `src/programs/lib/regex.c`: POSIX basic and
+  extended syntax with the GNU extras (`\w \W \s \S \b \B \< \>`, `\+ \? \|`
+  in basic), bracket expressions with ranges and `[:classes:]`, intervals,
+  `-i`, `-w`, `-x`, `-F`. It compiles to a small instruction list and is run
+  Pike-VM style, all threads side by side, so the time is the line length times
+  the pattern size and nothing backtracks: `(a*)*b` on 5000 a's is instant.
+  Matches are leftmost-longest, as POSIX says. No back-references (it says so
+  rather than guessing). It copies GNU where GNU is odd and consistent: a
+  leading `*` is a plain character in basic syntax and ignored in extended, a
+  lone `)` is plain in extended, `-w` accepts an empty match between two
+  non-word characters. It does not copy GNU where GNU contradicts itself
+  (a `^`, `$` or `\<` in the middle of an extended pattern behaves differently
+  for line selection and for `-o`).
+- `grep [OPTION]... PATTERNS [FILE]...`: `-E -F -G -e -f -i -y -v -w -x -c -l
+  -L -m -n -o -q -s -H -h -r -R -a -A -B -C -NUM`. Lines are any length. Output
+  is flushed before grep waits for input, so it works mid-pipeline. Context
+  groups get `--` between them, across files too; `-B` keeps a ring of the
+  last N lines that is only as big as the lines held. A file with a NUL in it
+  prints "Binary file X matches" unless `-a`. `-r` walks directories in name
+  order (with no file, `.`, and bare names), and a directory without `-r` is an
+  error. Exit 0 selected, 1 none, 2 error (but `-q` with a match is 0).
+- `wc [-lwcmL]`: only the columns asked for, always in the order lines, words,
+  bytes, longest line. White space is the C set (so `\v \f \r` count). A single
+  number for a single file or for standard input is printed bare, as
+  `$(wc -l < f)` wants; anything else keeps the 7-wide columns, with a total
+  for several files (`-L` totals as the maximum).
+- `ls` sorts by name, case ignored, in every directory and under `-R`; the
+  disk's own order is the order the files were made in. `sort_dirents` is in
+  the user library, and grep -r uses it.
+
+Behaviour that changed: grep's pattern is a regular expression now, so
+`grep a.c` means "a, anything, c" and `grep '('` is an error; use `-F` for the
+old behaviour. `wc -l f` prints `4 f`, not three columns.
+
+Testing: `tests/test_regex.c` runs 818 patterns against what GNU grep selects
+and prints (`gen_regex_cases.py` makes the table with real grep, 700 of them
+from a seeded generator, plus a hand-written set of syntax and error cases),
+under the address and undefined-behaviour sanitizers, plus limits, patterns that
+ruin a backtracker, 200 000-byte lines, and recompiling in a loop. Several
+thousand more random patterns were compared by hand during development, which
+is where the differences above came from.
+New `grepwc_tests` in QEMU: 120 checks.
+Host 244 + 82 + 163 + 2039 (regex), QEMU 961.
+

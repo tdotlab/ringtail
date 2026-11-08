@@ -138,6 +138,10 @@ static inline int has_flag(const char* got, char c) { return strchr(got, c) != 0
 // to a negative errno. "." and ".." are left out.
 dirent_t* read_dir(const char* path, uint32_t* count, int* err);
 
+// Puts entries from read_dir in order by name, upper and lower case alike
+// (the disk's own order is the order they were made in).
+void sort_dirents(dirent_t* list, uint32_t count);
+
 // dir + "/" + name into out (no doubled slash). 0, or -ENAMETOOLONG.
 int join_path(char* out, size_t size, const char* dir, const char* name);
 
