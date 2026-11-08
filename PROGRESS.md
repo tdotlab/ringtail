@@ -2605,3 +2605,47 @@ built-in, every parse error with its exit status, a twelve-level chain, a
 40-entry directory, and `-delete` on 40 files in one directory, on a whole
 subtree, on a non-empty directory (refused) and on everything.
 Host 244 + 82 + 163, QEMU 725.
+
+## v0.24.6 "Handshake"
+
+Move the 8: `ls`, `cat`, `echo`, `touch`, `rm`, `mkdir`, `rmdir` and `mv` are
+now programs on the disk instead of Saklas built-ins, so they work after `|`,
+read standard input, take `<`, and run under `find -exec`. The rule is the one
+Linux follows: the shell keeps only what has to change its own state (`cd`,
+`pwd`, `exit`, `history`, `color` and so on) and everything else is a program.
+Each command exists once; nothing is both. `write`, which is not a standard
+tool, stays a built-in.
+
+Two helpers moved into the user library so every program shares them:
+`name_ok` (the file-name check, so the "not a valid file name" message
+survives) and `fs_error`. All eight accept `--`, take several operands where
+that makes sense (`rm a b c`, `mkdir x y`, `mv a b dir`), and exit 0, 1 for a
+failed operand, or 2 for bad usage.
+
+Behaviour that changed, on purpose:
+
+- A failing program makes Saklas print the dim `[exit status N]` line;
+  built-in errors never did.
+- Errors are plain and prefixed with the program name
+  (`ls: nope: no such file or directory`).
+- `echo` no longer keeps unquoted runs of blanks; quote the text to keep them.
+  `write` still does.
+- Unknown options are refused with a usage line and status 2 (`rm -r`,
+  `mkdir -p`, `ls -l`) rather than being read as file names.
+- `touch` on an existing file is still an error, as before. That is not what
+  POSIX `touch` does, and it is kept only so this release moves things
+  without changing them.
+- `help` lists 22 commands instead of 30. Tab completion already treated
+  programs in the root as commands, so nothing is lost there.
+
+`find`'s hint for `-exec` now names `cd` and `pwd` as the commands that are
+still built in. The kernel is untouched. A `--` bug found by the new tests
+(a dash-leading name after `--` was still refused) is fixed in all eight.
+The text-tool tests now build their 30-line file from `help` plus the first
+eight lines again, since `help` got shorter.
+
+New `coreutils_tests` (42 checks): the programs are on the disk, echo's flags
+and quoting and pipes, cat on stdin and `-` and several files, every program's
+multiple operands, errors and exit statuses, `--` with a dash-leading name,
+rmdir of the current directory, `find -exec rm`, and cleanup.
+Host 244 + 82 + 163, QEMU 771.

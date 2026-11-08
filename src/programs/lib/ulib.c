@@ -72,3 +72,19 @@ int dest_path(const char* src, const char* dst, char* out, size_t size) {
     out[dl + slash + n] = 0;
     return 0;
 }
+
+int name_ok(const char* path) {
+    const char* n = strrchr(path, '/');
+    n = n ? n + 1 : path;
+    size_t len = strlen(n);
+    if (!len || strcmp(n, ".") == 0 || strcmp(n, "..") == 0) return 1;
+    if (len > NAME_MAX || n[0] == ' ' || n[len - 1] == ' ' || n[len - 1] == '.') return 0;
+    for (const char* p = n; *p; p++)
+        if (*p < 0x20 || *p > 0x7E || strchr("\"*:<>?\\|", *p)) return 0;
+    return 1;
+}
+
+void fs_error(const char* prog, const char* what, int e) {
+    const char* why = e == -EINVAL && !name_ok(what) ? "not a valid file name" : strerror(e);
+    dprintf(STDERR_FILENO, "%s: %s: %s\n", prog, what, why);
+}

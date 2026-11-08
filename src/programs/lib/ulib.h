@@ -113,6 +113,16 @@ int dprintf(int fd, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 // itself. 0, or -ENAMETOOLONG if it does not fit out.
 int dest_path(const char* src, const char* dst, char* out, size_t size);
 
+// Whether the last name in path follows the disk's rules (abi.h):
+// printable, none of \" * : < > ? \\ |, no space first or space or dot
+// last. "." and ".." count as fine.
+int name_ok(const char* path);
+
+// "PROG: WHAT: why" on standard error, for a failed call on a path. An
+// -EINVAL on a name the disk would not take says so, rather than the
+// bare "invalid argument".
+void fs_error(const char* prog, const char* what, int e);
+
 // Self-checking programs: check() prints one result line, and
 // check_summary() prints the total and returns an exit status.
 int check(int ok, const char* what);

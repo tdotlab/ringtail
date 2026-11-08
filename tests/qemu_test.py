@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.5" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.6" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -252,12 +252,14 @@ def tests(m, t):
     t.check("sleep 1 takes about a second", 0.8 < took < 3, "%.2f s: %s" % (took, out))
     out = m.run("sleep 99999")
     t.check("sleep rejects an hour and more", "usage" in out, out)
+    out = m.run('echo "two   spaces"')
+    t.check("echo keeps the spacing inside quotes", "two   spaces" in out, out)
     out = m.run("echo  two   spaces")
-    t.check("echo keeps the spacing", "two   spaces" in out, out)
+    t.check("and joins unquoted words with single spaces", "two spaces" in out and "two  " not in out, out)
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.5" in out, out)
+    t.check("and the new shell works", "0.24.6" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -370,11 +372,11 @@ def tests(m, t):
     out = m.run("hello | wc")
     t.check("a program pipes into another", "      1       3      17" in out, out)
     out = m.run("ls | grep -i txt")
-    t.check("a built-in pipes into a program", "WELCOME.TXT" in out and "HELLO" not in out, out)
+    t.check("ls pipes into a program", "WELCOME.TXT" in out and "HELLO" not in out, out)
     t.check("and leaves out what is only for the screen", "files," not in out and "\x1b[90m" not in out, out)
     out = m.run("help | grep poweroff")
     t.check("help can be searched", "poweroff" in out and "history" not in out, out)
-    m.run("echo one  two > out.txt")
+    m.run('echo "one  two" > out.txt')
     m.run("echo three >> out.txt")
     out = m.run("cat out.txt")
     t.check("> writes a file and >> appends", "one  two\nthree" in out, out)
@@ -390,12 +392,14 @@ def tests(m, t):
     t.check("an unknown command in a pipeline is reported", "Unknown command 'frobnicate'" in out, out)
     out = m.run("hello |")
     t.check("a dangling | is an error", "Missing command" in out, out)
-    out = m.run("hello | ls")
+    out = m.run("hello | pwd")
     t.check("a built-in cannot come after |", "built into the shell" in out, out)
     out = m.run("hello >")
     t.check("> needs a file name", "Missing file name" in out, out)
-    out = m.run("ls < out.txt")
+    out = m.run("pwd < out.txt")
     t.check("built-ins do not take <", "do not read input" in out, out)
+    out = m.run("cat < out.txt")
+    t.check("cat is a program, so it takes <", "Hello from disk!" in out, out)
     out = m.run("wc < nosuch.txt")
     t.check("a missing input file is reported", "no such file" in out, out)
     m.send("sleep 30 | wc\r")
@@ -602,7 +606,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.5" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.6" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -804,7 +808,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.5" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.6" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -821,7 +825,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.5"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.6"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1212,6 +1216,102 @@ def sortuniq_tests(m, t, url):
         run("rm %s.txt" % f)
 
 
+def coreutils_tests(m, t):
+    """The file commands that used to be built into the shell and are
+    programs now: ls, cat, echo, mkdir, rmdir, touch, rm and mv, as
+    programs do things a built-in could not (pipes, stdin, exit
+    status), and with several arguments."""
+    def run(c, timeout=30):
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    t.check("the eight are programs on the disk",
+            all(re.search(r"^\s+%s\s" % n, run("ls /"), re.M) for n in ["LS", "CAT", "RM", "MV", "MKDIR", "RMDIR", "TOUCH", "ECHO"]))
+    t.check("echo", run("echo hello world") == "hello world")
+    t.check("echo -n leaves off the newline", run("echo -n hi | wc").split()[2] == "2")
+    t.check("echo with nothing is a newline", run("echo | wc").split()[2] == "1")
+    t.check("quotes keep blanks together", run("echo 'a   b' c") == "a   b c")
+    t.check("echo reaches the end of a pipe", run("echo hi | cat | cat") == "hi")
+    t.check("cat reads standard input", run("echo piped | cat") == "piped")
+    t.check("cat - too", run("echo piped | cat -") == "piped")
+    t.check("cat counts its input", run("echo hello | cat | wc").split()[2] == "6")
+    out = run("cat -x")
+    t.check("an unknown option shows the usage and exits 2", "usage: cat" in out and "[exit status 2]" in out, out)
+
+    run("mkdir ca cb cc")
+    t.check("mkdir takes several", all(d in run("ls") for d in ["ca/", "cb/", "cc/"]))
+    out = run("mkdir cd ca ce")
+    t.check("mkdir reports one that exists and still makes the rest",
+            "mkdir: ca: already exists" in out and "[exit status 1]" in out and "cd/" in run("ls") and "ce/" in run("ls"), out)
+    t.check("mkdir with nothing shows the usage", "usage: mkdir" in run("mkdir"))
+    t.check("mkdir -p is refused, not made a directory", "usage: mkdir" in run("mkdir -p x/y") and "-p" not in run("ls"))
+    out = run("mkdir bad*name")
+    t.check("a bad name says so", "not a valid file name" in out, out)
+
+    run("touch ta tb tc")
+    t.check("touch takes several", all(f in run("ls") for f in ["ta ", "tb ", "tc "]))
+    out = run("touch td ta te")
+    t.check("touch reports one that exists, the rest are made",
+            "touch: ta: already exists" in out and "[exit status 1]" in out and re.search(r"\bte\b", run("ls")), out)
+    t.check("touch with nothing shows the usage", "usage: touch" in run("touch"))
+
+    run("write cat1.txt one")
+    run("write cat2.txt two")
+    out = run("ls | wc")
+    n = int(out.split()[0])
+    t.check("ls into a pipe is one line per entry", n >= 10, out)
+    run("write ca/x.txt xx")
+    out = run("ls ca")
+    t.check("ls DIR lists what is in it", "x.txt" in out and "KB free" in out, out)
+    out = run("ls nope")
+    t.check("ls of a missing directory", "ls: nope: no such file" in out and "[exit status 1]" in out, out)
+    t.check("ls -l is refused with the usage", "usage: ls [DIR]" in run("ls -l"))
+    t.check("ls with two directories too", "usage: ls [DIR]" in run("ls ca cb"))
+    out = run("ls | sort | head -n 3")
+    t.check("ls feeds a pipeline", len(out.split("\n")) == 3, out)
+    t.check("ls takes a path with a slash", "x.txt" in run("ls /ca") and "x.txt" in run("ls ./ca"))
+
+    out = run("rm cat1.txt nope.txt cat2.txt")
+    t.check("rm reports a missing one and still removes the rest",
+            "rm: nope.txt: no such file" in out and "[exit status 1]" in out and "cat1" not in run("ls") and "cat2" not in run("ls"), out)
+    out = run("rm ca")
+    t.check("rm of a directory is refused with a hint", "is a directory (rmdir removes an empty one)" in out, out)
+    t.check("rm -r is refused, not taken for a file", "usage: rm" in run("rm -r ca"))
+    t.check("rm with nothing shows the usage", "usage: rm" in run("rm"))
+    t.check("rm -- takes a name that starts with a dash", run("touch ./-dash") == "" and run("rm -- -dash") == "" and "-dash" not in run("ls"))
+
+    out = run("rmdir ca")
+    t.check("rmdir of a directory with something in it is refused", "rmdir: ca:" in out and "[exit status 1]" in out, out)
+    run("cd cb")
+    out = run("rmdir /cb")
+    t.check("rmdir of the current directory says it is in use", "in use" in out, out)
+    run("cd ..")
+    out = run("rmdir cb cc cd nope ce")
+    t.check("rmdir takes several and reports the one that fails",
+            "rmdir: nope: no such file" in out and "[exit status 1]" in out and not any(d in run("ls") for d in ["cb/", "cc/", "cd/", "ce/"]), out)
+    t.check("rmdir with nothing shows the usage", "usage: rmdir" in run("rmdir"))
+
+    run("mkdir mvdir")
+    run("mv ta tb tc mvdir")
+    out = run("ls mvdir")
+    t.check("mv takes several into a directory", all(f in out for f in ["ta ", "tb ", "tc "]) and "ta " not in run("ls"), out)
+    t.check("mv renames", run("mv td tz") == "" and re.search(r"\btz\b", run("ls")) and not re.search(r"\btd\b", run("ls")))
+    out = run("mv tz te mvdir/ta")
+    t.check("several things need a directory last", "needs a directory last" in out and "[exit status 2]" in out, out)
+    out = run("mv tz")
+    t.check("mv with one argument shows the usage", "usage: mv" in out and "[exit status 2]" in out, out)
+    out = run("mv nope mvdir")
+    t.check("mv of a missing file", "mv: nope: no such file" in out and "[exit status 1]" in out, out)
+    out = run("mv tz mvdir/ta")
+    t.check("mv onto an existing file is refused", "already exists" in out, out)
+    t.check("mv -f is refused, not taken for a file", "usage: mv" in run("mv -f tz mvdir"))
+
+    run("find mvdir -name 't?' -exec rm {} ;")
+    out = run("ls mvdir")
+    t.check("find -exec rm works now", not any(f in out for f in ["ta ", "tb ", "tc "]), out)
+    for c in ["rm tz", "rm te", "rmdir mvdir", "rm ca/x.txt", "rmdir ca"]:
+        run(c)
+
+
 def tools_tests(m, t, url):
     """cat with several files, hexdump, and df."""
     def run(c, timeout=30):  # output as it is, indentation included
@@ -1231,8 +1331,8 @@ def tools_tests(m, t, url):
     t.check("cat repeats a file named twice", run("cat ca.txt ca.txt") == "first\nfirst")
     out = run("cat ca.txt nope.txt cb.txt")
     t.check("a missing file is reported and the others still show",
-            "first" in out and "nope.txt: no such file" in out and out.endswith("second"), out)
-    t.check("cat with no file says how to use it", "Usage: cat" in run("cat"))
+            "first" in out and "nope.txt: no such file" in out and "second" in out and "[exit status 1]" in out, out)
+    t.check("cat with no file and a terminal says how to use it", "usage: cat" in run("cat"))
     t.check("cat > file is a join", run("cat ca.txt cb.txt > cj.txt") == "" and run("cat cj.txt") == "first\nsecond")
     for f in ("rep.bin", "zero.bin"):
         out = run("fetch -o %s %s/%s" % (f, url, f), timeout=60)
@@ -1450,8 +1550,9 @@ def find_tests(m, t, url):
             "ft/a.txt" in out and "ft/sub/deep/d.txt" in out and "ft/B.TXT" not in out and "ft/sub/c.txt" not in out, str(out))
     out = run("find ft -type f -name '*.txt' -exec grep zzz {} ; -print")
     t.check("-exec that fails is false, so nothing prints", out == "", out)
-    out = run("find ft -name a.txt -exec cat {} ;")
-    t.check("a built-in cannot be exec'd, and the message says why", "cat: no such file" in out and "built-ins" in out, out)
+    t.check("-exec runs cat", run("find ft -name a.txt -exec cat {} ;") == "xxxxx")
+    out = run("find ft -name a.txt -exec pwd {} ;")
+    t.check("a built-in cannot be exec'd, and the message says why", "pwd: no such file" in out and "built-ins" in out, out)
     out = run("find ft -name a.txt -exec wc {} ;")
     t.check("another program works too", re.search(r"1\s+1\s+6 ft/a.txt", out) is not None, out)
 
@@ -1550,6 +1651,7 @@ def tcp_tests(m, t):
                         ("head -n 1000 big.bin | wc", b"".join(ls[:1000]))]:
             t.check(c + " counts what it should", counts(c) == shape(want), f"{counts(c)} != {shape(want)}")
         sortuniq_tests(m, t, url)
+        coreutils_tests(m, t)
         tools_tests(m, t, url)
         find_tests(m, t, url)
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))
@@ -1628,18 +1730,19 @@ def _rows(m):
 
 
 def text_tests(m, t):
-    """head, tail and more, on the output of help (30 lines) and a few
-    small files."""
+    """head, tail and more, on 30 lines of help (all of it, then its first
+    eight lines again) and a few small files."""
     def run(c, timeout=20):  # output as it is, indentation included
         return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
 
     # help leaves its three footer lines off when it is redirected, so
     # the file is the reference, not what help prints on the screen.
     t.check("help > h.txt (setting up)", run("help > h.txt") == "")
+    t.check("help | head -n 8 >> h.txt (setting up)", run("help | head -n 8 >> h.txt") == "")
     text = run("cat h.txt")
     lines = text.split("\n")
     full = text + "\n"
-    t.check("there is enough help to page", len(lines) >= 26 and all(l == l.rstrip() for l in lines), str(len(lines)))
+    t.check("the text to page is 30 lines", len(lines) == 30 and all(l == l.rstrip() for l in lines), str(len(lines)))
     for c in ["head -n 24 h.txt > h24.txt", "head -c 5 h.txt > nonl.txt",
               "write w150.txt " + "x" * 150, "write w80.txt " + "y" * 80]:
         t.check(f"{c[:30]} (setting up)", run(c) == "", c)

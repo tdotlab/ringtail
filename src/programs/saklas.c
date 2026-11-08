@@ -32,20 +32,6 @@
 static char history[HISTORY][LINE_MAX];
 static int hist_count;  // total lines ever added; the ring holds the last HISTORY
 
-// Whether the last name in path follows the disk's rules (abi.h):
-// printable, none of \" * : < > ? \\ |, no space first or space or
-// dot last. "." and ".." count as fine.
-static int name_ok(const char* path) {
-    const char* n = strrchr(path, '/');
-    n = n ? n + 1 : path;
-    size_t len = strlen(n);
-    if (!len || strcmp(n, ".") == 0 || strcmp(n, "..") == 0) return 1;
-    if (len > NAME_MAX || n[0] == ' ' || n[len - 1] == ' ' || n[len - 1] == '.') return 0;
-    for (const char* p = n; *p; p++)
-        if (*p < 0x20 || *p > 0x7E || strchr("\"*:<>?\\|", *p)) return 0;
-    return 1;
-}
-
 static void err(const char* what, int e) {
     const char* why = e == -EINVAL && !name_ok(what) ? "not a valid file name" : strerror(e);
     dprintf(STDERR_FILENO, RED "%s: %s" NORM "\n", what, why);
@@ -427,60 +413,10 @@ static void cmd_net(cmd_t* c) {
 }
 static void cmd_pci(cmd_t* c) { (void)c; show_kinfo(KINFO_PCI); }
 
-static void cmd_echo(cmd_t* c) {
-    char buf[LINE_MAX];
-    args_text(c, 1, buf, sizeof buf);
-    puts(buf);
-}
-
 static void cmd_history(cmd_t* c) {
     (void)c;
     int oldest = hist_count > HISTORY ? hist_count - HISTORY : 0;
     for (int i = oldest; i < hist_count; i++) printf("%3d  %s\n", i + 1, history[i % HISTORY]);
-}
-
-// The name column fits the longest name up to LS_WIDE; a longer one
-// pushes its size along rather than widening every line.
-#define LS_NARROW 13
-#define LS_WIDE 32
-
-// "2026-11-05 14:32" from the FAT words in a dirent, or dashes for an
-// entry nothing ever stamped.
-static void fmt_stamp(char* buf, size_t size, unsigned date, unsigned time) {
-    if (!date) { strlcpy(buf, "-", size); return; }
-    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u", 1980 + (date >> 9), (date >> 5) & 15, date & 31,
-             time >> 11, (time >> 5) & 63);
-}
-
-static void cmd_ls(cmd_t* c) {
-    const char* dir = c->argc > 1 ? c->argv[1] : ".";
-    int cursor = 0, files = 0, dirs = 0, width = LS_NARROW, r;
-    dirent_t d;
-    while ((r = sys_readdir(dir, &cursor, &d)) > 0) {
-        int n = (int)strlen(d.name) + ((d.flags & DIRENT_DIR) ? 1 : 0);
-        if (n > width) width = n < LS_WIDE ? n : LS_WIDE;
-    }
-    cursor = 0;
-    while (r >= 0 && (r = sys_readdir(dir, &cursor, &d)) > 0) {
-        char stamp[24];
-        fmt_stamp(stamp, sizeof stamp, d.mdate, d.mtime);
-        if (d.flags & DIRENT_DIR) {
-            char name[sizeof d.name + 1];
-            snprintf(name, sizeof name, "%s/", d.name);
-            printf("  %s%-*s%s %8s  %s\n", tty_out ? BLU : "", width, name, tty_out ? NORM : "", "<dir>", stamp);
-            dirs++;
-        } else {
-            printf("  %-*s %8u  %s\n", width, d.name, d.size, stamp);
-            files++;
-        }
-    }
-    if (r < 0) { err(dir, r); return; }
-    if (!tty_out) return;  // one line per entry, for wc and grep
-    char disk[64];
-    if (sys_kinfo(KINFO_DISK, disk, sizeof disk) < 0) { err("ls", -EIO); return; }
-    printf(DIM "%d file%s, ", files, files == 1 ? "" : "s");
-    if (dirs) printf("%d director%s, ", dirs, dirs == 1 ? "y" : "ies");
-    printf("%s" NORM, disk);
 }
 
 static void cmd_cd(cmd_t* c) {
@@ -497,44 +433,6 @@ static void cmd_pwd(cmd_t* c) {
     else puts(cwd);
 }
 
-static void cmd_mkdir(cmd_t* c) {
-    int r = sys_mkdir(c->argv[1]);
-    if (r < 0) err(c->argv[1], r);
-}
-
-static void cmd_rmdir(cmd_t* c) {
-    int r = sys_rmdir(c->argv[1]);
-    if (r == -EBUSY) dprintf(STDERR_FILENO, RED "%s: in use (someone's current directory)" NORM "\n", c->argv[1]);
-    else if (r < 0) err(c->argv[1], r);
-}
-
-// cat FILE...: the files one after another. On the screen a last line
-// with no newline gets one, so the prompt starts clean; into a pipe or
-// a file the bytes are passed on exactly, so `cat a b > c` is a join.
-// A file that cannot be read is reported and the rest still follow.
-static void cmd_cat(cmd_t* c) {
-    int last = '\n';
-    for (int i = 1; i < c->argc; i++) {
-        int fd = sys_open(c->argv[i], O_RDONLY);
-        if (fd < 0) { err(c->argv[i], fd); continue; }
-        char buf[512];
-        int n;
-        while ((n = sys_read(fd, buf, sizeof buf)) > 0) {
-            if (sys_write(STDOUT_FILENO, buf, (uint32_t)n) < 0) break;
-            last = buf[n - 1];
-        }
-        if (n < 0) err(c->argv[i], n);
-        sys_close(fd);
-    }
-    if (tty_out && last != '\n') print("\n");
-}
-
-static void cmd_touch(cmd_t* c) {
-    int fd = sys_open(c->argv[1], O_WRONLY | O_CREAT | O_EXCL);
-    if (fd < 0) err(c->argv[1], fd);
-    else sys_close(fd);
-}
-
 static void cmd_write(cmd_t* c) {
     char buf[LINE_MAX + 1];
     args_text(c, 2, buf, LINE_MAX);
@@ -542,35 +440,6 @@ static void cmd_write(cmd_t* c) {
     buf[len++] = '\n';
     int r = sys_save(c->argv[1], buf, len);
     if (r < 0) err(c->argv[1], r);
-}
-
-static void cmd_rm(cmd_t* c) {
-    int r = sys_delete(c->argv[1]);
-    if (r == -EISDIR) dprintf(STDERR_FILENO, RED "%s: is a directory (rmdir removes an empty one)" NORM "\n", c->argv[1]);
-    else if (r < 0) err(c->argv[1], r);
-}
-
-// mv SRC DST, or mv SRC... DIR.
-static void cmd_mv(cmd_t* c) {
-    const char* dst = c->argv[c->argc - 1];
-    if (c->argc > 3) {
-        dirent_t d;
-        if (sys_stat(dst, &d) < 0 || !(d.flags & DIRENT_DIR)) {
-            complain("mv: moving several things needs a directory last");
-            return;
-        }
-    }
-    for (int i = 1; i < c->argc - 1; i++) {
-        const char* src = c->argv[i];
-        char to[PATH_MAX];
-        int r = dest_path(src, dst, to, sizeof to);
-        if (!r) r = sys_rename(src, to);
-        if (r == -EINVAL && !name_ok(to)) err(to, r);
-        else if (r == -EINVAL) dprintf(STDERR_FILENO, RED "%s: cannot go inside itself" NORM "\n", src);
-        else if (r == -EBUSY) dprintf(STDERR_FILENO, RED "%s: give it by name to move it" NORM "\n", src);
-        else if (r == -EEXIST) dprintf(STDERR_FILENO, RED "%s: already exists (rm it first)" NORM "\n", to);
-        else if (r < 0) err(src, r);
-    }
 }
 
 static const struct { const char* name; uint8_t color; } palette[] = {
@@ -631,18 +500,10 @@ static const builtin_t builtins[] = {
     { "help", 0, "", "this list", cmd_help },
     { "clear", 0, "", "clear the screen (also Ctrl+L)", cmd_clear },
     { "version", 0, "", "show the version", cmd_version },
-    { "echo", 0, "<text>", "print text", cmd_echo },
     { "history", 0, "", "recent commands (Up/Down recall them)", cmd_history },
-    { "ls", 0, "[dir]", "list a directory", cmd_ls },
     { "cd", 0, "[dir]", "change directory (alone: the root)", cmd_cd },
     { "pwd", 0, "", "show the current directory", cmd_pwd },
-    { "mkdir", 1, "<dir>", "make a directory", cmd_mkdir },
-    { "rmdir", 1, "<dir>", "remove an empty directory", cmd_rmdir },
-    { "cat", 1, "<file>...", "show files, one after another", cmd_cat },
-    { "touch", 1, "<file>", "create an empty file", cmd_touch },
     { "write", 2, "<file> <text>", "replace a file's contents", cmd_write },
-    { "rm", 1, "<file>", "delete a file", cmd_rm },
-    { "mv", 2, "<from> <to>", "move or rename (to a directory: into it)", cmd_mv },
     { "run", 1, "<prog> [args] [&]", "run a program (or just type its name)", 0 },
     { "tasks", 0, "", "list tasks", cmd_tasks },
     { "kill", 1, "<id>", "stop a task", cmd_kill },

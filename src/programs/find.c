@@ -25,7 +25,7 @@
 //   -print0       write the path and a NUL
 //   -exec CMD ... ;   run CMD with each {} replaced by the path; true if it
 //                 exits 0. CMD must be a program: built-ins of the shell
-//                 such as rm and cat are not programs
+//                 such as cd and pwd are not programs
 //   -delete       remove a file or an empty directory; implies -depth
 // Operators: ! or -not, -a or -and (also implied between tests), -o or
 // -or, and ( ... ), which may be written \( ... \) as well.
@@ -318,7 +318,7 @@ static int do_exec(const node_t* n, const ent_t* e) {
     int id = sys_spawn_args(args[0], args);
     if (id < 0) {
         dprintf(STDERR_FILENO, "find: %s: %s%s\n", args[0], strerror(id),
-                id == -ENOENT ? " (-exec runs programs; shell built-ins like rm and cat are not)" : "");
+                id == -ENOENT ? " (-exec runs programs; shell built-ins like cd and pwd are not)" : "");
         status = 1;
         return 0;
     }
