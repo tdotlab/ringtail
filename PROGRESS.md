@@ -2532,3 +2532,38 @@ result, plus a 300000-byte binary file through three sort modes and long
 lines through uniq.
 Host 244 + 82 + 163, QEMU 599.
 
+
+## v0.24.4 "Handshake"
+
+A multi-file `cat`, `hexdump`, and `df`.
+
+`cat` is a Saklas built-in, so it still cannot read standard input or follow a
+`|`; what changed is that `cat a b c` now shows the files in a row (before it
+took only the first). A file that cannot be read is reported and the rest still
+follow. The one behaviour change: on the screen a last line without a newline
+still gets one, but into a pipe or a file the bytes now pass through exactly,
+so `cat a b > c` is a true join. It used to add a newline there. This is what
+lets a test (or a person) build a multi-line file in the guest.
+
+`hexdump [-C | -x] [-v] [-n LENGTH] [-s OFFSET] [FILE...]` treats its inputs as
+one stream. The default and -x are util-linux's 16-bit words, low byte first,
+with an odd last byte as `00xx`; -C is the canonical form with the text between
+bars. A line equal to the one before is replaced by one `*` unless -v is given,
+and a closing line carries the final offset. -s steps over whole plain files
+without reading them and seeks into the one it lands in, but reads and drops on
+a pipe; -n and -s take 0x hex; displayed offsets count from the start of the
+stream. Unlike util-linux the last line of the default format is not padded
+with trailing blanks.
+
+`df [-h] [-k] [FILE...]` is one row, because there is one filesystem: size,
+used and available in 1K blocks (or K/M/G rounded up with -h) and the
+rounded-up use percentage. The numbers come from the same KINFO_DISK text that
+`ls` ends on, so the two always agree. A FILE only has to exist.
+
+The kernel is untouched. Tested in QEMU against Python reference dumps (both
+formats, squeezing, -v, -n, -s, two files as one stream, a pipe, a pipe with -s,
+missing files and bad numbers, a 300000-byte file in slices, and the whole file
+through `tail` and `wc`), a 600000-byte `cat` join checked at the seam, bytes
+passing through exactly, and df against `ls`, with the free space falling by a
+copy's size and coming back when it is removed.
+Host 244 + 82 + 163, QEMU 650.

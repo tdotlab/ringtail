@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.3 "Handshake"**. See PROGRESS.md for the history.
+Current version: **v0.24.4 "Handshake"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -242,7 +242,8 @@ first command a file, and `> FILE` or `>> FILE` writes or appends the
 last command's output. A built-in can start a pipeline (`ls | grep TXT`,
 `help | grep file`) or be redirected (`echo hi > NOTE.TXT`), but not
 come after a `|`. Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
-`kill <id>` stops it. `ls [dir]`, `cat`, `touch`, `write <file> <text>`
+`kill <id>` stops it. `ls [dir]`, `cat <file>...` (several files in a row; into
+a pipe or a file the bytes pass through exactly, so `cat a b > c` joins them), `touch`, `write <file> <text>`
 and `rm` work on files, and `cd`, `pwd`, `mkdir` and `rmdir` on
 directories. `mv` renames or moves a file or a whole directory (into a
 directory if the target is one), and the `cp` program copies files. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
@@ -277,6 +278,8 @@ Programs on the disk:
 | tail | `tail [-n [+]N \| -c [+]N] [-q] [FILE...]`: the last 10 lines, or everything from line N on with `+N`. Reads to the end, keeping only what it needs. No -f. |
 | sort | `sort [-bcfnrsu] [-k F1[,F2]] [-t SEP] [-o FILE] [FILE...]`: sorts lines bytewise, or as numbers with -n, backwards with -r, ignoring case with -f. -u drops repeats, -c only checks, -o may name an input. One -k key, with the usual field rules. Ties go by the whole line unless -s or -u. Holds all its input in memory. |
 | uniq | `uniq [-c \| -d \| -u] [-i] [-f N] [-s N] [-w N] [INPUT [OUTPUT]]`: collapses runs of equal lines, with -c counts, -d only the repeated, -u only the single. Streams, so it works on any size; run `sort` first. |
+| hexdump | `hexdump [-C \| -x] [-v] [-n LENGTH] [-s OFFSET] [FILE...]`: the bytes of the files as one stream, as 16-bit words (default, `-x`) or canonical hex and text (`-C`). A repeated line becomes `*` unless -v. -n and -s take hex. |
+| df | `df [-h] [-k] [FILE...]`: size, used and free space on the disk, in 1K blocks or with -h in K, M and G. |
 | more | `more [FILE...]`: one screenful at a time, with a percentage for plain files. Space or PgDn for a screen, Enter or Down for a line, q or Ctrl+C to quit. Reads keys from `/dev/tty`, so it works on a pipe; when output is not the screen it behaves like cat. |
 | hello | Hello world, and the starting point for your own |
 

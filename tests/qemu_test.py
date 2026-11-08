@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.3" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.4" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -257,7 +257,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.3" in out, out)
+    t.check("and the new shell works", "0.24.4" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -602,7 +602,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.3" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.4" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -804,7 +804,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.3" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.4" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -821,7 +821,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.3"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.4"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1015,6 +1015,9 @@ BLANKS = ["x  b", "x a", "x   c"]
 DUPS = ["x", "x", "y", "X", "z", "z", "z", "", "", "q"]  # the last has no newline
 ROWS = ["%d %d w%d" % ((i * 7919) % 1500, i, i % 97) for i in range(6000)]
 LONG = ["a" * 3000, "a" * 3000, "a" * 2999 + "b"]
+# For hexdump: a run of zeros, a line repeated, then an odd tail, so the
+# listing has "*" in it and ends on a half word.
+REP = bytes(100) + b"0123456789abcdef" * 5 + b"tail!"
 DATA = {"words": WORDS, "nums": NUMS, "tbl": TBL, "colon": COLON, "blanks": BLANKS, "dups": DUPS,
         "rows": ROWS, "long": LONG}
 
@@ -1023,7 +1026,8 @@ class _Http(http.server.BaseHTTPRequestHandler):
     """A few pages for fetch: plain, redirected three ways, missing,
     cut short, and big."""
     def do_GET(self):
-        pages = {"/hello.txt": b"hello from the host\n", "/rel/b": b"relative ok\n", "/big.bin": BIG}
+        pages = {"/hello.txt": b"hello from the host\n", "/rel/b": b"relative ok\n", "/big.bin": BIG,
+                 "/rep.bin": REP, "/zero.bin": bytes(64)}
         for name, rows in DATA.items():
             pages["/%s.txt" % name] = "\n".join(rows).encode() + (b"" if name == "dups" else b"\n")
         moves = {"/moved": "/hello.txt", "/rel/a": "b", "/loop": "/loop",
@@ -1208,6 +1212,143 @@ def sortuniq_tests(m, t, url):
         run("rm %s.txt" % f)
 
 
+def tools_tests(m, t, url):
+    """cat with several files, hexdump, and df."""
+    def run(c, timeout=30):  # output as it is, indentation included
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    def counts(c):
+        r = re.search(r"(\d+)\s+(\d+)\s+(\d+)", run(c, timeout=60))
+        return tuple(int(x) for x in r.groups()) if r else None
+
+    def shape(b):  # what wc says about these bytes
+        return (b.count(b"\n"), len(b.split()), len(b))
+
+    # ---- cat ----
+    run("write ca.txt first")
+    run("write cb.txt second")
+    t.check("cat joins files", run("cat ca.txt cb.txt") == "first\nsecond")
+    t.check("cat repeats a file named twice", run("cat ca.txt ca.txt") == "first\nfirst")
+    out = run("cat ca.txt nope.txt cb.txt")
+    t.check("a missing file is reported and the others still show",
+            "first" in out and "nope.txt: no such file" in out and out.endswith("second"), out)
+    t.check("cat with no file says how to use it", "Usage: cat" in run("cat"))
+    t.check("cat > file is a join", run("cat ca.txt cb.txt > cj.txt") == "" and run("cat cj.txt") == "first\nsecond")
+    for f in ("rep.bin", "zero.bin"):
+        out = run("fetch -o %s %s/%s" % (f, url, f), timeout=60)
+        t.check("fetch %s (setting up)" % f, "saved" in out, out)
+    t.check("cat into a pipe passes bytes exactly, joining a file with no final newline",
+            run("cat rep.bin rep.bin | wc").split()[2] == str(2 * len(REP)))
+    t.check("cat > file adds nothing either",
+            run("cat rep.bin > rc.bin") == "" and run("wc rc.bin").split()[2] == str(len(REP)))
+    t.check("cat joins big files (600000 bytes)",
+            run("cat big.bin big.bin > two.bin", timeout=60) == "" and run("wc two.bin").split()[2] == "600000")
+
+    # ---- hexdump ----
+    def hd_c(data, start=0, squeeze=True, tail=True):
+        rows, prev, star = [], None, False
+        for i in range(0, len(data), 16):
+            c = data[i:i + 16]
+            if squeeze and len(c) == 16 and c == prev:
+                if not star:
+                    rows.append("*")
+                star = True
+                continue
+            star = False
+            prev = c if len(c) == 16 else None
+            hx = lambda b: " ".join("%02x" % x for x in b)
+            asc = "".join(chr(x) if 32 <= x < 127 else "." for x in c)
+            rows.append("%08x  %-23s  %-23s  |%s|" % (start + i, hx(c[:8]), hx(c[8:]), asc))
+        if tail and data:
+            rows.append("%08x" % (start + len(data)))
+        return "\n".join(rows)
+
+    def hd_x(data, start=0, squeeze=True):
+        rows, prev, star = [], None, False
+        for i in range(0, len(data), 16):
+            c = data[i:i + 16]
+            if squeeze and len(c) == 16 and c == prev:
+                if not star:
+                    rows.append("*")
+                star = True
+                continue
+            star = False
+            prev = c if len(c) == 16 else None
+            ws = [c[j] | (c[j + 1] << 8 if j + 1 < len(c) else 0) for j in range(0, len(c), 2)]
+            rows.append("%07x" % (start + i) + "".join(" %04x" % w for w in ws))
+        if data:
+            rows.append("%07x" % (start + len(data)))
+        return "\n".join(rows)
+
+    t.check("hexdump -C: offsets, hex, text, repeated lines as *, the end offset",
+            run("hexdump -C rep.bin") == hd_c(REP))
+    t.check("-v shows every line", run("hexdump -vC rep.bin") == hd_c(REP, squeeze=False))
+    t.check("hexdump (words, low byte first, odd byte last)", run("hexdump rep.bin") == hd_x(REP))
+    t.check("a join of big files is right at the seam",
+            run("hexdump -C -s 299992 -n 16 two.bin") == hd_c(BIG[-8:] + BIG[:8], 299992))
+    run("rm two.bin")
+    t.check("-x is the same", run("hexdump -x rep.bin") == run("hexdump rep.bin"))
+    t.check("-v on words", run("hexdump -v rep.bin") == hd_x(REP, squeeze=False))
+    t.check("a file of zeros: one line, a *, the end", run("hexdump -C zero.bin") == hd_c(bytes(64)) and
+            run("hexdump -C zero.bin").split("\n")[1:] == ["*", "00000040"])
+    t.check("-n stops after LENGTH bytes", run("hexdump -C -n 21 rep.bin") == hd_c(REP[:21]))
+    t.check("-n 0x10 takes hex", run("hexdump -C -n 0x10 rep.bin") == hd_c(REP[:16]))
+    t.check("-s starts at OFFSET and offsets count from the start of the file",
+            run("hexdump -C -s 120 rep.bin") == hd_c(REP[120:], 120))
+    t.check("-s and -n together, in words", run("hexdump -s 7 -n 9 rep.bin") == hd_x(REP[7:16], 7))
+    t.check("options may be written joined to their values", run("hexdump -C -s100 -n20 rep.bin") == hd_c(REP[100:120], 100))
+    t.check("-s past the end shows nothing", run("hexdump -s 1000 rep.bin") == "")
+    t.check("an empty read shows nothing", run("hexdump -n 0 rep.bin") == "")
+    t.check("two files are one stream", run("hexdump -C rep.bin rep.bin") == hd_c(REP + REP))
+    t.check("-s counts through the first file to the next",
+            run("hexdump -C -s 190 -n 16 rep.bin rep.bin") == hd_c((REP + REP)[190:206], 190))
+    t.check("hexdump reads a pipe", run("cat rep.bin | hexdump -C -n 32") == hd_c(REP[:32]))
+    t.check("and - means standard input", run("cat zero.bin | hexdump -C -") == hd_c(bytes(64)))
+    t.check("-s on a pipe reads and drops the bytes", run("cat rep.bin | hexdump -C -s 130") == hd_c(REP[130:], 130))
+    for a, n in [(0, 16), (1000, 50), (4095, 3), (4096, 4096), (299984, 16), (299990, 100)]:
+        t.check("hexdump -C -s %d -n %d on a big file" % (a, n),
+                run("hexdump -C -s %d -n %d big.bin" % (a, n)) == hd_c(BIG[a:a + n], a))
+    out = run("hexdump -C big.bin | tail -n 3", timeout=120)
+    t.check("a whole big file, read at the end", out == "\n".join(hd_c(BIG[299968:], 299968).split("\n")), out)
+    t.check("and it is 18751 lines", run("hexdump -C big.bin | wc", timeout=120).split()[0] == "18751")
+    out = run("hexdump -C -n 16 nope rep.bin")
+    t.check("a missing file is reported and the next one dumped",
+            "hexdump: nope: no such file" in out and hd_c(REP[:16]) in out, out)
+    t.check("a bad length is refused", "invalid length: 'x'" in run("hexdump -n x rep.bin"))
+    t.check("a bad option shows the usage", "usage: hexdump" in run("hexdump -Z rep.bin"))
+    t.check("with no file and a terminal it shows the usage", "usage: hexdump" in run("hexdump"))
+
+    # ---- df ----
+    def df(c="df"):
+        out = run(c).split("\n")
+        return out[0], out[1].split() if len(out) > 1 else []
+
+    head, row = df()
+    t.check("df has a header and one row", head.split()[:4] == ["Filesystem", "1K-blocks", "Used", "Available"] and
+            len(row) == 6 and row[5] == "/", f"{head!r} {row}")
+    total, used, avail = int(row[1]), int(row[2]), int(row[3])
+    t.check("used + available = size, and Use% rounds up", used + avail == total and
+            row[4] == "%d%%" % -(-used * 100 // total), str(row))
+    ls_tail = re.search(r"(\d+) KB free of (\d+) KB", run("ls"))
+    t.check("df agrees with ls", ls_tail and (int(ls_tail.group(1)), int(ls_tail.group(2))) == (avail, total), str(row))
+    t.check("df -k is the default", df("df -k") == (head, row))
+    t.check("df FILE gives the same row", df("df cj.txt")[1] == row and df("df /")[1] == row)
+    t.check("df of a missing file fails", "df: nope: no such file" in run("df nope"))
+    t.check("df -h", re.fullmatch(r"disk\s+\d+[KMG]\s+\d+[KMG]\s+\d+[KMG]\s+\d+%\s+/", " ".join(run("df -h").split("\n")[1:])) is not None,
+            run("df -h"))
+    t.check("df -Z shows the usage", "usage: df" in run("df -Z"))
+    run("cp big.bin big2.bin", timeout=60)
+    _, row2 = df()
+    t.check("a 300000-byte copy takes at least 293 KB", int(row2[3]) <= avail - 293 and int(row2[2]) >= used + 293, str(row2))
+    run("rm big2.bin")
+    t.check("deleting it gives the space back", df()[1][3] == row[3], str(df()[1]))
+
+    for f in ("ca", "cb", "cj"):
+        run("rm %s.txt" % f)
+    for f in ("rep", "zero", "rc"):
+        run("rm %s.bin" % f)
+
+
 def tcp_tests(m, t):
     """fetch and nc against servers on the host, which the guest
     reaches as 10.0.2.2."""
@@ -1262,6 +1403,7 @@ def tcp_tests(m, t):
                         ("head -n 1000 big.bin | wc", b"".join(ls[:1000]))]:
             t.check(c + " counts what it should", counts(c) == shape(want), f"{counts(c)} != {shape(want)}")
         sortuniq_tests(m, t, url)
+        tools_tests(m, t, url)
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))
         out = plain(m.run("cat gone.bin"))
         t.check("a failed -o leaves no file", "no such file" in out, out)

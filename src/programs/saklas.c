@@ -508,18 +508,25 @@ static void cmd_rmdir(cmd_t* c) {
     else if (r < 0) err(c->argv[1], r);
 }
 
+// cat FILE...: the files one after another. On the screen a last line
+// with no newline gets one, so the prompt starts clean; into a pipe or
+// a file the bytes are passed on exactly, so `cat a b > c` is a join.
+// A file that cannot be read is reported and the rest still follow.
 static void cmd_cat(cmd_t* c) {
-    int fd = sys_open(c->argv[1], O_RDONLY);
-    if (fd < 0) { err(c->argv[1], fd); return; }
-    char buf[512];
-    int n, last = '\n';
-    while ((n = sys_read(fd, buf, sizeof buf)) > 0) {
-        if (sys_write(STDOUT_FILENO, buf, (uint32_t)n) < 0) break;
-        last = buf[n - 1];
+    int last = '\n';
+    for (int i = 1; i < c->argc; i++) {
+        int fd = sys_open(c->argv[i], O_RDONLY);
+        if (fd < 0) { err(c->argv[i], fd); continue; }
+        char buf[512];
+        int n;
+        while ((n = sys_read(fd, buf, sizeof buf)) > 0) {
+            if (sys_write(STDOUT_FILENO, buf, (uint32_t)n) < 0) break;
+            last = buf[n - 1];
+        }
+        if (n < 0) err(c->argv[i], n);
+        sys_close(fd);
     }
-    if (n < 0) err(c->argv[1], n);
-    sys_close(fd);
-    if (last != '\n') print("\n");
+    if (tty_out && last != '\n') print("\n");
 }
 
 static void cmd_touch(cmd_t* c) {
@@ -631,7 +638,7 @@ static const builtin_t builtins[] = {
     { "pwd", 0, "", "show the current directory", cmd_pwd },
     { "mkdir", 1, "<dir>", "make a directory", cmd_mkdir },
     { "rmdir", 1, "<dir>", "remove an empty directory", cmd_rmdir },
-    { "cat", 1, "<file>", "show a file", cmd_cat },
+    { "cat", 1, "<file>...", "show files, one after another", cmd_cat },
     { "touch", 1, "<file>", "create an empty file", cmd_touch },
     { "write", 2, "<file> <text>", "replace a file's contents", cmd_write },
     { "rm", 1, "<file>", "delete a file", cmd_rm },
