@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.4" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.5" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -257,7 +257,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.4" in out, out)
+    t.check("and the new shell works", "0.24.5" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -602,7 +602,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.4" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.5" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -804,7 +804,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.4" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.5" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -821,7 +821,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.4"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.5"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1349,6 +1349,153 @@ def tools_tests(m, t, url):
         run("rm %s.bin" % f)
 
 
+def find_tests(m, t, url):
+    """find, against a small tree the test builds and a Python model of it."""
+    def run(c, timeout=30):
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    def found(c):  # the lines of the output, order aside
+        return sorted(l for l in run(c).split("\n") if l)
+
+    dirs = ["ft", "ft/sub", "ft/sub/deep", "ft/empty", "ft/many"]
+    files = {"ft/a.txt": 6, "ft/B.TXT": 4, "ft/zero": 0, "ft/sub/c.txt": 4, "ft/sub/z.log": 0,
+             "ft/sub/deep/d.txt": 5, "ft/sub/deep/D2.dat": 9, "ft/big.bin": 300000}
+    for d in dirs:
+        run("mkdir " + d)
+    for f, size in files.items():
+        if f.endswith("big.bin"):
+            run("cp big.bin " + f, timeout=60)
+        elif size:
+            run("write %s %s" % (f, "x" * (size - 1)))  # write adds the newline
+        else:
+            run("touch " + f)
+    tree = {d: "d" for d in dirs}
+    tree.update({f: "f" for f in files})
+
+    def paths(pred=lambda p: True):
+        return sorted(p for p in tree if pred(p))
+    base = lambda p: p.rsplit("/", 1)[-1]
+    depth = lambda p: p.count("/")
+    low = lambda p: base(p).lower()
+
+    t.check("find lists the tree, the starting point first", found("find ft") == paths() and run("find ft").split("\n")[0] == "ft")
+    t.check("-type f", found("find ft -type f") == paths(lambda p: tree[p] == "f"))
+    t.check("-type d", found("find ft -type d") == paths(lambda p: tree[p] == "d"))
+    t.check("-name with a glob, ignoring case", found("find ft -name '*.txt'") == paths(lambda p: low(p).endswith(".txt")))
+    t.check("-name matches the entry's name only", found("find ft -name sub") == ["ft/sub"])
+    t.check("-name in capitals finds the lower-case name", found("find ft -name A.TXT") == ["ft/a.txt"])
+    t.check("-iname is the same", found("find ft -iname 'b.txt'") == ["ft/B.TXT"])
+    t.check("-name 'd*'", found("find ft -name 'd*'") == paths(lambda p: low(p).startswith("d")))
+    t.check("-name '?.txt'", found("find ft -name '?.txt'") == paths(lambda p: re.fullmatch(r".\.txt", low(p)) is not None))
+    t.check("-name '[a-c].txt'", found("find ft -name '[a-c].txt'") == ["ft/B.TXT", "ft/a.txt", "ft/sub/c.txt"])
+    t.check("-name '[!a-c]*' with a negated class",
+            found("find ft -type f -name '[!a-c]*'") == paths(lambda p: tree[p] == "f" and low(p)[0] not in "abc"))
+    t.check("-path matches the whole path, * crossing /", found("find ft -path 'ft/sub/*'") ==
+            paths(lambda p: p.startswith("ft/sub/")))
+    t.check("-path '*deep*'", found("find ft -path '*deep*'") == paths(lambda p: "deep" in p))
+
+    t.check("-maxdepth 0 is the starting point alone", found("find ft -maxdepth 0") == ["ft"])
+    t.check("-maxdepth 1", found("find ft -maxdepth 1") == ["ft"] + paths(lambda p: depth(p) == 1))
+    t.check("-mindepth 1 leaves the start out", found("find ft -mindepth 1") == paths(lambda p: p != "ft"))
+    t.check("-mindepth 2 -maxdepth 2", found("find ft -mindepth 2 -maxdepth 2") == paths(lambda p: depth(p) == 2))
+    t.check("an option may come after a test", found("find ft -type d -maxdepth 1") == ["ft"] + paths(lambda p: depth(p) == 1 and tree[p] == "d"))
+
+    t.check("-size -1k -type f: rounded up, so only empty files", found("find ft -type f -size -1k") == ["ft/sub/z.log", "ft/zero"])
+    t.check("-size +100k", found("find ft -size +100k") == ["ft/big.bin"])
+    t.check("-size 293k rounds 292.97 up", found("find ft -size 293k") == ["ft/big.bin"] and found("find ft -size 292k") == [])
+    t.check("-size 1M: anything from 1 byte to a megabyte rounds to 1",
+            found("find ft -type f -size 1M") == paths(lambda p: tree[p] == "f" and files[p] > 0))
+    t.check("-size 586 counts 512-byte blocks", found("find ft -size 586") == ["ft/big.bin"])
+    t.check("-size 6c is exact", found("find ft -size 6c") == ["ft/a.txt"])
+    t.check("-size +4c -size -9c", found("find ft -type f -size +4c -size -9c") == ["ft/a.txt", "ft/sub/deep/d.txt"])
+    t.check("-size 1 is one block", found("find ft -type f -size 1") == paths(lambda p: tree[p] == "f" and 0 < files[p] <= 512))
+
+    t.check("-empty", found("find ft -empty") == ["ft/empty", "ft/many", "ft/sub/z.log", "ft/zero"])
+    t.check("-empty -type d", found("find ft -type d -empty") == ["ft/empty", "ft/many"])
+
+    t.check("! -type d", found("find ft ! -type d") == paths(lambda p: tree[p] == "f"))
+    t.check("-not -name", found("find ft -type f -not -name '*.txt'") ==
+            paths(lambda p: tree[p] == "f" and not low(p).endswith(".txt")))
+    t.check("-o", found("find ft -name '*.log' -o -name zero") == ["ft/sub/z.log", "ft/zero"])
+    t.check("-a binds tighter than -o", found("find ft -name '*.log' -o -name '*.txt' -a -path 'ft/sub/*'") ==
+            ["ft/sub/c.txt", "ft/sub/deep/d.txt", "ft/sub/z.log"])
+    t.check("parentheses", found("find ft ( -name a.txt -o -name z.log ) -type f") == ["ft/a.txt", "ft/sub/z.log"])
+    t.check("and written \\( \\) as well", found("find ft \\( -name a.txt -o -name z.log \\) -type f") == ["ft/a.txt", "ft/sub/z.log"])
+    t.check("-and, -or and -not spelled out", found("find ft -type f -and -not -name '*.txt' -and -size -1k") == ["ft/sub/z.log", "ft/zero"])
+
+    out = run("find ft/sub ft/empty -maxdepth 0").split("\n")
+    t.check("several starting points come in the order given", out == ["ft/sub", "ft/empty"], str(out))
+    t.check("a trailing slash is kept on the start and not doubled", found("find ft/ -maxdepth 1") ==
+            ["ft/"] + paths(lambda p: depth(p) == 1))
+    run("cd ft")
+    t.check("no path means the current directory", found("find -maxdepth 1") == sorted(["."] + ["./" + base(p) for p in paths(lambda p: depth(p) == 1)]))
+    t.check("find . names the current directory .", found("find . -name . -maxdepth 0") == ["."])
+    run("cd ..")
+    t.check("-print0 writes the same bytes with NULs for newlines",
+            run("find ft -type f -print0 | wc").split()[2] == run("find ft -type f | wc").split()[2])
+    t.check("-print more than once", sorted(run("find ft -name zero -print -print").split("\n")) == ["ft/zero", "ft/zero"])
+    t.check("a test with an action does not also print", found("find ft -name zero -print -o -name a.txt") == ["ft/zero"])
+
+    out = run("find ft -depth").split("\n")
+    t.check("-depth lists a directory after what is in it",
+            out[-1] == "ft" and out.index("ft/sub") > out.index("ft/sub/deep/d.txt") and out.index("ft/sub/deep") > out.index("ft/sub/deep/D2.dat"), str(out))
+    t.check("-depth is still the whole tree", sorted(out) == paths())
+
+    t.check("-exec runs a program with {} replaced", run("find ft -name a.txt -exec head -n 1 {} ;") == "xxxxx")
+    t.check("-exec in the middle of an argument", run("find ft -name a.txt -exec head -c 3 {} ;") == "xxx")
+    out = run("find ft -type f -name '*.txt' -exec head -n 1 {} ;").split("\n")
+    t.check("-exec runs once per match", sorted(out) == sorted("x" * (files[f] - 1) for f in files if f.lower().endswith(".txt")), str(out))
+    out = run("find ft -type f -name '*.txt' -exec grep xxxx {} ; -print").split("\n")
+    t.check("-exec that succeeds is true, so -print follows",
+            "ft/a.txt" in out and "ft/sub/deep/d.txt" in out and "ft/B.TXT" not in out and "ft/sub/c.txt" not in out, str(out))
+    out = run("find ft -type f -name '*.txt' -exec grep zzz {} ; -print")
+    t.check("-exec that fails is false, so nothing prints", out == "", out)
+    out = run("find ft -name a.txt -exec cat {} ;")
+    t.check("a built-in cannot be exec'd, and the message says why", "cat: no such file" in out and "built-ins" in out, out)
+    out = run("find ft -name a.txt -exec wc {} ;")
+    t.check("another program works too", re.search(r"1\s+1\s+6 ft/a.txt", out) is not None, out)
+
+    # errors
+    out = run("find nope")
+    t.check("a missing starting point", "find: nope: no such file" in out and "[exit status 1]" in out, out)
+    out = run("find nope ft -name a.txt")
+    t.check("and the rest are still searched", "find: nope:" in out and "ft/a.txt" in out, out)
+    for c, what in [("find ft -foo", "unknown predicate '-foo'"), ("find ft -name", "missing argument to '-name'"),
+                    ("find ft -type x", "unknown argument 'x' to '-type'"), ("find ft -size 3x", "invalid argument '3x' to '-size'"),
+                    ("find ft -size", "missing argument to '-size'"), ("find ft -maxdepth z", "invalid argument 'z' to '-maxdepth'"),
+                    ("find ft -exec wc", "missing argument to '-exec'"), ("find ft ( -name a", "no matching ')'"),
+                    ("find ft -name a )", "unexpected ')'"), ("find ft -name a -o", "ends where a test was expected")]:
+        out = run(c)
+        t.check(c + " is refused", what in out and "[exit status 2]" in out, out)
+    t.check("a refused expression searches nothing", "ft/" not in run("find ft -foo"))
+
+    # a long chain and a wide directory
+    chain = "ft/" + "/".join("lvl%d" % i for i in range(12))
+    acc = "ft"
+    for i in range(12):
+        acc += "/lvl%d" % i
+        run("mkdir " + acc)
+    run("write %s/bottom.txt deep" % chain)
+    t.check("a twelve-level tree", found("find ft -name bottom.txt") == [chain + "/bottom.txt"])
+    t.check("-mindepth reaches the bottom", found("find ft -mindepth 13") == [chain + "/bottom.txt"])
+    for i in range(40):
+        run("touch ft/many/f%02d.tmp" % i)
+    t.check("a directory of 40 entries (more than the first batch)",
+            found("find ft/many -type f") == ["ft/many/f%02d.tmp" % i for i in range(40)])
+
+    # -delete: all matches in a directory, in the right order, nothing else
+    t.check("-delete removes 40 files in one directory", run("find ft/many -name '*.tmp' -delete") == "" and found("find ft/many") == ["ft/many"])
+    t.check("-delete removes only what matched", run("find ft/sub -name '*.txt' -delete") == "" and
+            found("find ft/sub") == ["ft/sub", "ft/sub/deep", "ft/sub/deep/D2.dat", "ft/sub/z.log"])
+    out = run("find ft -maxdepth 0 -delete")
+    t.check("-delete of a directory with things in it fails and says so", "cannot delete ft" in out and "[exit status 1]" in out, out)
+    t.check("and leaves everything", "ft/a.txt" in found("find ft"))
+    t.check("-delete takes a whole subtree, deepest first", run("find ft/sub -delete") == "" and "no such file" in run("find ft/sub"))
+    t.check("-delete -type d -empty", run("find ft -type d -empty -delete") == "" and "ft/empty" not in found("find ft") and "ft/many" not in found("find ft"))
+    t.check("what was not matched survives", "ft/a.txt" in found("find ft") and "ft/big.bin" in found("find ft"))
+    t.check("-delete on the lot", run("find ft -delete") == "" and "no such file" in run("find ft"))
+
+
 def tcp_tests(m, t):
     """fetch and nc against servers on the host, which the guest
     reaches as 10.0.2.2."""
@@ -1404,6 +1551,7 @@ def tcp_tests(m, t):
             t.check(c + " counts what it should", counts(c) == shape(want), f"{counts(c)} != {shape(want)}")
         sortuniq_tests(m, t, url)
         tools_tests(m, t, url)
+        find_tests(m, t, url)
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))
         out = plain(m.run("cat gone.bin"))
         t.check("a failed -o leaves no file", "no such file" in out, out)

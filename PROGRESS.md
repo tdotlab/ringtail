@@ -2567,3 +2567,41 @@ through `tail` and `wc`), a 600000-byte `cat` join checked at the seam, bytes
 passing through exactly, and df against `ls`, with the free space falling by a
 copy's size and coming back when it is removed.
 Host 244 + 82 + 163, QEMU 650.
+
+## v0.24.5 "Handshake"
+
+`find`, with the standard name and flags it can honestly offer.
+
+`find [PATH...] [EXPRESSION]` visits each PATH (default `.`) and everything
+under it, and evaluates the expression for every entry. Paths print as given
+with the name added (`find docs` gives `docs/a.txt`, bare `find` gives
+`./a.txt`), in the order the disk keeps them. The expression is parsed before
+anything is touched, by a small recursive-descent parser with GNU's precedence:
+`!` binds tightest, then `-a` (also implied between tests), then `-o`, with
+`( )` or `\( \)` to group. If there is no action the whole expression is
+and-ed with `-print`.
+
+Tests: `-name` and `-iname` (glob with `* ? [a-z] [!x]`, and since the disk
+ignores case both match without regard to it), `-path`, `-type f|d`,
+`-size [+-]N[bckMG]` (rounded up like GNU, so `-size -1k` means empty),
+`-empty`. Options: `-maxdepth`, `-mindepth`, `-depth`. Actions: `-print`,
+`-print0`, `-exec CMD ... ;` with `{}` replaced anywhere in an argument, and
+`-delete` (files and empty directories; implies `-depth`).
+
+A directory is read in full into memory before any entry in it is visited, so
+`-delete` and `-exec` may remove or create files without disturbing the walk.
+`-exec` can only run programs: `rm`, `cat` and the other shell built-ins are
+not programs, and the error says so, which is why `-delete` is there.
+Known limits: no `-exec ... +`, no `-prune`, `-newer`, `-mtime` or `-perm`,
+no `-type l`, and a path must fit in 255 characters, which the kernel enforces
+anyway. Exit status is 0, 1 for an unreadable PATH or a failed delete, 2 for a
+bad expression.
+
+The kernel is untouched. Tested in QEMU against a Python model of a nine-entry
+tree: every test and option alone and combined (case, classes, rounding of
+sizes, depths, operators and both parenthesis spellings), several starting
+points and a trailing slash, `-depth` order, `-exec` true and false and with a
+built-in, every parse error with its exit status, a twelve-level chain, a
+40-entry directory, and `-delete` on 40 files in one directory, on a whole
+subtree, on a non-empty directory (refused) and on everything.
+Host 244 + 82 + 163, QEMU 725.
