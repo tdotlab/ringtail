@@ -21,7 +21,7 @@
 
 #define LINE_MAX 256
 #define HISTORY 10
-#define MAX_WORDS 24
+#define MAX_WORDS 64
 
 #define RED  "\x1b[91m"
 #define DIM  "\x1b[90m"
@@ -270,11 +270,14 @@ enum { W_WORD, W_PIPE, W_IN, W_OUT, W_APPEND, W_BG };
 typedef struct {
     int kind;
     char* text;  // the word without its quotes
+    const char* mask;  // per character of text: 1 if it was quoted (no wildcard then)
+    int glob;    // the word has an unquoted * ? or [
     int start, end;
     int spaced;  // set on a word whose typed predecessor was removed (a redirection)
 } word_t;
 
 static char wordbuf[LINE_MAX * 2];
+static char maskbuf[LINE_MAX * 2];
 
 // Returns the number of words, or -1 with an error printed.
 static int split(const char* line, word_t* w, int max) {
@@ -296,13 +299,20 @@ static int split(const char* line, word_t* w, int max) {
         } else {
             w[n].kind = W_WORD;
             w[n].text = o;
+            w[n].mask = maskbuf + (o - wordbuf);
+            w[n].glob = 0;
             while (line[i] && line[i] != ' ' && line[i] != '\t' && !strchr("|<>&", line[i])) {
                 if (line[i] == '"' || line[i] == '\'') {
                     char q = line[i++];
-                    while (line[i] && line[i] != q) *o++ = line[i++];
+                    while (line[i] && line[i] != q) {
+                        maskbuf[o - wordbuf] = 1;
+                        *o++ = line[i++];
+                    }
                     if (!line[i]) { complain("A quote is not closed"); return -1; }
                     i++;
                 } else {
+                    maskbuf[o - wordbuf] = 0;
+                    if (strchr("*?[", line[i])) w[n].glob = 1;
                     *o++ = line[i++];
                 }
             }
@@ -530,6 +540,7 @@ static void cmd_help(cmd_t* c) {
     }
     if (!tty_out) return;
     print(DIM "Paths: DOCS/A.TXT, /ROOT.TXT, .. for the parent. Programs come from /.\n"
+              "* ? [a-z] in a word match file names (quote it to keep it as it is).\n"
               "a | b pipes a's output into b; < FILE, > FILE and >> FILE redirect.\n"
               "Ctrl+C stops the running program; Ctrl+\\ stops one that ignores Ctrl+C.\n" NORM);
 }
@@ -754,10 +765,164 @@ typedef struct {
 
 static pipeline_t pl;
 
+// ---- Wildcards: * ? [set] in an unquoted word become the names that match ----
+//
+// Matching ignores case, like the disk. A name that starts with a dot is
+// matched only by a pattern that starts with a literal dot. Wildcards work
+// in any part of a path (`docs/*.txt`, `*/readme`). A word that matches
+// nothing stays as typed, as in bash. Matches are sorted.
+
+static char globbuf[4096];
+static int glob_used;
+static char* found[MAX_WORDS];
+static int nfound, glob_full;
+
+static int fold(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+// The [set] at p (pn bytes left): 1 if c is in it, 0 if not, -1 if the
+// bracket never closes (then it is just a bracket). *used is its length.
+static int glob_set(const char* p, const char* m, int pn, int c, int* used) {
+    int i = 1, neg = 0, hit = 0;
+    if (i < pn && !m[i] && (p[i] == '!' || p[i] == '^')) { neg = 1; i++; }
+    int first = 1;
+    for (; i < pn; i++, first = 0) {
+        if (p[i] == ']' && !first && !m[i]) {
+            *used = i + 1;
+            return hit != neg;
+        }
+        int lo = fold((unsigned char)p[i]);
+        int hi = lo;
+        if (i + 2 < pn && p[i + 1] == '-' && p[i + 2] != ']') {
+            hi = fold((unsigned char)p[i + 2]);
+            i += 2;
+        }
+        if (fold(c) >= lo && fold(c) <= hi) hit = 1;
+    }
+    return -1;
+}
+
+static int glob_match(const char* p, const char* m, int pn, const char* s) {
+    while (pn > 0) {
+        if (!*m) {
+            if (*p == '*') {
+                while (pn > 0 && *p == '*' && !*m) { p++; m++; pn--; }
+                if (pn == 0) return 1;
+                for (;; s++) {
+                    if (glob_match(p, m, pn, s)) return 1;
+                    if (!*s) return 0;
+                }
+            }
+            if (*p == '?') {
+                if (!*s) return 0;
+                p++; m++; pn--; s++;
+                continue;
+            }
+            if (*p == '[') {
+                int used = 0;
+                int r = *s ? glob_set(p, m, pn, (unsigned char)*s, &used) : 0;
+                if (*s && r >= 0) {
+                    if (!r) return 0;
+                    p += used; m += used; pn -= used; s++;
+                    continue;
+                }
+                if (!*s) return 0;  // (a [ that never closes falls through, as a plain character)
+            }
+        }
+        if (!*s || fold((unsigned char)*s) != fold((unsigned char)*p)) return 0;
+        p++; m++; pn--; s++;
+    }
+    return *s == 0;
+}
+
+static void glob_add(const char* path) {
+    size_t n = strlen(path) + 1;
+    if (nfound == MAX_WORDS || glob_used + (int)n > (int)sizeof globbuf) { glob_full = 1; return; }
+    memcpy(globbuf + glob_used, path, n);
+    found[nfound++] = globbuf + glob_used;
+    glob_used += (int)n;
+}
+
+// prefix: the path matched so far, empty or ending in '/'. p, m, pn: the
+// rest of the pattern.
+static void glob_walk(char* prefix, const char* p, const char* m, int pn) {
+    if (glob_full) return;
+    size_t len = strlen(prefix);
+    if (pn == 0) {  // a trailing slash: the directory itself
+        glob_add(prefix);
+        return;
+    }
+    int k = 0, wild = 0;
+    while (k < pn && p[k] != '/') {
+        if (!m[k] && strchr("*?[", p[k])) wild = 1;
+        k++;
+    }
+    int last = k == pn;
+    if (len + (size_t)k + 2 >= PATH_MAX) return;
+    if (!wild) {
+        memcpy(prefix + len, p, (size_t)k);
+        prefix[len + k] = 0;
+        dirent_t d;
+        if (last) {
+            if (sys_stat(prefix, &d) >= 0) glob_add(prefix);
+        } else {
+            prefix[len + k] = '/';
+            prefix[len + k + 1] = 0;
+            glob_walk(prefix, p + k + 1, m + k + 1, pn - k - 1);
+        }
+        prefix[len] = 0;
+        return;
+    }
+    int cursor = 0;
+    dirent_t d;
+    const char* where = *prefix ? prefix : ".";
+    while (sys_readdir(where, &cursor, &d) > 0 && !glob_full) {
+        if (d.name[0] == '.' && !(p[0] == '.' && !m[0])) continue;
+        if (!glob_match(p, m, k, d.name)) continue;
+        if (!last && !(d.flags & DIRENT_DIR)) continue;
+        size_t nl = strlen(d.name);
+        if (len + nl + 2 >= PATH_MAX) continue;
+        memcpy(prefix + len, d.name, nl + 1);
+        if (last) {
+            glob_add(prefix);
+        } else {
+            prefix[len + nl] = '/';
+            prefix[len + nl + 1] = 0;
+            glob_walk(prefix, p + k + 1, m + k + 1, pn - k - 1);
+        }
+        prefix[len] = 0;
+    }
+}
+
+// Expands one word into found[0..nfound), sorted. 0 if nothing matches,
+// -1 if there are too many matches.
+static int glob_expand(const word_t* w) {
+    char prefix[PATH_MAX];
+    prefix[0] = 0;
+    nfound = glob_full = 0;
+    int save = glob_used;
+    glob_walk(prefix, w->text, w->mask, (int)strlen(w->text));
+    if (glob_full) {
+        glob_used = save;
+        nfound = 0;
+        return -1;
+    }
+    for (int i = 1; i < nfound; i++) {
+        char* t = found[i];
+        int j = i;
+        while (j > 0 && (strcasecmp(found[j - 1], t) > 0 || (strcasecmp(found[j - 1], t) == 0 && strcmp(found[j - 1], t) > 0))) {
+            found[j] = found[j - 1];
+            j--;
+        }
+        found[j] = t;
+    }
+    return nfound;
+}
+
 // Split the words into stages and pull out the redirections.
 // Returns 0, or -1 with an error printed.
 static int parse(const char* line, word_t* w, int n) {
     memset(&pl, 0, sizeof pl);
+    glob_used = 0;
     pl.n = 1;
     int nw = 0, skipped = 0;
     for (int i = 0; i < n; i++) {
@@ -791,10 +956,20 @@ static int parse(const char* line, word_t* w, int n) {
             i++;
             skipped = 1;
         } else {
-            st->w[nw] = w[i];
-            st->w[nw].spaced = skipped && nw > 0;
-            st->cmd.argv[nw] = w[i].text;
-            nw++;
+            int m = w[i].glob ? glob_expand(&w[i]) : 0;
+            if (m < 0) { complain("Too many matches for a wildcard"); return -1; }
+            if (m > 0 && nw + m > MAX_WORDS) { complain("Too many words on the line"); return -1; }
+            if (m == 0) {  // no wildcard, or nothing matched: the word as typed
+                if (nw == MAX_WORDS) { complain("Too many words on the line"); return -1; }
+                found[0] = w[i].text;
+                m = 1;
+            }
+            for (int k = 0; k < m; k++) {
+                st->w[nw] = w[i];
+                st->w[nw].spaced = k > 0 || (skipped && nw > 0);
+                st->cmd.argv[nw] = found[k];
+                nw++;
+            }
             skipped = 0;
         }
     }

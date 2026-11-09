@@ -24,7 +24,7 @@
 #define PT_LOAD 1
 #define PF_W 2
 #define MAX_PHDRS 16
-#define ARGS_MAX_BYTES 2048
+#define ARGS_MAX_BYTES 3072
 
 typedef struct {
     uint8_t ident[16];

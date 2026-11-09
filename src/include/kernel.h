@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.24.11"
+#define RINGTAIL_VERSION "0.24.12"
 #define RINGTAIL_CODENAME "Handshake"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
@@ -54,7 +54,7 @@ void syscall_handle(struct regs* r);
 // resolved from directory node at) and starts it in job (0 for a new job of its own), with descriptors 0-2
 // copied from the current task's std[0..2], or the console when std
 // is NULL. Returns the new task id or -errno.
-#define ARGV_MAX 16
+#define ARGV_MAX 64
 // held: the task waits for task_release before it runs.
 int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[3], int held);
 

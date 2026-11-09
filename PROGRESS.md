@@ -2833,3 +2833,25 @@ groups whose captures are compared against GNU sed over the regex corpus (478
 agree; the other 6 are random patterns with tied top-level branches where
 glibc picks a later branch's groups, listed in test_regex.c). Host 244 + 82 +
 163 + 21394, QEMU 1817.
+
+## v0.24.12 "Wild Cards"
+
+Saklas expands wildcards.
+
+- An unquoted word containing `*`, `?` or a `[...]` set (with `!` or `^` to
+  negate and `a-z` ranges) is replaced by every matching name, sorted and
+  compared ignoring case (FAT does not care). Each `/` in the word is one
+  directory level, so `*/x`, `d/*.txt` and `*/*` work. A leading dot has to be
+  typed. A pattern that matches nothing stays as typed, as in bash; a quoted
+  word is never expanded; a `[` with no closing bracket is a plain character.
+- Too many matches for the room (64 words, 4 KB of names) print an error and
+  run nothing, rather than a cut-off list.
+- To make expansions useful the argument limits grew: ARGV_MAX 16 to 64,
+  and the bytes of arguments a program can be started with to 3072 (loader and
+  spawn syscall).
+- Not done: `{a,b}`, `~`, `\` escapes, `**`, expansion in redirection targets.
+
+Testing: about 60 generated cases against bash in temp directories (names are
+all lowercase and start with `zq`, since the guest's root holds other files),
+including quoting, dot files, sets, subdirectory patterns, no-match, and 20
+matches passed on to `wc`. Host 244 + 82 + 163 + 21394, QEMU 1881.

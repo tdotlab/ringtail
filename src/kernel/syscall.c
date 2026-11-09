@@ -431,7 +431,7 @@ static int sys_list(uint32_t index, uint32_t ubuf, uint32_t size) {
 
 // argv from user memory: up to ARGV_MAX strings, ARGS_MAX_BYTES in
 // all, NULL-terminated. A NULL argv means just the program name.
-#define SPAWN_ARGS_BYTES 2048
+#define SPAWN_ARGS_BYTES 3072
 
 static int spawn_job(const spawn_opts_t* o) {
     if (o->flags & ~(SPAWN_NEW_JOB | SPAWN_JOIN | SPAWN_FOREGROUND)) return -EINVAL;

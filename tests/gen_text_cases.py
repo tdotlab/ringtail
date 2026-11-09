@@ -458,6 +458,25 @@ for sc in ["k", "s/a/b", "s/a", "s/a/b/q", "s/a/b/gg", "s/a/b/pp", "s/a/b/0", "y
            "s/a\\{1/x/", "s/[a/x/", "s/\\(a\\)/\\2/", "s/a/\\1/", "u", "d x", "p x", "q x", "l x", "= x", "dp", "pp", "}p", "1~", "~2p", "+1p"]:
     ERRS.append(sc)
 
+# ---------------------------------------------------------------- shell wildcards (lowercase names; the guest's root also holds other files, so every pattern starts with zq)
+G = ["echo 1 > zqa.txt", "echo 2 > zqb.txt", "echo 3 > zqc.dat", "echo 4 > zq10.txt", "echo 5 > .zqhid", "mkdir zqd", "echo 6 > zqd/in.txt", "echo 7 > zqd/zqx.dat"]
+for pat in ["zq*", "zq*.txt", "zq?.txt", "zq??.txt", "zq[ab].txt", "zq[a-c].*", "zq[!a].*", "zq[^a].*", "zqd/*", "zqd/*.txt", "zq*/in.txt",
+            "zq*/*", "zq*d/z*", ".zq*", "zq*x", "zq[", "zq[a", "zq[]", "zqa.t?t", "zq?*", "*zq*", "zqnone*", "zqd/none*", "nodir/*", "zq[a-]*", "zq*.*"]:
+    case(*G, f"echo {pat}")
+    case(*G, f"echo x {pat} y")
+case(*G, "echo 'zq*' \"zq?\"")
+case(*G, "echo zq*.txt zqd/*.txt")
+case(*G, "echo zq*.txt | wc -w")
+case(*G, "cat zq?.txt")
+case(*G, "cat zq[ab].txt zq10.txt | sort")
+case(*G, "head -n 1 zq*.txt")
+case(*G, "cat zqd/*.txt zq[ab].txt > zqout", "cat zqout")
+case(*G, "grep -c . zq*.txt")
+case(*G, "?cmp zqa.txt zqb.txt")
+case(*G, "echo \"a b\"*", "echo zq\"*\"")
+case(*G, "echo zq*.txt > zqlist", "cat zqlist")
+case(*[f"echo a > zqm{i}" for i in range(1, 21)], "echo zqm*", "echo zqm* | wc -w", "head -n 1 zqm*")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:

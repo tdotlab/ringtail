@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.11 "Sedition"**. See PROGRESS.md for the history.
+Current version: **v0.24.12 "Wild Cards"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -245,7 +245,7 @@ Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
 `kill <id>` stops it. The file commands (`ls`, `cat`, `echo`, `touch`, `rm`,
 `mkdir`, `rmdir`, `mv`, `cp`) are programs on the disk like any other, so they
 pipe, take `<`, and run under `find -exec`; `cat a b > c` joins files, `rm -r`, `cp -r`, `mkdir -p` and `ls -R` work on
-trees, and quote text for `echo` to keep its spacing. `write <file> <text>` stays a built-in, and `cd` and `pwd` work on the current directory. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
+trees, and quote text for `echo` to keep its spacing. An unquoted word with `*`, `?` or `[a-z]` / `[!x]` in it is a wildcard: it is replaced by the matching names, sorted and ignoring case, one directory level per `/` (`ls *.txt`, `cat d/*.c`, `*/readme`); names starting with a dot match only a pattern that starts with a dot, a pattern that matches nothing stays as typed, and quoting a word turns the wildcards off. `write <file> <text>` stays a built-in, and `cd` and `pwd` work on the current directory. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
 `/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `date` the clock, `uptime` the
 time since boot and timer ticks, and `faults` the fault log. `pci` lists the PCI devices, and `net` shows
