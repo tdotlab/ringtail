@@ -339,7 +339,7 @@ one, with no time zone (UTC under QEMU) and no changes for summer time. There is
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and
-mode 13h. The network has no TCP and no IPv6, so DNS answers too big
+mode 13h. The network has no IPv6, and DNS answers too big
 for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already
