@@ -2770,3 +2770,26 @@ for tr, 11 for tee, in every form that bash and RingTail's shell both read)
 through the real GNU tools and writes the outputs to `tests/text_cases.py`;
 `gnu_text_tests` types them into RingTail and compares, in a fresh directory
 each. Messages, which GNU words differently, are checked by hand: 16 checks.
+QEMU 1208.
+
+## v0.24.10 "Loose Change"
+
+The small tools every pipeline and script reaches for.
+
+- `basename` (`NAME [SUFFIX]`, `-a`, `-s`), `dirname`: trailing slashes, `//`,
+  empty names and a suffix that is the whole name behave as in GNU.
+- `seq [-w] [-s SEP] [FIRST [INCR]] LAST`: whole numbers and decimals (up to
+  9 places, done in scaled 64-bit integers, so `seq 0 0.1 1` has no rounding
+  noise). The places printed are those of the more precise of FIRST and INCR;
+  `-w` pads to the width of FIRST or LAST as typed (`seq -w 007 009`), zeros
+  after a sign.
+- `cmp [-l] [-s] [-n N] FILE1 [FILE2]`: "a b differ: byte N, line M", `-l`
+  lists every difference as decimal offset and octal values (offset column as
+  wide as the shorter file's size, like GNU), "EOF on F after byte N" on
+  stderr, statuses 0/1/2. GNU 3.7 and older say "char" where newer say "byte";
+  RingTail says "byte".
+- `yes`, `true`, `false`.
+
+Testing: 185 more generated cases against GNU (basename, dirname, seq in
+all its flag combinations, cmp) and 21 hand-written checks of messages and
+statuses. Host 244 + 82 + 163 + 2039, QEMU 1414.

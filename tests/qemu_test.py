@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.9" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.10" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -259,7 +259,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.9" in out, out)
+    t.check("and the new shell works", "0.24.10" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -606,7 +606,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.9" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.10" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -808,7 +808,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.9" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.10" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -825,7 +825,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.9"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.10"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1781,7 +1781,7 @@ def gnu_text_tests(m, t):
     for n, (cmds, expected) in enumerate(CASES):
         run("mkdir tcdir")
         run("cd tcdir")
-        got = [run(c).rstrip("\n") for c in cmds]
+        got = [run(c.lstrip("?")).rstrip("\n") for c in cmds]
         run("cd ..")
         run("rm -r tcdir")
         want = [e.rstrip("\n") for e in expected]
@@ -1828,6 +1828,50 @@ def gnu_text_tests(m, t):
     t.check("tee passes lines on as they come", run("echo -e 'a\\nb' | tee tl.txt | head -n 1").rstrip("\n") == "a" and run("cat tl.txt").rstrip("\n") == "a\nb")
     run("rm tl.txt")
     run("rm gt.txt")
+
+    # ---- v0.24.10: the small tools ----
+    out, rc = st("true")
+    t.check("true succeeds quietly", out == "" and rc == 0, out)
+    out, rc = st("false")
+    t.check("false fails quietly", out == "" and rc == 1, out)
+    t.check("yes says y until the reader leaves", run("yes | head -n 3").replace("\n", " ").strip() == "y y y")
+    t.check("yes joins its arguments", run("yes a b | head -n 2").replace("\n", " ").strip() == "a b a b")
+    t.check("yes fills a pipe past one buffer", run("yes | head -n 1000 | wc -l").strip() == "1000")
+    out, rc = st("seq")
+    t.check("seq with no operand says so", "missing operand" in out and "usage: seq" in out and rc == 2, out)
+    out, rc = st("seq 1 0 5")
+    t.check("seq refuses a zero step", "zero increment" in out and rc == 1, out)
+    out, rc = st("seq 1 x")
+    t.check("seq refuses a word", "invalid floating point argument: 'x'" in out and rc == 1, out)
+    out, rc = st("seq 1 2 3 4")
+    t.check("seq refuses a fourth operand", "extra operand '4'" in out and rc == 2, out)
+    out, rc = st("seq -x 3")
+    t.check("seq shows the usage for a bad option", "usage: seq" in out and rc == 2, out)
+    t.check("seq counts big and does not stall", run("seq 100000 | tail -n 1").strip() == "100000")
+    out, rc = st("basename")
+    t.check("basename with no operand says so", "missing operand" in out and rc == 2, out)
+    out, rc = st("basename a b c")
+    t.check("basename refuses three names", "extra operand 'c'" in out and rc == 2, out)
+    out, rc = st("dirname")
+    t.check("dirname with no operand says so", "missing operand" in out and rc == 2, out)
+    run("echo -e 'abc' > c1")
+    run("echo -e 'abc\\nx\\c' > c2")
+    out, rc = st("cmp c1 c2")
+    t.check("cmp reports a file that ends first, on stderr", out == "cmp: EOF on c1 after byte 4" and rc == 1, out)
+    out, rc = st("cmp c2 c1")
+    t.check("cmp names the shorter one", out == "cmp: EOF on c1 after byte 4" and rc == 1, out)
+    out, rc = st("cmp -s c1 c2")
+    t.check("cmp -s says nothing", out == "" and rc == 1, out)
+    out, rc = st("cmp c1 nosuch")
+    t.check("cmp reports a missing file with status 2", "nosuch: no such file" in out and rc == 2, out)
+    out, rc = st("echo -e 'abc' | cmp c1")
+    t.check("cmp with one file reads standard input for the other", out == "" and rc == 0, out)
+    out, rc = st("cmp")
+    t.check("cmp with nothing says so", "missing operand" in out and rc == 2, out)
+    out, rc = st("cmp -n x c1 c2")
+    t.check("cmp -n wants a number", "invalid" in out and rc == 2, out)
+    run("rm c1")
+    run("rm c2")
 
 
 def grepwc_tests(m, t):
