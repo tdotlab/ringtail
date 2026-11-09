@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.10 "Loose Change"**. See PROGRESS.md for the history.
+Current version: **v0.24.11 "Sedition"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -294,6 +294,7 @@ Programs on the disk:
 | cmp | `cmp [-l] [-s] [-n LIMIT] FILE1 [FILE2]`: the first byte where two files differ (or every one with `-l`); exit 0 same, 1 different, 2 trouble. |
 | yes | `yes [STRING...]`: prints STRING (or `y`) forever, until the reader quits. |
 | true, false | Do nothing, with exit status 0 and 1. |
+| sed | `sed [-nsEr] [-i[SUFFIX]] [-l N] [-e SCRIPT \| -f FILE \| SCRIPT] [FILE...]`: the stream editor. Addresses `N`, `$`, `/re/I`, `\%re%`, `first~step`, `0,/re/`, `a,+N`, `a,~N`, `!`; commands `{} s y d D p P n N g G h H x z = l a i c r w b t T : q Q`; `s` takes `& \1..\9 \n \U \L \u \l \E` and the flags `g p N I M w FILE`. Patterns are basic (or `-E` extended) regular expressions as in `grep`, but with no back-references inside the pattern. `-i` edits files in place (writes a temporary, then swaps it in). |
 | find | `find [PATH...] [EXPRESSION]`: walks directory trees. Tests `-name -iname -path -type f\|d -size -empty`, options `-maxdepth -mindepth -depth`, operators `! -a -o ( )`, actions `-print -print0 -exec CMD {} ; -delete`. Names ignore case, like the disk. |
 | hexdump | `hexdump [-C \| -x] [-v] [-n LENGTH] [-s OFFSET] [FILE...]`: the bytes of the files as one stream, as 16-bit words (default, `-x`) or canonical hex and text (`-C`). A repeated line becomes `*` unless -v. -n and -s take hex. |
 | df | `df [-h] [-k] [FILE...]`: size, used and free space on the disk, in 1K blocks or with -h in K, M and G. |

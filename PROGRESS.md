@@ -2793,3 +2793,43 @@ The small tools every pipeline and script reaches for.
 Testing: 185 more generated cases against GNU (basename, dirname, seq in
 all its flag combinations, cmp) and 21 hand-written checks of messages and
 statuses. Host 244 + 82 + 163 + 2039, QEMU 1414.
+
+## v0.24.11 "Sedition"
+
+`sed`, and the capture groups in the regex engine it needs.
+
+- Regex: `RE_GROUPS` makes the Pike VM remember where each parenthesised group
+  matched (`re_exec`, up to 31 groups). The overall match is still the
+  leftmost-longest; where a group can match in several ways it takes the first
+  way the pattern lists. `RE_MULTI` lets `^` and `$` match beside a newline
+  inside the text (sed's `M`), and `RE_ONEPAT` stops a newline in the pattern
+  from separating patterns, as grep does. Back-references inside a pattern are
+  still refused.
+- `sed [-nsEr] [-i[SUFFIX]] [-l N] [-e SCRIPT | -f FILE | SCRIPT] [FILE...]`,
+  with GNU's long options for those. Addresses `N`, `$`, `/re/` (with `I` and
+  `M`), `\cREc`, `first~step`, `0,/re/`, `a,+N`, `a,~N` and `!`; commands
+  `{ } s y d D p P n N g G h H x z = l a i c r w b t T : q Q #`. `s` has `&`,
+  `\0` to `\9`, `\n`, `\t`, the case changes `\U \L \u \l \E`, the
+  flags `g p N I M w FILE`, any delimiter, and the empty pattern reuses the last
+  regex used. `a`, `i` and `c` take GNU's one-line form (`a text`), `a\text`
+  with its blanks kept, and the classic `a\` NEWLINE form; `w /dev/stdout`
+  works. `-i` writes `NAME.sedtmp`, optionally renames the original to
+  `NAME+SUFFIX`, deletes `NAME` and renames the temporary into its place (the
+  disk's rename does not replace). Messages and exit statuses follow GNU's (1
+  for a bad script, 2 for a missing input file, 4 for a missing label or no
+  input files with `-i`).
+- Quirks copied from GNU on purpose: `n` and `N` on the last line print and
+  stop, `addr,~N` runs to the next multiple of N even from a multiple, `Q`
+  drops what `a` and `r` queued, `c` in a range prints once at its end, `t`'s
+  flag is cleared whenever a new line is read (also by `n` and `N`).
+- Not done: back-references in patterns, `e`, `F`, `W`, `R`, `v`, `-z`,
+  `--debug`, the `\c \d \o \x` escapes, `\` and `\'` anchors.
+
+Testing: 391 more generated cases against GNU sed (every command, the
+address forms, `s` flags, in-place editing, files without a final newline,
+multiple files with and without `-s`), a table of 47 bad scripts whose exit
+status is compared, 12 hand-written checks of messages, and 484 patterns with
+groups whose captures are compared against GNU sed over the regex corpus (478
+agree; the other 6 are random patterns with tied top-level branches where
+glibc picks a later branch's groups, listed in test_regex.c). Host 244 + 82 +
+163 + 21394, QEMU 1817.

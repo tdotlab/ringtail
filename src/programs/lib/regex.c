@@ -16,26 +16,27 @@ void* memcpy(void* dst, const void* src, size_t n);
 #define MAX_INSTS 30000  // a program longer than this is "too big"
 #define MAX_DEPTH 200    // nested groups
 #define MAX_REPEAT 1000
+#define MAX_GROUPS 31
 
 // ---- the program ----
-enum { I_CHAR, I_ANY, I_SET, I_SPLIT, I_JMP, I_BOL, I_EOL, I_WORDB, I_NWORDB, I_WSTART, I_WEND, I_MATCH };
+enum { I_CHAR, I_ANY, I_SET, I_SPLIT, I_JMP, I_BOL, I_EOL, I_WORDB, I_NWORDB, I_WSTART, I_WEND, I_SAVE, I_MATCH };
 
 typedef struct {
     uint8_t op, c;
-    uint16_t x, y;  // I_SET: x is the set; I_SPLIT and I_JMP: where to go
+    uint16_t x, y;  // I_SET: x is the set; I_SPLIT and I_JMP: where to go; I_SAVE: x is the slot
 } inst_t;
 
 typedef uint8_t set_t[32];
 
 // ---- the tree ----
-enum { N_EMPTY, N_CHAR, N_ANY, N_SET, N_ASSERT, N_SEQ, N_ALT, N_STAR, N_PLUS, N_QUEST, N_REP };
+enum { N_EMPTY, N_CHAR, N_ANY, N_SET, N_ASSERT, N_SEQ, N_ALT, N_STAR, N_PLUS, N_QUEST, N_REP, N_GROUP };
 
 typedef struct {
     uint8_t type, c;
     uint16_t set;
     int32_t a;     // N_SEQ, N_ALT: the first child; the repeats: the child
     int32_t nx;    // the next sibling in a N_SEQ or N_ALT
-    int32_t min, max;
+    int32_t min, max;  // N_GROUP: min is its number
     uint8_t what;  // N_ASSERT: the I_ op
 } node_t;
 
@@ -47,6 +48,7 @@ typedef struct {
     uint32_t nn, ncap;
     const char* err;
     re_t* re;
+    uint32_t ngroups;
 } parser_t;
 
 static int fail(parser_t* p, const char* msg) {
@@ -262,6 +264,22 @@ static int interval(parser_t* p, int32_t* lo, int32_t* hi) {
     return 1;
 }
 
+// The group number to give the "(" about to be parsed: 0 when groups are not kept.
+static int open_group(parser_t* p) {
+    if (!(p->flags & RE_GROUPS)) return 0;
+    if (p->ngroups >= MAX_GROUPS) return fail(p, "Regular expression too big");
+    return (int)++p->ngroups;
+}
+
+static int32_t close_group(parser_t* p, int g, int32_t inner) {
+    if (g <= 0) return inner;
+    int32_t n = new_node(p, N_GROUP);
+    if (n < 0) return -1;
+    p->nodes[n].a = inner;
+    p->nodes[n].min = g;
+    return n;
+}
+
 static int32_t parse_atom(parser_t* p, int depth, int first, int* anchor) {
     uint8_t c = (uint8_t)p->s[p->i];
     *anchor = 0;
@@ -269,11 +287,13 @@ static int32_t parse_atom(parser_t* p, int depth, int first, int* anchor) {
         if (c == '(') {
             if (depth >= MAX_DEPTH) return fail(p, "Regular expression too big");
             p->i++;
+            int g = open_group(p);
+            if (g < 0) return -1;
             int32_t inner = parse_alt(p, depth + 1);
             if (inner < 0) return -1;
             if (p->i >= p->len || p->s[p->i] != ')') return fail(p, "Unmatched ( or \\(");
             p->i++;
-            return inner;
+            return close_group(p, g, inner);
         }
         if (c == '^') {
             p->i++;
@@ -299,11 +319,13 @@ static int32_t parse_atom(parser_t* p, int depth, int first, int* anchor) {
         if (c == '\\' && p->i + 1 < p->len && p->s[p->i + 1] == '(') {
             if (depth >= MAX_DEPTH) return fail(p, "Regular expression too big");
             p->i += 2;
+            int g = open_group(p);
+            if (g < 0) return -1;
             int32_t inner = parse_alt(p, depth + 1);
             if (inner < 0) return -1;
             if (!at_close(p)) return fail(p, "Unmatched ( or \\(");
             p->i += 2;
-            return inner;
+            return close_group(p, g, inner);
         }
         if (c == '^' && first == 1) {
             p->i++;
@@ -520,6 +542,10 @@ static int emit(parser_t* p, int32_t ni, int depth) {
         }
         return 0;
     }
+    case N_GROUP:
+        if (push_inst(p, I_SAVE, 0, 2u * (uint32_t)n.min, 0) < 0) return -1;
+        if (emit(p, n.a, depth + 1)) return -1;
+        return push_inst(p, I_SAVE, 0, 2u * (uint32_t)n.min + 1, 0) < 0 ? -1 : 0;
     case N_STAR: return emit_star(p, n.a, depth);
     case N_PLUS: {
         uint32_t start = p->re->n;
@@ -571,7 +597,7 @@ const char* re_compile(re_t* re, const char* pat, uint32_t len, unsigned flags) 
     uint32_t start = 0;
     while (root >= 0 && !p.err) {
         uint32_t end = start;
-        while (end < len && pat[end] != '\n') end++;
+        while (end < len && ((flags & RE_ONEPAT) || pat[end] != '\n')) end++;
         int32_t one;
         if (flags & RE_FIXED) {
             one = new_node(&p, N_SEQ);
@@ -606,6 +632,7 @@ const char* re_compile(re_t* re, const char* pat, uint32_t len, unsigned flags) 
         if (!re->cur || !re->nxt || !re->stack || !re->mark) p.err = "out of memory";
         else memset(re->mark, 0, n * sizeof *re->mark);
     }
+    re->ngroups = p.ngroups;
     free(p.nodes);
     if (p.err) {
         re_free(re);
@@ -621,6 +648,9 @@ void re_free(re_t* re) {
     free(re->nxt);
     free(re->stack);
     free(re->mark);
+    free(re->ccur);
+    free(re->cnxt);
+    free(re->cstack);
     memset(re, 0, sizeof *re);
 }
 
@@ -652,12 +682,13 @@ static void add_thread(re_t* re, uint16_t* list, uint32_t* n, uint32_t pc0, cons
         int after = pos < sj->len && is_word((uint8_t)sj->line[pos]);
         switch (in->op) {
         case I_JMP: re->stack[sp++] = in->x; break;
+        case I_SAVE: re->stack[sp++] = (uint16_t)(pc + 1); break;
         case I_SPLIT:
             re->stack[sp++] = in->y;
             re->stack[sp++] = in->x;
             break;
-        case I_BOL: if (pos == 0) re->stack[sp++] = (uint16_t)(pc + 1); break;
-        case I_EOL: if (pos == sj->len) re->stack[sp++] = (uint16_t)(pc + 1); break;
+        case I_BOL: if (pos == 0 || ((re->flags & RE_MULTI) && sj->line[pos - 1] == '\n')) re->stack[sp++] = (uint16_t)(pc + 1); break;
+        case I_EOL: if (pos == sj->len || ((re->flags & RE_MULTI) && sj->line[pos] == '\n')) re->stack[sp++] = (uint16_t)(pc + 1); break;
         case I_WORDB: if (before != after) re->stack[sp++] = (uint16_t)(pc + 1); break;
         case I_NWORDB: if (before == after) re->stack[sp++] = (uint16_t)(pc + 1); break;
         case I_WSTART: if (!before && after) re->stack[sp++] = (uint16_t)(pc + 1); break;
@@ -762,4 +793,126 @@ int re_test(re_t* re, const char* line, uint32_t len) {
     }
     subject_t sj = { line, len };
     return run_any(re, &sj);
+}
+
+// ---- groups ----
+// re_exec runs the same automaton, but each running thread carries the
+// places its groups have matched so far (the slots, two per group).
+// add_thread_c keeps one working copy of the slots, changes it as it
+// passes a save instruction and puts it back (a frame on the stack
+// remembers the old value) when it has explored beyond.
+typedef struct {
+    int32_t pc, slot, old;  // slot >= 0: put old back in that slot
+} cframe_t;
+
+static void add_thread_c(re_t* re, uint16_t* list, int32_t* clist, uint32_t* n, uint32_t pc0, int32_t* work, uint32_t ncap,
+                         const subject_t* sj, uint32_t pos) {
+    const inst_t* prog = re->prog;
+    cframe_t* st = re->cstack;
+    uint32_t sp = 0;
+    st[sp++] = (cframe_t){ (int32_t)pc0, -1, 0 };
+    while (sp) {
+        cframe_t f = st[--sp];
+        if (f.slot >= 0) {
+            work[f.slot] = f.old;
+            continue;
+        }
+        uint32_t pc = (uint32_t)f.pc;
+        if (re->mark[pc] == re->gen) continue;
+        re->mark[pc] = re->gen;
+        const inst_t* in = &prog[pc];
+        int before = pos > 0 && is_word((uint8_t)sj->line[pos - 1]);
+        int after = pos < sj->len && is_word((uint8_t)sj->line[pos]);
+        switch (in->op) {
+        case I_JMP: st[sp++] = (cframe_t){ in->x, -1, 0 }; break;
+        case I_SPLIT:
+            st[sp++] = (cframe_t){ in->y, -1, 0 };
+            st[sp++] = (cframe_t){ in->x, -1, 0 };
+            break;
+        case I_SAVE:
+            st[sp++] = (cframe_t){ 0, in->x, work[in->x] };
+            work[in->x] = (int32_t)pos;
+            st[sp++] = (cframe_t){ (int32_t)pc + 1, -1, 0 };
+            break;
+        case I_BOL: if (pos == 0 || ((re->flags & RE_MULTI) && sj->line[pos - 1] == '\n')) st[sp++] = (cframe_t){ (int32_t)pc + 1, -1, 0 }; break;
+        case I_EOL: if (pos == sj->len || ((re->flags & RE_MULTI) && sj->line[pos] == '\n')) st[sp++] = (cframe_t){ (int32_t)pc + 1, -1, 0 }; break;
+        case I_WORDB: if (before != after) st[sp++] = (cframe_t){ (int32_t)pc + 1, -1, 0 }; break;
+        case I_NWORDB: if (before == after) st[sp++] = (cframe_t){ (int32_t)pc + 1, -1, 0 }; break;
+        case I_WSTART: if (!before && after) st[sp++] = (cframe_t){ (int32_t)pc + 1, -1, 0 }; break;
+        case I_WEND: if (before && !after) st[sp++] = (cframe_t){ (int32_t)pc + 1, -1, 0 }; break;
+        default:
+            list[*n] = (uint16_t)pc;
+            memcpy(clist + (size_t)*n * ncap, work, ncap * sizeof *work);
+            (*n)++;
+            break;
+        }
+    }
+}
+
+// The longest match that starts exactly at start, as in run_from, with the
+// groups of the thread that got there first. Its end, or -1.
+static int64_t run_from_c(re_t* re, const subject_t* sj, uint32_t start, int32_t* caps) {
+    const inst_t* prog = re->prog;
+    uint32_t ncap = 2 * (re->ngroups + 1);
+    uint16_t *cur = re->cur, *nxt = re->nxt;
+    int32_t *ccur = re->ccur, *cnxt = re->cnxt;
+    int32_t work[2 * (MAX_GROUPS + 1)];
+    for (uint32_t k = 0; k < ncap; k++) work[k] = -1;
+    work[0] = (int32_t)start;
+    uint32_t nc = 0, nn;
+    int64_t best = -1;
+    next_gen(re);
+    add_thread_c(re, cur, ccur, &nc, 0, work, ncap, sj, start);
+    for (uint32_t pos = start; nc; pos++) {
+        next_gen(re);
+        nn = 0;
+        for (uint32_t i = 0; i < nc; i++) {
+            const inst_t* in = &prog[cur[i]];
+            const int32_t* mine = ccur + (size_t)i * ncap;
+            if (in->op == I_MATCH) {
+                if ((int64_t)pos > best && accepts(re, sj, start, pos)) {
+                    best = pos;
+                    memcpy(caps, mine, ncap * sizeof *caps);
+                    caps[1] = (int32_t)pos;
+                }
+            } else if (consumes(in, sj, pos, re->sets, re->flags)) {
+                memcpy(work, mine, ncap * sizeof *work);
+                add_thread_c(re, nxt, cnxt, &nn, cur[i] + 1u, work, ncap, sj, pos + 1);
+            }
+        }
+        if (pos == sj->len) break;
+        uint16_t* t = cur;
+        cur = nxt;
+        nxt = t;
+        int32_t* ct = ccur;
+        ccur = cnxt;
+        cnxt = ct;
+        nc = nn;
+    }
+    return best;
+}
+
+int re_exec(re_t* re, const char* line, uint32_t len, uint32_t from, int32_t* caps) {
+    uint32_t ncap = 2 * (re->ngroups + 1);
+    if (!re->ccur) {
+        re->ccur = malloc((size_t)re->n * ncap * sizeof *re->ccur);
+        re->cnxt = malloc((size_t)re->n * ncap * sizeof *re->cnxt);
+        re->cstack = malloc((2 * (size_t)re->n + 4) * sizeof(cframe_t));
+        if (!re->ccur || !re->cnxt || !re->cstack) {
+            free(re->ccur);
+            free(re->cnxt);
+            free(re->cstack);
+            re->ccur = re->cnxt = 0;
+            re->cstack = 0;
+            return -1;
+        }
+    }
+    subject_t sj = { line, len };
+    for (uint32_t s = from; s <= len; s++) {
+        if ((re->flags & RE_LINE) && s > 0) break;
+        if ((re->flags & RE_WORD) && s > 0 && is_word((uint8_t)line[s - 1])) continue;
+        int64_t e = run_from_c(re, &sj, s, caps);
+        if (e >= 0) return 1;
+    }
+    return 0;
 }

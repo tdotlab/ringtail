@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.10" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.11" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -259,7 +259,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.10" in out, out)
+    t.check("and the new shell works", "0.24.11" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -606,7 +606,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.10" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.11" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -808,7 +808,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.10" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.11" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -825,7 +825,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.10"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.11"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1773,7 +1773,7 @@ def gnu_text_tests(m, t):
     commands and the expected output come from tests/text_cases.py, made
     by tests/gen_text_cases.py running the real tools."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from text_cases import CASES
+    from text_cases import CASES, ERRS
 
     def run(c, timeout=30):
         return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "")
@@ -1872,6 +1872,35 @@ def gnu_text_tests(m, t):
     t.check("cmp -n wants a number", "invalid" in out and rc == 2, out)
     run("rm c1")
     run("rm c2")
+
+    # ---- sed: what GNU words differently, and what the generated cases cannot show ----
+    run("echo -e 'one\\ntwo' > gt.txt")
+    bad = [sc for sc, want in ERRS if st("echo a | sed -n '" + sc + "'")[1] != want]
+    t.check(f"sed gives GNU's exit status for {len(ERRS)} scripts, good and bad", not bad, f"{bad}")
+    silent = [sc for sc, want in ERRS if want and not st("echo a | sed -n '" + sc + "'")[0].startswith("sed:")]
+    t.check("every sed script error says so", not silent, f"{silent}")
+    out, rc = st("sed")
+    t.check("sed with nothing to do prints the usage", "usage: sed" in out and rc == 1, out)
+    out, rc = st("sed --bogus p")
+    t.check("sed refuses an unknown option", "unrecognized option" in out and rc == 1, out)
+    out, rc = st("sed k gt.txt")
+    t.check("sed names an unknown command", "unknown command: `k'" in out and rc == 1, out)
+    out, rc = st("sed -n p nosuch gt.txt")
+    t.check("sed reports a missing file, reads on, and ends with status 2", "can't read nosuch" in out and out.endswith("one\ntwo") and rc == 2, out)
+    out, rc = st("sed -i p")
+    t.check("sed -i wants files", "no input files" in out and rc == 4, out)
+    out, rc = st("sed 's/\\(a\\)\\1/x/' gt.txt")
+    t.check("a back-reference in a pattern is refused, not misread", "back-reference" in out and rc == 1, out)
+    out, rc = st("sed -n '/x/b nolabel' gt.txt")
+    t.check("sed names a missing label, status 4", "can't find label" in out and rc == 4, out)
+    out, rc = st("sed -n p -l x gt.txt")
+    t.check("sed -l wants a number", "invalid line length" in out and rc == 1, out)
+    out, rc = st("sed -i.orig 's/one/1/' gt.txt")
+    t.check("sed -i with a suffix keeps the original", out == "" and run("cat gt.txt").rstrip("\n") == "1\ntwo" and run("cat gt.txt.orig").rstrip("\n") == "one\ntwo", out)
+    run("rm gt.txt.orig")
+    out, rc = st("sed -n p gt.txt gt.txt")
+    t.check("sed joins its files into one stream", out == "1\ntwo\n1\ntwo" and rc == 0, out)
+    run("rm gt.txt")
 
 
 def grepwc_tests(m, t):

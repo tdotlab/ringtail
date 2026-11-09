@@ -30,7 +30,7 @@ test_netmsg: $(NETMSG_SRCS) ../src/net/dhcpmsg.h ../src/programs/lib/dnsmsg.h
 test_tcp: $(TCP_SRCS) ../src/net/tcp.h
 	$(CC) $(NETMSG_CFLAGS) -o $@ $(TCP_SRCS)
 
-test_regex: $(REGEX_SRCS) ../src/programs/lib/regex.h regex_cases.h
+test_regex: $(REGEX_SRCS) ../src/programs/lib/regex.h regex_cases.h capture_cases.h
 	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(REGEX_SRCS)
 
 run: $(TEST) test_netmsg test_tcp test_regex
