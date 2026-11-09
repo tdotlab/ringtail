@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.8" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.9" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -259,7 +259,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.8" in out, out)
+    t.check("and the new shell works", "0.24.9" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -606,7 +606,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.8" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.9" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -808,7 +808,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.8" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.9" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -825,7 +825,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.8"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.9"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -1768,6 +1768,68 @@ def find_tests(m, t, url):
     t.check("-delete on the lot", run("find ft -delete") == "" and "no such file" in run("find ft"))
 
 
+def gnu_text_tests(m, t):
+    """v0.24.9 on: the text tools against what GNU coreutils print. The
+    commands and the expected output come from tests/text_cases.py, made
+    by tests/gen_text_cases.py running the real tools."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from text_cases import CASES
+
+    def run(c, timeout=30):
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "")
+
+    for n, (cmds, expected) in enumerate(CASES):
+        run("mkdir tcdir")
+        run("cd tcdir")
+        got = [run(c).rstrip("\n") for c in cmds]
+        run("cd ..")
+        run("rm -r tcdir")
+        want = [e.rstrip("\n") for e in expected]
+        t.check(f"text case {n}: {' ; '.join(cmds)[:70]}", got == want, f"got {got!r} expected {want!r}")
+
+    # ---- the things GNU words differently (messages) or that need a status ----
+    def st(c):  # (output, exit status): the shell prints [exit status N] for a failure
+        out = run(c).rstrip("\n")
+        mm = re.search(r"\n?\[exit status (\d+)\]$", out)
+        return (out[:mm.start()] if mm else out), (int(mm.group(1)) if mm else 0)
+
+    run("echo -e 'one\\ntwo' > gt.txt")
+    out, rc = st("cut")
+    t.check("cut with nothing to do says so", "you must specify a list" in out and "usage: cut" in out and rc == 2, out)
+    out, rc = st("cut -f 0 gt.txt")
+    t.check("cut counts from 1", "numbered from 1" in out and rc == 2, out)
+    out, rc = st("cut -f 3-1 gt.txt")
+    t.check("cut refuses a decreasing range", "decreasing range" in out and rc == 2, out)
+    out, rc = st("cut -d ab -f 1 gt.txt")
+    t.check("cut wants a one-character delimiter", "single character" in out and rc == 2, out)
+    out, rc = st("cut -s -c 1 gt.txt")
+    t.check("cut -s only makes sense with -f", "only when operating on fields" in out and rc == 2, out)
+    out, rc = st("cut -c 1,x gt.txt")
+    t.check("cut refuses a bad list", "invalid" in out and rc == 2, out)
+    out, rc = st("cut -c 1 nosuch gt.txt")
+    t.check("a missing file is reported and the rest cut", "nosuch: no such file" in out and out.endswith("o\nt") and rc == 1, out)
+    out, rc = st("tr a")
+    t.check("tr a alone wants a second set", "missing operand" in out and "Two strings" in out and rc == 2, out)
+    out, rc = st("tr")
+    t.check("tr with nothing says so", "missing operand" in out and rc == 2, out)
+    out, rc = st("echo x | tr -d a b")
+    t.check("tr -d takes one set", "extra operand" in out and rc == 2, out)
+    out, rc = st("echo x | tr z-a x")
+    t.check("tr refuses a reversed range", "reverse collating" in out and rc == 2, out)
+    out, rc = st("echo x | tr '[:foo:]' x")
+    t.check("tr refuses an unknown class", "invalid character class" in out and rc == 2, out)
+    out, rc = st("echo x | tr -q a b")
+    t.check("tr shows the usage for a bad option", "usage: tr" in out and rc == 2, out)
+    out, rc = st("echo hi | tee nodir/x")
+    t.check("tee reports a file it cannot open but still copies", out.startswith("tee: nodir/x:") and out.endswith("hi") and rc == 1, out)
+    out, rc = st("tee -z")
+    t.check("tee shows the usage for a bad option", "usage: tee" in out and rc == 2, out)
+    # a pipeline that is waiting must not hold output back
+    t.check("tee passes lines on as they come", run("echo -e 'a\\nb' | tee tl.txt | head -n 1").rstrip("\n") == "a" and run("cat tl.txt").rstrip("\n") == "a\nb")
+    run("rm tl.txt")
+    run("rm gt.txt")
+
+
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is
     checked against GNU grep by tests/test_regex.c) with its output and
@@ -2031,6 +2093,7 @@ def tcp_tests(m, t):
         coreutils_tests(m, t)
         flags_tests(m, t)
         grepwc_tests(m, t)
+        gnu_text_tests(m, t)
         tools_tests(m, t, url)
         find_tests(m, t, url)
         out = plain(m.run("fetch -o gone.bin %s/short" % url, timeout=20))

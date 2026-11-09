@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.8 "Handshake"**. See PROGRESS.md for the history.
+Current version: **v0.24.9 "Pipework"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -285,6 +285,9 @@ Programs on the disk:
 | tail | `tail [-n [+]N \| -c [+]N] [-q] [FILE...]`: the last 10 lines, or everything from line N on with `+N`. Reads to the end, keeping only what it needs. No -f. |
 | sort | `sort [-bcfnrsu] [-k F1[,F2]] [-t SEP] [-o FILE] [FILE...]`: sorts lines bytewise, or as numbers with -n, backwards with -r, ignoring case with -f. -u drops repeats, -c only checks, -o may name an input. One -k key, with the usual field rules. Ties go by the whole line unless -s or -u. Holds all its input in memory. |
 | uniq | `uniq [-c \| -d \| -u] [-i] [-f N] [-s N] [-w N] [INPUT [OUTPUT]]`: collapses runs of equal lines, with -c counts, -d only the repeated, -u only the single. Streams, so it works on any size; run `sort` first. |
+| cut | `cut -b\|-c\|-f LIST [-d DELIM] [-s] [--complement] [--output-delimiter=STR] [FILE...]`: bytes or tab-separated (or `-d`) fields of each line, picked by a list like `1,3-5,8-`. A line with no delimiter passes through unless `-s`. |
+| tr | `tr [-cCdst] SET1 [SET2]`: translates, deletes (`-d`) or squeezes (`-s`) bytes of standard input. Sets take ranges, `[:alpha:]`-style classes, `[c*N]` repeats and `\n \t \NNN` escapes; `-c` is the complement of SET1. |
+| tee | `tee [-a] FILE...`: copies standard input to standard output and to the files (`-a` appends). Passes data on as it arrives. |
 | find | `find [PATH...] [EXPRESSION]`: walks directory trees. Tests `-name -iname -path -type f\|d -size -empty`, options `-maxdepth -mindepth -depth`, operators `! -a -o ( )`, actions `-print -print0 -exec CMD {} ; -delete`. Names ignore case, like the disk. |
 | hexdump | `hexdump [-C \| -x] [-v] [-n LENGTH] [-s OFFSET] [FILE...]`: the bytes of the files as one stream, as 16-bit words (default, `-x`) or canonical hex and text (`-C`). A repeated line becomes `*` unless -v. -n and -s take hex. |
 | df | `df [-h] [-k] [FILE...]`: size, used and free space on the disk, in 1K blocks or with -h in K, M and G. |

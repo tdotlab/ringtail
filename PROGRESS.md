@@ -2744,3 +2744,29 @@ is where the differences above came from.
 New `grepwc_tests` in QEMU: 120 checks.
 Host 244 + 82 + 163 + 2039 (regex), QEMU 961.
 
+## v0.24.9 "Pipework"
+
+The pipeline tools that sort, uniq, grep and wc had been waiting for.
+
+- `cut -b|-c|-f LIST [-d C] [-s] [--complement] [--output-delimiter=S]`: lists
+  like `1,3-5,8-` and `-3`; fields split on a tab or on `-d`; a line with no
+  delimiter is passed through unless `-s`. Overlapping ranges merge, touching
+  ones stay apart so `--output-delimiter` shows the seam, an empty output
+  delimiter is a NUL byte. All as GNU does it.
+- `tr [-cCdst] SET1 [SET2]`: ranges, the twelve `[:class:]`es, `[=c=]`, `[c*N]`
+  and `[c*]` repeats, `\\ \a \b \f \n \r \t \v \NNN` escapes. A short SET2
+  repeats its last byte, `-t` cuts SET1 instead, `-c` is the ascending
+  complement, `-s` squeezes the translated bytes, `-ds` deletes then squeezes.
+- `tee [-a] [FILE...]`: every chunk is written to the screen first, then the
+  files, before waiting for more, so it works mid-pipeline. A file it cannot
+  open is reported and skipped (exit 1) without starving the others; a file
+  named `-` is a file, as in GNU.
+- `src/programs/lib/lineio.[ch]`: a buffered writer (exits on a write error,
+  quietly on EPIPE), a buffered reader that flushes the writer before it
+  blocks, and a growing line type. The next text tools use it.
+
+Testing: `tests/gen_text_cases.py` runs 231 command lines (about 130 for cut, 90
+for tr, 11 for tee, in every form that bash and RingTail's shell both read)
+through the real GNU tools and writes the outputs to `tests/text_cases.py`;
+`gnu_text_tests` types them into RingTail and compares, in a fresh directory
+each. Messages, which GNU words differently, are checked by hand: 16 checks.
