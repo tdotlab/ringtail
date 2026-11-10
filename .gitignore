@@ -5,3 +5,4 @@ tests/test_tcp
 tests/test_disk.img
 __pycache__/
 tests/test_regex
+tests/test_diff

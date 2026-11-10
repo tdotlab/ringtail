@@ -2855,3 +2855,45 @@ Testing: about 60 generated cases against bash in temp directories (names are
 all lowercase and start with `zq`, since the guest's root holds other files),
 including quoting, dot files, sets, subdirectory patterns, no-match, and 20
 matches passed on to `wc`. Host 244 + 82 + 163 + 21394, QEMU 1881.
+
+## v0.24.13 "Spot the Difference"
+
+diff, built to pick the same changes GNU diff does, not just a shortest set.
+
+- `src/programs/lib/diffcore.c` is the analysis and the printers, with no
+  system calls so the host can test it. It follows GNU's method step for step:
+  the identical start and end are set aside (keeping as many lines of them as
+  the context, so a change can still slide into them), lines that match
+  nothing on the other side are put aside before the search, the Myers search
+  finds middle snakes with GNU's tie-breaking and its cost cap for big files,
+  and each change is slid to line up with its neighbours. Two diffs can both
+  be minimal and look nothing alike, so this is what makes the output match.
+- Normal, unified (`-u`, `-U N`) and context (`-c`, `-C N`) output, with
+  `\ No newline at end of file`. `-i`, `-b`, `-w` compare lines loosely;
+  `-d` searches without the shortcuts.
+- `diff` itself: `-q`, `-s`, `-a`, `-N`, `-r`, `--label`, long options, `-`
+  for standard input (read once, so `diff - -` works), a file against its
+  namesake in a directory, and directory walks with GNU's messages (`Only in`,
+  `Common subdirectories`, `File X is a regular file while file Y is a
+  directory`, the `diff -r a/x b/x` line before each file). Headers carry the
+  FAT write time (to two seconds, as `.000000000 +0000`), names with spaces or
+  odd bytes are quoted the way GNU quotes them, and binary files (a NUL in the
+  first 4 KB) are only reported. Several context lengths: the largest wins;
+  mixing `-u` and `-c` is an error, as in GNU.
+- Not done: `-y` side by side, `-e`/`-n` ed and RCS scripts, `-p`/`-F`
+  function names, `-B`, `-I`, `-x`/`--exclude`, `--color`,
+  `--strip-trailing-cr`, `-t`.
+- README's limits said the network had no TCP, which stopped being true in
+  v0.24.0; the resolver's error for a truncated answer said the same. Both now
+  say what is true: the resolver does not retry over TCP.
+
+Testing: tests/test_diff.c checks the core against 2024 cases from GNU diff
+3.10 (random pairs, mostly a file and an edited copy drawn from a few short
+lines so that many minimal answers tie, with lines that differ only in case or
+blanks and files without a final newline), in every format and context size
+and under -i, -b, -w and --minimal. All agree, byte for byte; so did 140
+pairs of up to 60000 lines, checked once outside the suite, where GNU's cost
+cap comes into play. In the guest: 55 generated cases against GNU diff
+(formats, flags, standard input, empty files, binary files, directories with
+-r, -q, -s, -N, labels, a quoted name) and 12 hand checks for headers, times
+and messages. Host 244 + 82 + 163 + 21394 + 2024, QEMU 1948.

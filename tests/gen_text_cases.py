@@ -477,6 +477,39 @@ case(*G, "echo \"a b\"*", "echo zq\"*\"")
 case(*G, "echo zq*.txt > zqlist", "cat zqlist")
 case(*[f"echo a > zqm{i}" for i in range(1, 21)], "echo zqm*", "echo zqm* | wc -w", "head -n 1 zqm*")
 
+# ---------------------------------------------------------------- diff
+D = ["echo -e '1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10' > da",
+     "echo -e '1\\n2\\nthree\\n4\\n5\\n6\\n7\\n9\\n10\\n11' > db",
+     "echo -e 'Hello  World\\nfoo\\n bar \\nsame' > dc",
+     "echo -e 'hello world\\nfoo\\nbar\\nsame' > dd",
+     "echo -e 'a\\nb\\na\\nb\\na' > de",
+     "echo -e 'b\\na\\nb\\nc' > df"]
+L = "--label A --label B"
+for args in ["da db", "db da", "da da", "de df", "df de", "dc dd", "da dc", f"-u {L} da db", f"-U0 {L} da db", f"-U1 {L} db da",
+             f"-U 5 {L} da db", f"--unified=2 {L} de df", f"-c {L} da db", f"-C1 {L} de df", f"-C 0 {L} da db", f"--context {L} df de",
+             "-q da db", "-q da da", "-s da da", "-s da db", "--brief de df", "-i dc dd", "-b dc dd", "-w dc dd", "-i -w dc dd",
+             "-ib dc dd", f"-u -w {L} dc dd", "--ignore-case dc dd", "--ignore-all-space dc dd", "-d de df", "--minimal da db",
+             f"-u -U1 {L} da db", f"-U1 -u {L} da db", f"-c -C1 {L} da db"]:
+    case(*D, f"?diff {args}")
+# no newline at the end, and empty files
+case(*D, "echo -n 10 > dn", "?diff da dn", "?diff dn da", f"?diff -u {L} da dn", f"?diff -c {L} dn da", "?diff -b da dn", "?diff dn dn")
+case(*D, "echo -n > dz", "?diff dz da", "?diff da dz", f"?diff -u {L} dz da", f"?diff -c {L} da dz", "?diff dz dz")
+# standard input
+case(*D, "?cat da | diff - db", f"?cat db | diff -u {L} da -", "cat da | diff -s - da")
+# longer files
+case("seq 1 200 > s1", "seq 1 200 | sed -e s/7/seven/ -e /^15/d > s2", "?diff s1 s2", f"?diff -u {L} s1 s2", f"?diff -C2 {L} s2 s1")
+case("seq 1 50 > s1", "seq 3 60 > s2", "?diff s1 s2", f"?diff -u {L} s2 s1")
+# directories
+T = D + ["mkdir x", "mkdir y", "mkdir x/sub", "mkdir y/sub", "mkdir x/xonly", "cp da x", "cp db y/da", "cp de x/same", "cp de y/same",
+         "cp df x/sub/f", "cp de y/sub/f", "cp da x/gone", "cp db y/new", "cp da x/sub/deep", "mkdir y/kind", "cp da x/kind"]
+for args in ["x y", "y x", "-r x y", "-q x y", "-rq x y", "-rs x y", "-N x y", "-rN x y", "-rqN y x", f"-r -u {L} x y", "-r x/sub y/sub",
+             "da y", "x/same y", "-r -c --label A --label B x y"]:
+    case(*T, f"?diff {args}")
+
+# binary files, and a name GNU quotes
+case("echo -e 'a\\0b' > b1", "echo -e 'a\\0c' > b2", "?diff b1 b2", "?diff -q b1 b2", "diff b1 b1", "diff -s b1 b1", "cp b1 b3", "diff b1 b3")
+case("mkdir x", "mkdir y", "echo 1 > \"x/s p\"", "echo 2 > \"y/s p\"", "?diff x y", "?diff -q x y", "?diff \"x/s p\" y")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:

@@ -32,7 +32,7 @@
 #define DNS_E_BADNAME   -1007
 #define DNS_E_BADREPLY  -1008  // an answer to our question that makes no sense
 #define DNS_E_TIMEOUT   -1009
-#define DNS_E_TRUNCATED -1010  // too big for UDP, and there is no TCP
+#define DNS_E_TRUNCATED -1010  // too big for UDP (the resolver does not retry over TCP)
 #define DNS_E_LOOP      -1011  // aliases that go on too long, or round in a circle
 #define DNS_E_NOTOURS   -1012  // not the answer to this question: ignore it
 

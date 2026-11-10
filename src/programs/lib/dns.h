@@ -1,5 +1,5 @@
 // The resolver: names to addresses, and back, by asking the DNS servers
-// the network was given (see `net`) over UDP. No cache and no TCP.
+// the network was given (see `net`) over UDP. No cache, and no retry over TCP.
 #ifndef RINGTAIL_DNS_H
 #define RINGTAIL_DNS_H
 

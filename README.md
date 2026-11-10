@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
 example.com` works and `fetch` gets a page over HTTP.
 
-Current version: **v0.24.12 "Wild Cards"**. See PROGRESS.md for the history.
+Current version: **v0.24.13 "Spot the Difference"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -291,6 +291,7 @@ Programs on the disk:
 | basename | `basename NAME [SUFFIX]` or `basename [-a] [-s SUFFIX] NAME...`: the last part of a path, with an optional suffix taken off. |
 | dirname | `dirname NAME...`: a path without its last part. |
 | seq | `seq [-w] [-s SEP] [FIRST [INCR]] LAST`: the numbers from FIRST to LAST, with up to 9 decimals; `-w` pads with zeros, `-s` changes the separator. |
+| diff | `diff [-u \| -U N \| -c \| -C N] [-q] [-s] [-i] [-b] [-w] [-a] [-r] [-N] [-d] [--label L] FILE1 FILE2`: which lines changed, in the normal, unified (`-u`) or context (`-c`) format, picking the same changes as GNU diff, byte for byte. `-i -b -w` ignore case and blanks, `-q` only says whether they differ, `-r` goes through two directory trees, `-N` treats a missing file as empty. A file and a directory compare the file with its namesake inside. Binary files (a NUL in the first 4 KB) are only reported unless `-a`. Exit 0 same, 1 different, 2 trouble. |
 | cmp | `cmp [-l] [-s] [-n LIMIT] FILE1 [FILE2]`: the first byte where two files differ (or every one with `-l`); exit 0 same, 1 different, 2 trouble. |
 | yes | `yes [STRING...]`: prints STRING (or `y`) forever, until the reader quits. |
 | true, false | Do nothing, with exit status 0 and 1. |
@@ -339,8 +340,8 @@ one, with no time zone (UTC under QEMU) and no changes for summer time. There is
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and
-mode 13h. The network has no TCP and no IPv6, so DNS answers too big
-for UDP are an error. The resolver keeps no cache, nothing reads ICMP
+mode 13h. The network has no IPv6, and the resolver does not retry over
+TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already
 has the address it was given (RFC 5227). The e1000 is the only card it

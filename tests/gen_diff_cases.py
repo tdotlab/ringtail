@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Writes diff_cases.h: pairs of files and what GNU diff (LC_ALL=C) prints
+for them. Needs GNU diff. The generated file is checked in, so test_diff
+needs nothing but a compiler; rerun this only to change the cases.
+
+Most pairs are one file and an edited copy of it, made of lines from a small
+set so that many edit scripts are equally short: the cases are there to pin
+down which one GNU picks, not only that ours is minimal. For -u and -c the
+two header lines are dropped (the library prints only the hunks)."""
+import os, random, subprocess, tempfile
+
+random.seed(1310)
+
+ALPHA = ["a", "b", "c", "d", "e", "a", "b", "x", "", "A", "B", " a", "a ", "a  b", "a b", "\tb", "B ", "a\t b"]
+
+def rand_lines(n, alpha):
+    return [random.choice(alpha) for _ in range(n)]
+
+def mutate(lines, alpha, edits):
+    out = list(lines)
+    for _ in range(edits):
+        r = random.random()
+        i = random.randint(0, len(out))
+        if r < 0.35 and out:
+            del out[min(i, len(out) - 1):min(i, len(out) - 1) + random.randint(1, 3)]
+        elif r < 0.7:
+            out[i:i] = rand_lines(random.randint(1, 3), alpha)
+        elif out:
+            j = min(i, len(out) - 1)
+            out[j] = random.choice(alpha)
+    return out
+
+def join(lines, incomplete):
+    if not lines:
+        return b""
+    s = "\n".join(lines)
+    if not incomplete:
+        s += "\n"
+    return s.encode()
+
+def make_pair():
+    r = random.random()
+    alpha = random.choice([ALPHA, ALPHA[:6], ALPHA[:3], ALPHA])
+    if r < 0.05:
+        a = []
+        b = rand_lines(random.randint(0, 5), alpha)
+    elif r < 0.10:
+        a = rand_lines(random.randint(0, 5), alpha)
+        b = []
+    elif r < 0.25:
+        a = rand_lines(random.randint(0, 12), alpha)
+        b = rand_lines(random.randint(0, 12), alpha)
+    elif r < 0.33:
+        # long, so discarding and long common runs come into play
+        a = rand_lines(random.randint(50, 120), alpha)
+        b = mutate(a, alpha, random.randint(1, 20))
+    else:
+        a = rand_lines(random.randint(0, 25), alpha)
+        b = mutate(a, alpha, random.randint(0, 6))
+    ia = bool(a) and random.random() < 0.2
+    ib = bool(b) and random.random() < 0.2
+    if a and b and random.random() < 0.1:
+        ia = ib = True
+    return join(a, ia), join(b, ib)
+
+# (option string for the test, GNU options). Format: n, u<N>, c<N>; flags: i b w d.
+STYLES = [("n", []), ("u3", ["-u"]), ("u0", ["-U0"]), ("u1", ["-U1"]), ("u5", ["-U5"]),
+          ("c3", ["-c"]), ("c1", ["-C1"]), ("c0", ["-C0"])]
+FLAGS = [("", []), ("", []), ("", []), ("i", ["-i"]), ("b", ["-b"]), ("w", ["-w"]), ("d", ["--minimal"]),
+         ("ib", ["-i", "-b"]), ("wd", ["-w", "--minimal"])]
+
+def gnu(opts, a, b):
+    with tempfile.TemporaryDirectory() as d:
+        pa, pb = os.path.join(d, "a"), os.path.join(d, "b")
+        open(pa, "wb").write(a)
+        open(pb, "wb").write(b)
+        args = ["diff"] + opts
+        if any(o.startswith(("-u", "-U", "-c", "-C")) for o in opts):
+            args += ["--label", "a", "--label", "b"]
+        p = subprocess.run(args + [pa, pb], capture_output=True, env=dict(os.environ, LC_ALL="C"))
+        assert p.returncode in (0, 1), p.stderr
+        out = p.stdout
+        if p.returncode == 1 and "--label" in args:
+            out = out.split(b"\n", 2)[2]
+        return out, p.returncode
+
+def c_str(b):
+    out, seg = '"', 0
+    for ch in b:
+        c = chr(ch)
+        if c == '"': out += '\\"'
+        elif c == '\\': out += '\\\\'
+        elif c == '\n': out += '\\n'
+        elif c == '\t': out += '\\t'
+        elif 32 <= ch < 127: out += c
+        else: out += '\\%03o' % ch
+        if len(out) - seg > 100 and c == '\n':
+            out += '"\n        "'
+            seg = len(out)
+    return out + '"'
+
+FIXED = [
+    (b"", b""), (b"a\n", b"a\n"), (b"a\n", b"a"), (b"a", b"a\n"), (b"a", b"b"), (b"", b"a"), (b"a", b""),
+    (b"a\nb\nc\n", b"a\nc\n"), (b"a\nb\nc\n", b"a\nx\nb\nc\n"), (b"a\n\na\n", b"a\n"), (b"x\na\nb\na\nb\n", b"a\nb\n"),
+    (b"a b\n", b"a  b \n"), (b"a b\n", b"ab\n"), (b"A\n", b"a\n"), (b" \n", b"\n"), (b"a \n", b"a"),
+    (b"1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n", b"1\n2\nX\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\nY\n15\n16\n"),
+    (b"1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", b"1\n2\n3\n4\nX\n6\n7\n8\n9\n10\n"),
+]
+
+def main():
+    cases = []
+    pairs = [(p, None) for p in FIXED] + [(make_pair(), None) for _ in range(600)]
+    for (a, b), _ in pairs:
+        picks = random.sample(STYLES, 3) if (a, b) not in FIXED else STYLES
+        for style, sopts in picks:
+            fl, fopts = random.choice(FLAGS)
+            out, st = gnu(sopts + fopts, a, b)
+            cases.append((style + ("/" + fl if fl else ""), a, b, out, st))
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "diff_cases.h"), "w") as f:
+        f.write("// Generated by gen_diff_cases.py from GNU diff (LC_ALL=C). Do not edit.\n")
+        f.write("typedef struct { const char* opts; const char* a; unsigned alen; const char* b; unsigned blen;\n"
+                "                 const char* out; unsigned outlen; int status; } diff_case_t;\n")
+        f.write("static const diff_case_t diff_cases[] = {\n")
+        for opts, a, b, out, st in cases:
+            f.write("    {%s,\n        %s, %d,\n        %s, %d,\n        %s, %d, %d},\n"
+                    % (c_str(opts.encode()), c_str(a), len(a), c_str(b), len(b), c_str(out), len(out), st))
+        f.write("};\n")
+    print(len(cases), "cases")
+
+if __name__ == "__main__":
+    main()

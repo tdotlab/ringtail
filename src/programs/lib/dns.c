@@ -182,7 +182,7 @@ const char* dns_strerror(int err) {
     case DNS_E_BADNAME: return "not a valid name";
     case DNS_E_BADREPLY: return "the DNS server's answer made no sense";
     case DNS_E_TIMEOUT: return "no answer from the DNS server";
-    case DNS_E_TRUNCATED: return "the answer is too big for UDP, and there is no TCP";
+    case DNS_E_TRUNCATED: return "the answer is too big for UDP (no retry over TCP)";
     case DNS_E_LOOP: return "too many aliases";
     default: return strerror(err);
     }

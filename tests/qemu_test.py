@@ -228,7 +228,7 @@ def plain(out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.24.12" in boot, boot)
+    t.check("boots to the shell", "RingTail OS v0.24.13" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
 
     out = m.run("help")
@@ -259,7 +259,7 @@ def tests(m, t):
     out = m.run("exit")
     t.check("exit gets a fresh shell from init", "starting a new one" in out, out)
     out = m.run("version")
-    t.check("and the new shell works", "0.24.12" in out, out)
+    t.check("and the new shell works", "0.24.13" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
                  "udptest", "tcptest"]:
@@ -606,7 +606,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.24.12" in out, out)
+    t.check("Tab completes a built-in", "RingTail OS v0.24.13" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -808,7 +808,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.12" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "RingTail OS v0.24.13" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -825,7 +825,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.12"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.24.13"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
@@ -959,7 +959,7 @@ def _dns_tests(m, t, srv):
             "evil.test is an alias for e\\027\\0912Jx.test." in out and "\x1b[2J" not in out, repr(out))
     for name, why in [("nope.test", "no such name"), ("noaddr.test", "the name has no address"),
                       ("fail.test", "the DNS server failed to find out"), ("refused.test", "the DNS server refused to answer"),
-                      ("loop.test", "too many aliases"), ("big.test", "the answer is too big for UDP, and there is no TCP"),
+                      ("loop.test", "too many aliases"), ("big.test", "the answer is too big for UDP (no retry over TCP)"),
                       ("ptrloop.test", "the DNS server's answer made no sense"),
                       ("lies.test", "the DNS server's answer made no sense")]:
         out = host(name)
@@ -1901,6 +1901,43 @@ def gnu_text_tests(m, t):
     out, rc = st("sed -n p gt.txt gt.txt")
     t.check("sed joins its files into one stream", out == "1\ntwo\n1\ntwo" and rc == 0, out)
     run("rm gt.txt")
+
+    # ---- diff: what the generated cases cannot show (the core itself is
+    # checked against GNU diff by tests/test_diff.c) ----
+    run("echo -e 'one\\ntwo\\nthree' > da")
+    run("echo -e 'one\\n2\\nthree' > db")
+    stamp = r"\t20\d\d-[01]\d-[0-3]\d [0-2]\d:[0-5]\d:[0-5]\d\.000000000 \+0000\n"
+    out, rc = st("diff -u da db")
+    t.check("diff -u heads each file with its name and when it was written",
+            re.match(r"--- da" + stamp + r"\+\+\+ db" + stamp + "@@ -1,3 \\+1,3 @@\n one\n-two\n\\+2\n three$", out) is not None and rc == 1, out)
+    out, rc = st("diff -c da db")
+    cstamp = r"\t(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ 1-3]\d [0-2]\d:[0-5]\d:[0-5]\d 20\d\d\n"
+    t.check("diff -c heads them the older way", re.match(r"\*\*\* da" + cstamp + "--- db" + cstamp + r"\*{15}\n", out) is not None and rc == 1, out)
+    out, rc = st("cat da | diff -u - db")
+    t.check("standard input is stamped with the time now", re.match(r"--- -" + stamp + r"\+\+\+ db" + stamp, out) is not None and rc == 1, out)
+    out, rc = st("diff -u -N da nosuch")
+    t.check("diff -N stamps a missing file 1970", "+++ nosuch\t1970-01-01 00:00:00.000000000 +0000\n@@ -1,3 +0,0 @@" in out and rc == 1, out)
+    out, rc = st("echo x | diff - -")
+    t.check("diff - - reads standard input once", out == "" and rc == 0, out)
+    out, rc = st("diff nosuch da")
+    t.check("diff reports a missing file with status 2", out == "diff: nosuch: no such file or directory" and rc == 2, out)
+    out, rc = st("diff da")
+    t.check("diff with one file says so", "missing operand after 'da'" in out and rc == 2, out)
+    out, rc = st("diff -u -c da db")
+    t.check("diff takes one output style", "conflicting output style options" in out and rc == 2, out)
+    out, rc = st("diff -U x da db")
+    t.check("diff -U wants a number", "invalid context length 'x'" in out and rc == 2, out)
+    out, rc = st("diff --bogus da db")
+    t.check("diff refuses an unknown option", "unrecognized option '--bogus'" in out and rc == 2, out)
+    run("mkdir dd")
+    out, rc = st("cat da | diff - dd")
+    t.check("standard input is not compared with a directory", "cannot compare '-' to a directory" in out and rc == 2, out)
+    run("rmdir dd")
+    run("seq 1 5000 > big1")
+    run("seq 1 5000 | sed s/9/N/ > big2")
+    t.check("diff gets through 5000 lines with 1760 changes", run("diff big1 big2 | wc -l", timeout=120).strip() == "3520")
+    for f in ["da", "db", "big1", "big2"]:
+        run("rm " + f)
 
 
 def grepwc_tests(m, t):
