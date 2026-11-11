@@ -3042,10 +3042,10 @@ ChaCha20-Poly1305 is still asked for first.
 Testing: `tests/test_crypto.c` adds AES-128 (FIPS 197's example and 62
 keys against OpenSSL, in place and not) and AES-128-GCM (Wycheproof's 67
 cases for 96-bit nonces and 128-bit tags, and lengths around every block
-edge to 16385 against `cryptography`), CHECKS_CRYPTO checks in all.
+edge to 16385 against `cryptography`), 3795 checks in all.
 `tests/test_tls.c` replays 218 conversations: AES-only handshakes plain
 and after a retry, one with odd record sizes and a key update, damaged AES
 records, a ServerHello that switches suite after a retry (both ways), and
 OpenSSL's `s_server` restricted to AES with a key update. In the guest,
 fetch downloads 300000 bytes from an `openssl s_server` that takes only
-AES-128-GCM and they match. Host HOST_COUNTS, QEMU QEMU_COUNT.
+AES-128-GCM and they match. Host 244 + 82 + 163 + 21394 + 2024 + 3795 + 1307 + 8076 + 1618, QEMU 2007.
