@@ -35,7 +35,7 @@ KERNEL := $(BUILD)/ringtail.bin
 
 # The user library is an archive, so a program gets only the parts it
 # uses (the resolver stays out of hello). crt0 goes in every program.
-ULIB_C := $(wildcard src/programs/lib/*.c) src/lib/string.c src/lib/printf.c
+ULIB_C := $(wildcard src/programs/lib/*.c) src/lib/string.c src/lib/printf.c src/lib/sha256.c src/lib/chacha20.c
 ULIB_OBJS := $(ULIB_C:%.c=$(BUILD)/u/%.o)
 CRT0 := $(BUILD)/u/src/programs/lib/crt0.o
 ULIB := $(BUILD)/u/libu.a
