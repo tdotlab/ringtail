@@ -5,10 +5,12 @@ C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
 FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
-UDP and TCP, an address from DHCP, and a DNS resolver, so `ping
-example.com` works and `fetch` gets a page over HTTP.
+UDP and TCP, an address from DHCP, a DNS resolver and a TLS 1.3 client,
+so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS
+(encrypted, but with the server's certificate not checked yet: see
+Limits).
 
-Current version: **v0.24.13 "Spot the Difference"**. See PROGRESS.md for the history.
+Current version: **v0.25.0 "Trust Me"**. See PROGRESS.md for the history.
 
 ## Building and running
 
@@ -33,7 +35,7 @@ and `fsck.fat -n build/disk.img` both read it.
 
 ## Testing
 
-`make test` runs three suites.
+`make test` runs the host tests, then the QEMU suite.
 
 `tests/test_heap_diskfs.c` builds the real kernel heap and filesystem
 code as a 32-bit Linux program, on top of a RAM disk that can be told to
@@ -55,6 +57,30 @@ forward pointers, names over 255 bytes), truncation, rcodes, and bytes
 that must be escaped before a terminal sees them. Both parsers then eat
 several hundred thousand mutated messages.
 
+`tests/test_crypto.c` checks SHA-256, HMAC, HKDF, ChaCha20, Poly1305,
+the two together and X25519 against the worked examples in the
+documents that define them and against Project Wycheproof's vectors,
+which are built to catch the mistakes implementations actually make
+(a carry dropped in the last limb, a forged tag accepted, a public
+value that gives a key of zeros).
+
+`tests/test_tls.c` runs the TLS client against 185 recorded
+conversations. `tests/gen_tls_cases.py` makes them: it plays a server
+written separately from the client, straight from RFC 8446, that can do
+everything a server may do (send its flight in one record or a byte per
+record, pad, ask for a retry with a cookie, ask for a certificate,
+update keys, send tickets) and most of what it must not (wrong version,
+suite, group or key share, extensions missing, doubled or uninvited,
+messages out of order, damaged records, a wrong Finished, about 150 in
+all), each with the outcome and the alert the RFC asks for written down
+beforehand. It also records real handshakes with OpenSSL, through
+Python's `ssl` module and through `openssl s_server`, key updates
+included. The test replays each one and checks the result and every
+byte the client sent; delivers it again a byte at a time and in odd
+pieces; and, for some, cuts it off at every length and flips a bit in
+every byte, none of which may be accepted. The generator checks its own
+key schedule against the worked example in RFC 8448.
+
 `tests/qemu_test.py` boots the real ISO in QEMU and drives the shell
 over a serial socket. It uses `build/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
@@ -66,8 +92,13 @@ monitor), an editing session in Octavo, file and directory commands,
 the timer rate,
 the switch into graphics mode and back, reboot persistence and poweroff,
 and the network through QEMU's user network: DHCP at boot, `ping`,
-loopback, UDP and TCP sockets (`udptest`, `tcptest`), `fetch` and `nc`
-against an HTTP server and an echo server on the host, `net static` and
+loopback, UDP and TCP sockets (`udptest`, `tcptest`), the random number
+generator (`rndtest`), `fetch` and `nc`
+against an HTTP server and an echo server on the host, `fetch` over TLS
+against OpenSSL on the host (pages, redirects between http and https,
+chunked bodies, a server that only speaks TLS 1.2, one that is not TLS
+at all, one that hangs up; skipped when `openssl` is not installed),
+`net static` and
 `net dhcp`, and `host` against `tests/dns_server.py`, a DNS server on the host whose
 names each misbehave in their own way (aliases, loops, SERVFAIL, silence,
 forged answers, truncation, a compression loop, escape codes in names).
@@ -208,18 +239,41 @@ with tasks sleeping on the connection and the wakeups sent once the
 engine is done. TCP sockets read and write like files, and `pollfd`
 waits on any mix of sockets, pipes and the terminal.
 
+Random numbers come from the kernel (`src/kernel/random.c`, the `random`
+syscall). Every interrupt stirs the CPU's cycle counter into a pool,
+and RDRAND goes in where the CPU has it; each request hashes the pool
+into a fresh ChaCha20 key, and the key is replaced before the answer is
+handed out, so one answer says nothing of the next or the last. TCP
+sequence numbers, ports, and DNS and DHCP ids come from it, and so do
+TLS keys. Its weak moment is straight after boot on a CPU without
+RDRAND, when there has been little to collect.
+
+TLS is user code (`src/programs/lib/tls.c`), a TLS 1.3 client
+(RFC 8446) over any stream of bytes: it makes no system calls and
+reaches the socket and the random numbers through three functions the
+caller gives, which is how the host tests run the same code. It offers
+one cipher suite, ChaCha20-Poly1305 with SHA-256, and one key exchange,
+X25519; both were chosen because they can be written in plain C without
+tables or branches that depend on secrets, so the time they take gives
+nothing away. It sends the server name, answers a HelloRetryRequest
+that brings a cookie, turns down a request for a client certificate,
+follows key updates, ignores session tickets, and keeps to the record
+limits; a server that breaks a rule gets the alert the RFC names and
+the connection is over. What it does not do yet is check the
+certificate. See Limits.
+
 ## Source layout
 
 ```
 src/boot       Multiboot header, entry, kernel linker script
-src/kernel     kernel_main, GDT/IDT/interrupts, tasks, syscalls, ELF loader, faults, power
+src/kernel     kernel_main, GDT/IDT/interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
 src/mm         heap, physical frames, paging and checked user copies
 src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000
 src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
-src/lib        string and printf subset, shared by the kernel and programs
+src/lib        string and printf subset, SHA-256 and ChaCha20, shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
-src/programs   user programs (the shell among them), their C library (lib/: runtime, malloc, DNS) and linker script
+src/programs   user programs (the shell among them), their C library (lib/: runtime, malloc, DNS, TLS) and linker script
 tools          mkdisk.py, the FAT16 image builder
 tests          host unit tests, the QEMU integration suite, test programs
 ```
@@ -266,7 +320,7 @@ Programs on the disk:
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
-| fetch | `fetch [-i] [-o FILE] URL`: gets a page over HTTP/1.0, following up to five redirects. -i shows the headers, -o saves the body. No https. |
+| fetch | `fetch [-i] [-o FILE] URL`: gets a page over HTTP/1.1, or over HTTPS when the URL starts with `https://`, following up to five redirects. -i shows the headers, -o saves the body. HTTPS is encrypted but the certificate is not checked, and fetch says so each time. |
 | httpd | `httpd [-p PORT] [-q] [DIR]`: serves DIR (default: the current directory) over HTTP on port 8080, one connection at a time. A directory gives its index.html or a listing; `..` is refused. Logs each request unless -q. Ctrl+C stops it. |
 | nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
@@ -346,3 +400,17 @@ port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already
 has the address it was given (RFC 5227). The e1000 is the only card it
 drives.
+
+TLS does not check certificates. An HTTPS connection is encrypted, so
+nobody who only listens can read or change it, but nothing proves who
+is at the other end: someone who can get into the path (a rogue access
+point, a hostile network) can answer as the server and will not be
+noticed. Do not send anything over it that matters. Checking the
+certificate chain and the server's signature is the next piece of
+work. Beyond that, it is TLS 1.3 only, with one cipher suite
+(ChaCha20-Poly1305) and one key exchange (X25519); nearly every server
+on the internet takes both, and one that does not is refused with a
+message saying so. There is no session resumption, no early data, no
+client certificate and no ALPN. `fetch` makes one request per
+connection, does not ask for compressed pages, and has no cookies or
+logins.

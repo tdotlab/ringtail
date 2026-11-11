@@ -2897,3 +2897,62 @@ cap comes into play. In the guest: 55 generated cases against GNU diff
 (formats, flags, standard input, empty files, binary files, directories with
 -r, -q, -s, -N, labels, a quoted name) and 12 hand checks for headers, times
 and messages. Host 244 + 82 + 163 + 21394 + 2024, QEMU 1948.
+
+## v0.25.0 "Trust Me"
+
+TLS 1.3, written from the RFCs with no borrowed code, and `fetch https://`.
+The connection is encrypted; the server's certificate is not checked yet, so
+it is not proven who is at the other end. That is the next release, and until
+then fetch prints a warning on every HTTPS connection.
+
+- Cryptography, all in plain C with no tables or branches that depend on
+  secrets: SHA-256 with HMAC and HKDF and ChaCha20 (`src/lib`, since the
+  kernel uses them too), Poly1305 and the two as an AEAD (`chachapoly.c`), and
+  X25519 (`x25519.c`). `ct.h` has the constant-time compare and a wipe the
+  compiler cannot remove.
+- Random numbers (`src/kernel/random.c`, syscall 60 `random`): a pool stirred
+  by every interrupt's cycle count and by RDRAND where there is one, hashed
+  into a ChaCha20 key per request, the key replaced before the answer goes
+  out. TCP sequence numbers, ports and the DHCP id now come from it in place
+  of an xorshift generator seeded by the clock, and so does the resolver's id.
+- `src/programs/lib/tls.c`: a TLS 1.3 client (RFC 8446) with no system calls
+  in it. TLS_CHACHA20_POLY1305_SHA256 and X25519 only. Server name, the
+  middlebox-compatibility ChangeCipherSpec, HelloRetryRequest with a cookie,
+  an empty Certificate when the server asks for ours, key updates both ways,
+  tickets ignored, record and message limits, close_notify. Every rule a
+  server can break is met with the alert the RFC names, and an error is never
+  worked around. Certificate and CertificateVerify are parsed for shape only;
+  `tls_peer_verified()` returns 0.
+- `fetch` takes `https://` (port 443), follows redirects from either scheme
+  to the other, and warns on stderr that the certificate was not checked.
+  A body with no stated length that ends without the server's close_notify is
+  an error and is not kept, since that is what a connection cut by someone
+  else looks like.
+- `fetch` now speaks HTTP/1.1, because a lot of servers refuse 1.0 (the first
+  real site tried answered 426 Upgrade Required): one request per connection
+  with `Connection: close`, chunked bodies decoded (extensions and trailers
+  skipped), 1xx interim responses passed over, 204 and 304 known to have no
+  body, any other transfer encoding refused.
+- Not done: certificate verification (X.509, RSA and ECDSA signatures, a root
+  store, names and dates), AES-GCM suites, P-256 key exchange, resumption,
+  early data, client certificates, ALPN.
+
+Testing: `tests/test_crypto.c` runs 3242 checks: the RFCs' worked examples and
+Project Wycheproof's vectors for X25519, ChaCha20-Poly1305, HMAC and HKDF.
+`tests/gen_tls_cases.py` records 185 conversations and `tests/test_tls.c`
+replays them (749 checks). 181 are against a server scripted separately from
+the client out of RFC 8446: 33 where it stays within its rights, however
+oddly, and 148 where it does not (119 during the handshake, 29 after it), each
+with its expected result and alert written down first. 4 are real OpenSSL
+handshakes (Python's `ssl` and `openssl s_server`, with key updates in both
+directions). Each is replayed whole, a
+byte at a time and in odd pieces, and a selection is cut at every length and
+has a bit flipped in every byte. The generator's own key schedule is checked
+against RFC 8448's worked HelloRetryRequest example. In the guest: fetch over
+TLS against OpenSSL on the host (the same pages as over HTTP, 300000 bytes
+compared, redirects across schemes), every HTTP/1.1 body shape over both, and
+four servers that are not what fetch hoped for (TLS 1.2 only, plain HTTP,
+nonsense, a hang-up). Outside the suite, from QEMU: example.com, Google,
+Wikipedia and GitHub over HTTPS, through a gateway that terminates TLS with a
+stack that is not OpenSSL. Host 244 + 82 + 163 + 21394 + 2024 + 3242 + 749,
+QEMU QEMUCOUNT.
