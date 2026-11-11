@@ -2317,15 +2317,17 @@ def _aes_only_server(pem, work):
     when there is no openssl or it will not start."""
     if not shutil.which("openssl"):
         return None
-    open(os.path.join(work, "c.pem"), "w").write(pem[0])
+    leaf, rest = pem[0].split("-----END CERTIFICATE-----\n", 1)
+    open(os.path.join(work, "c.pem"), "w").write(leaf + "-----END CERTIFICATE-----\n")
+    open(os.path.join(work, "i.pem"), "w").write(rest)  # -cert sends only the leaf
     open(os.path.join(work, "k.pem"), "w").write(pem[1])
     open(os.path.join(work, "big.bin"), "wb").write(BIG)
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
     port = probe.getsockname()[1]
     probe.close()
-    proc = subprocess.Popen(["openssl", "s_server", "-accept", "127.0.0.1:%d" % port, "-cert", "c.pem", "-key", "k.pem",
-                             "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256", "-naccept", "1", "-WWW"],
+    proc = subprocess.Popen(["openssl", "s_server", "-accept", "127.0.0.1:%d" % port, "-cert", "c.pem", "-cert_chain", "i.pem",
+                             "-key", "k.pem", "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256", "-naccept", "1", "-WWW"],
                             cwd=work, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     ready = threading.Event()
 
