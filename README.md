@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, a DNS resolver and a TLS 1.3 client,
 so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
-
+Current version: **v0.26.0 "Prove It"**. See PROGRESS.md for the history.
 Current version: **v0.25.0 "Trust Me"**. See PROGRESS.md for the history.
 
 ## Building and running
@@ -80,6 +80,25 @@ pieces; and, for some, cuts it off at every length and flips a bit in
 every byte, none of which may be accepted. The generator checks its own
 key schedule against the worked example in RFC 8448.
 
+`tests/test_sig.c` checks the signatures: SHA-384 and SHA-512 against
+OpenSSL's answers, then RSA PKCS#1 v1.5, RSA-PSS and ECDSA on P-256 and
+P-384 against 3303 cases from Project Wycheproof and OpenSSL, and every
+signature that must verify is checked again with a byte of it, or of
+the message, changed.
+
+`tests/test_x509.c` checks certificates and path validation against
+C2SP's x509-limbo, which collects the ways other verifiers have been
+fooled (every server case but those about revocation, and a sample of
+the BetterTLS name-constraint cases), plus 228 cases of our own made by
+`tests/gen_x509_ours.py` from keys it derives itself, each with the
+exact error it must give: dates to the second, wildcards, names,
+malformed DER at every level, keys too weak, CAs that are not, path
+lengths, loops, and name constraints of each kind. Where we answer
+otherwise than limbo on purpose (28 cases, mostly the Web PKI's rules
+where they differ from RFC 5280), the generator says why. A mutation
+sweep (every early return in `x509.c` disabled in turn) found the
+cases that were missing. It also reads every root in `disk/roots.pem`.
+
 `tests/qemu_test.py` boots the real ISO in QEMU and drives the shell
 over a serial socket. It uses `build/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
@@ -94,9 +113,13 @@ and the network through QEMU's user network: DHCP at boot, `ping`,
 loopback, UDP and TCP sockets (`udptest`, `tcptest`), the random number
 generator (`rndtest`), `fetch` and `nc`
 against an HTTP server and an echo server on the host, `fetch` over TLS
-against OpenSSL on the host (pages, redirects between http and https,
-chunked bodies, a server that only speaks TLS 1.2, one that is not TLS
-at all, one that hangs up; skipped when `openssl` is not installed),
+against OpenSSL on the host with certificates the test makes (a
+certificate from no trusted root refused by default, accepted with
+--ca; an RSA-PSS server; a wrong name and an expired certificate
+refused; -k; pages, redirects between http and https, chunked bodies,
+a server that only speaks TLS 1.2, one that is not TLS at all, one that
+hangs up; skipped when `openssl` or Python's `cryptography` is not
+installed),
 `net static` and
 `net dhcp`, and `host` against `tests/dns_server.py`, a DNS server on the host whose
 names each misbehave in their own way (aliases, loops, SERVFAIL, silence,

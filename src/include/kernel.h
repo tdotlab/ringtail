@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "lib.h"
 
-#define RINGTAIL_VERSION "0.25.0"
+#define RINGTAIL_VERSION "0.26.0"
 #define RINGTAIL_CODENAME "Handshake"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.

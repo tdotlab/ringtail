@@ -2956,3 +2956,65 @@ nonsense, a hang-up). Outside the suite, from QEMU: example.com, Google,
 Wikipedia and GitHub over HTTPS, through a gateway that terminates TLS with a
 stack that is not OpenSSL. Host 244 + 82 + 163 + 21394 + 2024 + 3242 + 749,
 QEMU 1995.
+
+## v0.26.0 "Prove It"
+
+The other half of TLS: the server's certificate is checked, and fetch does it
+by default. An HTTPS connection now proves who is at the other end, as far as
+Mozilla's roots and the machine's clock can say.
+
+- `tls_set_verify()`: tls.c hands a verifier the name asked for, every
+  certificate the server sent, and the CertificateVerify scheme, signature
+  and signed content, and the verifier's answer decides the handshake. Each
+  `TLS_E_CERT_*` sends the alert RFC 8446 names; anything unclear fails
+  closed. tls.c itself knows nothing of X.509.
+- `sha512.c`: SHA-384 and SHA-512.
+- `sig.c`: a big-number library (Montgomery multiplication on 32-bit limbs,
+  odd moduli to 4096 bits; only public values pass through it), RSA PKCS#1
+  v1.5 and RSA-PSS (2048 to 4096 bits), ECDSA on P-256 and P-384 in Jacobian
+  coordinates, and a SubjectPublicKeyInfo reader. SHA-1 and smaller RSA keys
+  are refused.
+- `x509.c`: a strict DER reader; certificates (version 3 only, unknown
+  critical extensions refused); path building, depth first, from the leaf
+  through any of the certificates sent, in any order, to a root; and on each
+  path every signature, the dates of every certificate including the root,
+  basicConstraints, path lengths (self-issued ones not counted), key usage,
+  EKU serverAuth, and name constraints on DNS names, IP addresses and
+  directory names. The name is matched against subjectAltName only, the
+  common name never, a wildcard standing for one whole leftmost label and
+  never for a public-looking suffix of one label. `x509_tls_verify` adds the
+  CertificateVerify check with the leaf's key, the scheme matched to it.
+- `/roots.pem`: Mozilla's 117 roots, made by `tools/mkroots.py` from the
+  Mozilla directory of the ca-certificates package. Not from the merged
+  system bundle: in this sandbox it also carries the egress proxy's own CAs,
+  which would have quietly made every man in the middle here trusted.
+- `fetch` verifies by default and says why when it will not go on (not
+  signed by anyone we trust, the wrong name, expired, ...). `-k` connects
+  anyway with the old warning; `--ca FILE` trusts the certificates in FILE
+  in place of the roots.
+- Found on the way: reading a directoryName passed the same DER cursor in
+  and out, which emptied it, so every certificate with a directoryName in
+  subjectAltName or name constraints was refused. One of Mozilla's roots
+  (Izenpe) has one, which is how it showed up.
+- Not done: revocation (CRL, OCSP), certificate transparency, policies,
+  e-mail and URI name constraints (a constrained CA whose leaf has such a
+  name is refused rather than half-checked).
+
+Testing: `tests/test_sig.c`, 8076 checks: SHA-384/512 against OpenSSL, then
+3303 signature cases from Wycheproof and OpenSSL, every good one checked
+again with a byte of the signature or message changed. `tests/test_x509.c`,
+1618 checks: 806 cases, 196 of them every server case of x509-limbo within
+scope, 382 a sample of its BetterTLS name-constraint cases, and 228 our own
+from `tests/gen_x509_ours.py` (keys it derives itself, RFC 6979 ECDSA), each
+with the exact error expected; 28 answered unlike limbo on purpose, each with
+its reason in the generator. A mutation sweep, every early return in x509.c
+disabled in turn, found six gaps in the cases and two checks that could
+never fire; the cases were added and the checks removed. Every root in
+`disk/roots.pem` must read. `tests/test_tls.c` now replays 210
+conversations, the generator checking with Python's `cryptography` that the
+signed content it hands the verifier verifies under the server's key. In
+the guest: the test makes its own PKI (a P-256 root, an RSA intermediate,
+P-384 and RSA leaves) and fetch refuses it by default, accepts it with
+`--ca`, refuses a wrong name and an expired certificate, takes an RSA-PSS
+server, and runs every earlier TLS test with `--ca`. Host QEMU_HOST_COUNTS,
+QEMU QEMU_COUNT.
