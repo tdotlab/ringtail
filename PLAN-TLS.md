@@ -39,5 +39,6 @@ check refusals (unknown CA, wrong name, expired) as well as success.
 ## Left
 
 Not planned: revocation (CRL, OCSP), certificate transparency, policies.
-Possible later: AES-GCM (some servers offer nothing else), session
+Done since: AES-128-GCM (v0.27.0), for the servers that offer nothing
+else. Possible later: session
 resumption, ALPN, a way to update the roots without rebuilding the disk.

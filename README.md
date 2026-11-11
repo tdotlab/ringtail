@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, a DNS resolver and a TLS 1.3 client,
 so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
-Current version: **v0.26.0 "Prove It"**. See PROGRESS.md for the history.
+Current version: **v0.27.0 "Plan B"**. See PROGRESS.md for the history.
 Current version: **v0.25.0 "Trust Me"**. See PROGRESS.md for the history.
 
 ## Building and running
@@ -57,13 +57,13 @@ that must be escaped before a terminal sees them. Both parsers then eat
 several hundred thousand mutated messages.
 
 `tests/test_crypto.c` checks SHA-256, HMAC, HKDF, ChaCha20, Poly1305,
-the two together and X25519 against the worked examples in the
+the two together, AES-128, AES-128-GCM and X25519 against the worked examples in the
 documents that define them and against Project Wycheproof's vectors,
 which are built to catch the mistakes implementations actually make
 (a carry dropped in the last limb, a forged tag accepted, a public
 value that gives a key of zeros).
 
-`tests/test_tls.c` runs the TLS client against 185 recorded
+`tests/test_tls.c` runs the TLS client against 218 recorded
 conversations. `tests/gen_tls_cases.py` makes them: it plays a server
 written separately from the client, straight from RFC 8446, that can do
 everything a server may do (send its flight in one record or a byte per
@@ -274,10 +274,14 @@ TLS is user code (`src/programs/lib/tls.c`), a TLS 1.3 client
 (RFC 8446) over any stream of bytes: it makes no system calls and
 reaches the socket and the random numbers through three functions the
 caller gives, which is how the host tests run the same code. It offers
-one cipher suite, ChaCha20-Poly1305 with SHA-256, and one key exchange,
-X25519; both were chosen because they can be written in plain C without
-tables or branches that depend on secrets, so the time they take gives
-nothing away. It sends the server name, answers a HelloRetryRequest
+two cipher suites, ChaCha20-Poly1305 first and AES-128-GCM (the one
+every server must take), both with SHA-256, and one key exchange,
+X25519. None of them looks anything up by a secret or branches on one,
+so the time they take gives nothing away; for AES, whose usual form is
+a table lookup, that means a bitsliced S-box, a circuit of 113 ANDs and
+XORs run on two blocks at once (`src/programs/lib/aesgcm.c`). It is
+about ten times slower than ChaCha20 here, which is why ChaCha20 is
+asked for first. It sends the server name, answers a HelloRetryRequest
 that brings a cookie, turns down a request for a client certificate,
 follows key updates, ignores session tickets, and keeps to the record
 limits; a server that breaks a rule gets the alert the RFC names and
@@ -448,10 +452,9 @@ machine's clock, which is whatever the CMOS says; a clock that is far
 wrong makes good certificates look expired. A name must be plain ASCII
 (an internationalised name in its xn-- form works). The roots are a
 copy taken when the disk was built, and nothing updates them. TLS is
-1.3 only, with one cipher suite (ChaCha20-Poly1305) and one key
-exchange (X25519); nearly every server
-on the internet takes both, and one that does not is refused with a
-message saying so. There is no session resumption, no early data, no
+1.3 only, with two cipher suites (ChaCha20-Poly1305, AES-128-GCM) and
+one key exchange (X25519); nearly every server on the internet takes
+X25519, and one that does not is refused with a message saying so. There is no session resumption, no early data, no
 client certificate and no ALPN. `fetch` makes one request per
 connection, does not ask for compressed pages, and has no cookies or
 logins.

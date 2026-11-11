@@ -3018,3 +3018,34 @@ P-384 and RSA leaves) and fetch refuses it by default, accepts it with
 `--ca`, refuses a wrong name and an expired certificate, takes an RSA-PSS
 server, and runs every earlier TLS test with `--ca`. Host 244 + 82 + 163 + 21394 + 2024 + 3242 + 1257 + 8076 + 1618,
 QEMU 2005.
+
+## v0.27.0 "Plan B"
+
+The second cipher suite: TLS_AES_128_GCM_SHA256, the one RFC 8446 says
+every server must take, for the servers that offer nothing else.
+ChaCha20-Poly1305 is still asked for first.
+
+- `aesgcm.c`: AES-128 and GCM (FIPS 197, SP 800-38D) without a table or
+  a secret-dependent branch anywhere. AES is bitsliced, two blocks at a
+  time in eight 32-bit words: the S-box is Boyar and Peralta's circuit of
+  113 ANDs and XORs (checked against the real one for all 256 inputs while
+  writing it), ShiftRows and MixColumns are masks and rotations, and the
+  key schedule runs its words through the same circuit. GHASH multiplies a
+  bit at a time with masks. Open checks the tag before it decrypts, and
+  writes nothing when it is wrong. About 29 MB/s on the host against
+  ChaCha20-Poly1305's 313, which is why ChaCha20 stays first.
+- `tls.c`: the suite is chosen per connection and the record layer seals
+  and opens through it; key updates keep it. After a HelloRetryRequest the
+  ServerHello must name the same suite (RFC 8446 4.1.4), or the server
+  gets illegal_parameter.
+
+Testing: `tests/test_crypto.c` adds AES-128 (FIPS 197's example and 62
+keys against OpenSSL, in place and not) and AES-128-GCM (Wycheproof's 67
+cases for 96-bit nonces and 128-bit tags, and lengths around every block
+edge to 16385 against `cryptography`), CHECKS_CRYPTO checks in all.
+`tests/test_tls.c` replays 218 conversations: AES-only handshakes plain
+and after a retry, one with odd record sizes and a key update, damaged AES
+records, a ServerHello that switches suite after a retry (both ways), and
+OpenSSL's `s_server` restricted to AES with a key update. In the guest,
+fetch downloads 300000 bytes from an `openssl s_server` that takes only
+AES-128-GCM and they match. Host HOST_COUNTS, QEMU QEMU_COUNT.
