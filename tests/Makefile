@@ -2,10 +2,12 @@
 # program against a RAM disk; the DHCP and DNS message code (the parts
 # that read bytes off the wire), the TCP engine (run against a
 # simulated network), the regular-expression engine grep uses (run
-# against GNU grep's answers) and diff's core (against GNU diff's),
-# under the address and undefined-behaviour sanitizers. Needs gcc -m32
-# (gcc-multilib). The disk image the run leaves behind is checked with
-# fsck.fat when it is installed.
+# against GNU grep's answers), diff's core (against GNU diff's), the
+# cryptography (against the RFCs' and Project Wycheproof's vectors) and
+# the TLS client (against recorded conversations with a scripted
+# server and with OpenSSL), under the address and undefined-behaviour
+# sanitizers. Needs gcc -m32 (gcc-multilib). The disk image the run
+# leaves behind is checked with fsck.fat when it is installed.
 CC = gcc
 CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fno-builtin -I../src/include
 TEST = test_heap_diskfs
@@ -21,7 +23,20 @@ REGEX_SRCS = test_regex.c ../src/programs/lib/regex.c
 
 DIFF_SRCS = test_diff.c ../src/programs/lib/diffcore.c
 
-all: $(TEST) test_netmsg test_tcp test_regex test_diff
+# The cryptography is built -O2, as it is for the OS: the sanitizers
+# then check the code that ships, and the tests take seconds.
+CRYPTO_LIB = ../src/lib/sha256.c ../src/lib/chacha20.c ../src/programs/lib/chachapoly.c ../src/programs/lib/x25519.c
+CRYPTO_HDRS = ../src/include/sha256.h ../src/include/chacha20.h ../src/include/ct.h \
+	../src/programs/lib/chachapoly.h ../src/programs/lib/x25519.h
+CRYPTO_CFLAGS = $(NETMSG_CFLAGS) -O2 -I.
+
+# test_tls replays each conversation thousands of times; --wrap lets it
+# remember the key exchange's answers in place of working them out anew.
+TLS_SRCS = test_tls.c ../src/programs/lib/tls.c $(CRYPTO_LIB)
+
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_crypto test_tls
+
+all: $(HOST_TESTS)
 
 $(TEST): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
@@ -38,15 +53,23 @@ test_regex: $(REGEX_SRCS) ../src/programs/lib/regex.h regex_cases.h capture_case
 test_diff: $(DIFF_SRCS) ../src/programs/lib/diffcore.h diff_cases.h
 	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(DIFF_SRCS)
 
-run: $(TEST) test_netmsg test_tcp test_regex test_diff
+test_crypto: test_crypto.c $(CRYPTO_LIB) $(CRYPTO_HDRS) crypto_cases.h
+	$(CC) $(CRYPTO_CFLAGS) -o $@ test_crypto.c $(CRYPTO_LIB)
+
+test_tls: $(TLS_SRCS) $(CRYPTO_HDRS) ../src/programs/lib/tls.h tls_cases.h
+	$(CC) $(CRYPTO_CFLAGS) -Wl,--wrap=x25519 -Wl,--wrap=x25519_public -o $@ $(TLS_SRCS)
+
+run: $(HOST_TESTS)
 	./$(TEST) || qemu-i386 ./$(TEST)
 	./test_netmsg
 	./test_tcp
 	./test_regex
 	./test_diff
+	./test_crypto
+	./test_tls
 	@if command -v fsck.fat >/dev/null; then \
 		fsck.fat -n test_disk.img >/dev/null && echo "fsck.fat: disk image is clean"; \
 	else echo "fsck.fat not installed, skipping the image check"; fi
 
 clean:
-	rm -f $(TEST) test_netmsg test_tcp test_regex test_diff test_disk.img
+	rm -f $(HOST_TESTS) test_disk.img

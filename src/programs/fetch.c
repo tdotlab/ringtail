@@ -199,7 +199,7 @@ static void cut_line(char* v) {
 // A chunked body (RFC 9112 section 7.1): pieces, each after a line with
 // its length in hex, then a piece of length 0 and maybe some trailing
 // header lines, then an empty line.
-enum { CK_SIZE, CK_LINE, CK_DATA, CK_CR, CK_LF, CK_TRAILER, CK_TRAILER_LINE, CK_DONE };
+enum { CK_SIZE, CK_LINE, CK_DATA, CK_CR, CK_LF, CK_TRAILER, CK_TRAILER_LINE, CK_DONE, CK_BAD };
 static struct {
     int state, digits;
     uint32_t left;  // of the piece being read
@@ -212,22 +212,21 @@ static int hex_digit(char c) {
 }
 
 // Takes the framing out of the n bytes at p, in place: how many bytes of
-// the body are now at p (it may be none), or -1 when the framing is
-// wrong. Call it with each part of the response as it comes; ck.state is
-// CK_DONE once the body has ended.
+// the body are now at p (it may be none). Call it with each part of the
+// response as it comes; ck.state is CK_DONE once the body has ended, or
+// CK_BAD when the framing is wrong (what came before it still counts).
 static int dechunk(char* p, int n) {
     int out = 0;
-    for (int i = 0; i < n && ck.state != CK_DONE;) {
+    for (int i = 0; i < n && ck.state < CK_DONE;) {
         char c = p[i];
         switch (ck.state) {
         case CK_SIZE: {
             int d = hex_digit(c);
             if (d >= 0) {
-                if (++ck.digits > 8) return -1;  // more than fits, and more than anyone sends
+                if (++ck.digits > 8) ck.state = CK_BAD;  // more than fits, and more than anyone sends
                 ck.left = ck.left << 4 | (uint32_t)d;
                 i++;
-            } else if (!ck.digits) return -1;
-            else ck.state = CK_LINE;
+            } else ck.state = ck.digits ? CK_LINE : CK_BAD;
             break;
         }
         case CK_LINE:  // the rest of the length's line: extensions, which nobody uses
@@ -250,9 +249,8 @@ static int dechunk(char* p, int n) {
             ck.state = CK_LF;
             break;
         case CK_LF:
-            if (c != '\n') return -1;
             i++;
-            ck.state = CK_SIZE;
+            ck.state = c == '\n' ? CK_SIZE : CK_BAD;
             break;
         case CK_TRAILER:  // at the start of a line: an empty one is the end
             i++;
@@ -412,11 +410,7 @@ int main(int argc, char** argv) {
         n = (int)nearly;
         memset(&ck, 0, sizeof ck);
         for (;;) {
-            if (chunked && n > 0 && (n = dechunk(p, n)) < 0) {
-                dprintf(STDERR_FILENO, "\nfetch: the chunked body is malformed\n");
-                fail = 1;
-                break;
-            }
+            if (chunked && n > 0) n = dechunk(p, n);
             if (n > 0) {
                 if (sized && got + (uint32_t)n > want) n = (int)(want - got);
                 int w = sys_write(fd, p, (uint32_t)n);
@@ -426,6 +420,11 @@ int main(int argc, char** argv) {
                     break;
                 }
                 got += (uint32_t)n;
+            }
+            if (chunked && ck.state == CK_BAD) {
+                dprintf(STDERR_FILENO, "\nfetch: the chunked body is malformed\n");
+                fail = 1;
+                break;
             }
             if (sized ? got == want : chunked && ck.state == CK_DONE) break;
             n = read_some(buf, sizeof buf);
