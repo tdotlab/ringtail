@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Records the conversations in tls_cases.h, which test_tls replays.
 
-    python3 tests/gen_tls_cases.py          (from the repository root)
+    python3 tests/gen_tls_cases.py [OUT]    (from the repository root;
+                                             OUT in place of tests/tls_cases.h)
 
 Our TLS client (src/programs/lib/tls.c) is built for the host and run,
 once for each case, against a server on this machine. Three servers:
@@ -1240,6 +1241,7 @@ def build_client(workdir):
         'src/lib/sha256.c', 'src/lib/chacha20.c')]
     subprocess.run(['gcc', '-m32', '-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-DNO_CASES',
                     '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+                    '-Wl,--wrap=x25519', '-Wl,--wrap=x25519_public',  # see test_tls.c
                     '-I' + os.path.join(ROOT, 'src/include'), '-I' + os.path.join(ROOT, 'src/programs/lib'),
                     '-o', exe] + src, check=True)
     return exe
@@ -1500,7 +1502,7 @@ def main():
         print('%d of %d cases did not go as they should; tls_cases.h is left alone' % (failed, failed + len(out)))
         return 1
 
-    with open(os.path.join(ROOT, 'tests/tls_cases.h'), 'w') as f:
+    with open(sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'tests/tls_cases.h'), 'w') as f:
         f.write('// Recorded TLS conversations for test_tls.c. Made by gen_tls_cases.py: do not edit.\n')
         f.write('// %d conversations.\n' % len(out))
         f.write('static const tls_record_t tls_records[] = {\n')

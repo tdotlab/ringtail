@@ -2955,4 +2955,4 @@ four servers that are not what fetch hoped for (TLS 1.2 only, plain HTTP,
 nonsense, a hang-up). Outside the suite, from QEMU: example.com, Google,
 Wikipedia and GitHub over HTTPS, through a gateway that terminates TLS with a
 stack that is not OpenSSL. Host 244 + 82 + 163 + 21394 + 2024 + 3242 + 749,
-QEMU QEMUCOUNT.
+QEMU 1995.
