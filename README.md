@@ -447,8 +447,9 @@ transparency or certificate policies. The dates are checked against the
 machine's clock, which is whatever the CMOS says; a clock that is far
 wrong makes good certificates look expired. A name must be plain ASCII
 (an internationalised name in its xn-- form works). The roots are a
-copy taken when the disk was built, and nothing updates them. TLS is 1.3 only, with one cipher suite
-(ChaCha20-Poly1305) and one key exchange (X25519); nearly every server
+copy taken when the disk was built, and nothing updates them. TLS is
+1.3 only, with one cipher suite (ChaCha20-Poly1305) and one key
+exchange (X25519); nearly every server
 on the internet takes both, and one that does not is refused with a
 message saying so. There is no session resumption, no early data, no
 client certificate and no ALPN. `fetch` makes one request per
