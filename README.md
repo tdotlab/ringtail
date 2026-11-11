@@ -6,9 +6,8 @@ FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
 UDP and TCP, an address from DHCP, a DNS resolver and a TLS 1.3 client,
-so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS
-(encrypted, but with the server's certificate not checked yet: see
-Limits).
+so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
+with the server's certificate checked against Mozilla's list of roots.
 
 Current version: **v0.25.0 "Trust Me"**. See PROGRESS.md for the history.
 
@@ -259,8 +258,25 @@ nothing away. It sends the server name, answers a HelloRetryRequest
 that brings a cookie, turns down a request for a client certificate,
 follows key updates, ignores session tickets, and keeps to the record
 limits; a server that breaks a rule gets the alert the RFC names and
-the connection is over. What it does not do yet is check the
-certificate. See Limits.
+the connection is over.
+
+The certificate is checked by a verifier the caller hands to the TLS
+code, so `tls.c` itself knows nothing of X.509. The one fetch uses is in
+`src/programs/lib/x509.c`: it reads the certificates (strict DER, version
+3 only, an unknown critical extension refused), searches for a path from
+the server's certificate through any it sent to a trusted root, and
+checks every signature on it, the dates of each certificate against the
+clock, that each CA is one (basicConstraints), its path length, key
+usage and extended key usage, and name constraints on DNS names, IP
+addresses and directory names. The name is matched against the
+subjectAltName only, never the common name, with a wildcard standing
+for exactly one leftmost label. Then the server's own signature over
+the handshake is checked with the key in its certificate. The
+signatures are `src/programs/lib/sig.c`: RSA (PKCS#1 v1.5 and PSS, 2048
+to 4096 bits) and ECDSA on P-256 and P-384, over a small Montgomery
+big-number library; SHA-1 and RSA keys under 2048 bits are refused. The
+roots are Mozilla's, as the ca-certificates package ships them, in
+`/roots.pem` on the disk (`tools/mkroots.py` makes `disk/roots.pem`).
 
 ## Source layout
 
@@ -320,7 +336,7 @@ Programs on the disk:
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
-| fetch | `fetch [-i] [-o FILE] URL`: gets a page over HTTP/1.1, or over HTTPS when the URL starts with `https://`, following up to five redirects. -i shows the headers, -o saves the body. HTTPS is encrypted but the certificate is not checked, and fetch says so each time. |
+| fetch | `fetch [-i] [-k] [--ca FILE] [-o FILE] URL`: gets a page over HTTP/1.1, or over HTTPS when the URL starts with `https://`, following up to five redirects. -i shows the headers, -o saves the body. HTTPS checks the server's certificate against the roots in `/roots.pem`, or against the certificates in FILE with --ca; -k skips the check and says so each time. |
 | httpd | `httpd [-p PORT] [-q] [DIR]`: serves DIR (default: the current directory) over HTTP on port 8080, one connection at a time. A directory gives its index.html or a listing; `..` is refused. Logs each request unless -q. Ctrl+C stops it. |
 | nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
@@ -401,13 +417,14 @@ timeout), and the DHCP client does not check that nobody else already
 has the address it was given (RFC 5227). The e1000 is the only card it
 drives.
 
-TLS does not check certificates. An HTTPS connection is encrypted, so
-nobody who only listens can read or change it, but nothing proves who
-is at the other end: someone who can get into the path (a rogue access
-point, a hostile network) can answer as the server and will not be
-noticed. Do not send anything over it that matters. Checking the
-certificate chain and the server's signature is the next piece of
-work. Beyond that, it is TLS 1.3 only, with one cipher suite
+Certificates are checked, but not everything about them is: there is
+no revocation (no CRLs, no OCSP), so a certificate its CA has taken
+back is still believed until it runs out, and no certificate
+transparency or certificate policies. The dates are checked against the
+machine's clock, which is whatever the CMOS says; a clock that is far
+wrong makes good certificates look expired. A name must be plain ASCII
+(an internationalised name in its xn-- form works). The roots are a
+copy taken when the disk was built, and nothing updates them. TLS is 1.3 only, with one cipher suite
 (ChaCha20-Poly1305) and one key exchange (X25519); nearly every server
 on the internet takes both, and one that does not is refused with a
 message saying so. There is no session resumption, no early data, no

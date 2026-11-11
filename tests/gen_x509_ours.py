@@ -561,6 +561,11 @@ def ours():
     good("nc-dn-empty-subject", lf, chain=ch)
     lf, ch = under_nc([], [dirname(name(("CN", "example.com")))], names=[dns("example.com")])
     bad("nc-dn-excluded", lf, BAD, chain=ch)
+    lf, ch = under_nc([dirname(name(("CN", "elsewhere")))],
+                      names=["empty", dns("example.com"), dirname(name(("CN", "elsewhere"), ("OU", "x")))])
+    good("nc-dn-san-permitted", lf, chain=ch)
+    lf, ch = under_nc([dirname(name(("CN", "elsewhere")))], names=["empty", dns("example.com"), dirname(name(("CN", "x")))])
+    bad("nc-dn-san-out", lf, BAD, chain=ch)
     lf, ch = under_nc([email("example.com")], names=[dns("example.com"), email("a@example.com")])
     bad("nc-email-unchecked", lf, UNSUPPORTED, chain=ch)
     lf, ch = under_nc([email("example.com")], names=[dns("example.com")])

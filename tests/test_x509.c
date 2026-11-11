@@ -143,6 +143,8 @@ static void test_pem(void) {
 }
 
 int main(void) {
+    x509_policy_t none = { 0, 0, X509_MAX_DEPTH, 0 };
+    check(x509_verify_chain(&none, 0, 0, 0, "example.com", 0, 0) == TLS_E_CERT_BAD, "no certificates", "empty");
     test_disk_roots();
     test_pem();
     unsigned accepted = 0, differs = 0;

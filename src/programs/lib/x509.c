@@ -578,7 +578,6 @@ static int check_path(walk_t* w) {
             if ((c->serial.p[0] & 0x80) || c->serial.n > 21 || (c->serial.n == 21 && c->serial.p[0]) ||
                 (c->serial.n == 1 && !c->serial.p[0]))
                 return BAD;
-            if (empty_name(c->issuer)) return BAD;
         }
         // subjectAltName: critical exactly when the subject is empty (4.2.1.6).
         if (c->has_san && c->san_critical != empty_name(c->subject)) return BAD;
