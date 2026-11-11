@@ -1048,10 +1048,11 @@ class _Http(http.server.BaseHTTPRequestHandler):
     The same pages are served over TLS by a second server; each knows
     the other's port (server.other) so a redirect can cross over."""
     timeout = 30
+    extra = {}  # more pages, which a test puts here
 
     def do_GET(self):
         pages = {"/hello.txt": b"hello from the host\n", "/rel/b": b"relative ok\n", "/big.bin": BIG,
-                 "/rep.bin": REP, "/zero.bin": bytes(64)}
+                 "/rep.bin": REP, "/zero.bin": bytes(64), **self.extra}
         for name, rows in DATA.items():
             pages["/%s.txt" % name] = "\n".join(rows).encode() + (b"" if name == "dups" else b"\n")
         here, other = self.server.server_port, getattr(self.server, "other", 0)
@@ -2195,35 +2196,35 @@ def grepwc_tests(m, t):
     run("rm -r lsd")
 
 
-def http11_tests(m, t, base):
+def http11_tests(m, t, base, fetch="fetch"):
     """The shapes of an HTTP/1.1 response, over http or https alike.
     Expects big.bin in the guest, to compare with."""
-    out = plain(m.run("fetch -o ck.bin %s/chunked" % base, timeout=60))
+    out = plain(m.run(fetch + " -o ck.bin %s/chunked" % base, timeout=60))
     t.check("a body in chunks of every size", "saved 300000 bytes to ck.bin" in out, out)
     out = plain(m.run("cmp ck.bin big.bin", timeout=30))
     t.check("comes out the same as when sent whole", out.strip() == "", out)
     m.run("rm ck.bin")
-    out = plain(m.run("fetch %s/chunked-slowly" % base, timeout=20))
+    out = plain(m.run(fetch + " %s/chunked-slowly" % base, timeout=20))
     t.check("chunks that arrive a byte at a time", out.endswith("one piece at a time") and "exit status" not in out, out)
-    out = plain(m.run("fetch -o cut.txt %s/chunked-cut" % base, timeout=20))
+    out = plain(m.run(fetch + " -o cut.txt %s/chunked-cut" % base, timeout=20))
     t.check("a chunked body that stops early is an error", "closed before the end of the body" in out
             and "exit status 1" in out, out)
     t.check("and leaves no file", "no such file" in plain(m.run("cat cut.txt")))
-    out = plain(m.run("fetch %s/chunked-bad" % base, timeout=20))
+    out = plain(m.run(fetch + " %s/chunked-bad" % base, timeout=20))
     t.check("a chunk length that is not a number", "hello" in out and "world" not in out and "malformed" in out
             and "exit status 1" in out, out)
-    out = plain(m.run("fetch %s/chunked-huge" % base, timeout=20))
+    out = plain(m.run(fetch + " %s/chunked-huge" % base, timeout=20))
     t.check("or does not fit in 32 bits", "malformed" in out and "exit status 1" in out, out)
-    out = plain(m.run("fetch %s/gzip" % base, timeout=20))
+    out = plain(m.run(fetch + " %s/gzip" % base, timeout=20))
     t.check("an encoding fetch does not know is turned down", 'transfer encoding "gzip, chunked" is not supported' in out, out)
-    out = plain(m.run("fetch -i %s/hints" % base, timeout=20))
+    out = plain(m.run(fetch + " -i %s/hints" % base, timeout=20))
     t.check("interim responses are passed over (and shown by -i)", "103 Early Hints" in out and "100 Continue" in out
             and out.endswith("after a hint"), out)
-    out = plain(m.run("fetch %s/hints" % base, timeout=20))
+    out = plain(m.run(fetch + " %s/hints" % base, timeout=20))
     t.check("and are not part of the page", out.endswith("after a hint") and "Early" not in out, out)
-    out = plain(m.run("fetch -i %s/nothing" % base, timeout=20))
+    out = plain(m.run(fetch + " -i %s/nothing" % base, timeout=20))
     t.check("a response with no body", "204 No Content" in out and "exit status" not in out, out)
-    out = plain(m.run("fetch %s/unsized" % base, timeout=20))
+    out = plain(m.run(fetch + " %s/unsized" % base, timeout=20))
     t.check("a body with no stated length runs until the server closes", out.endswith("as long as it lasts")
             and "exit status" not in out, out)
 
@@ -2252,40 +2253,90 @@ def _one_shot(answer):
     return srv, srv.getsockname()[1]
 
 
-def tls_tests(m, t, web):
-    """fetch over TLS 1.3, against OpenSSL (through Python's ssl) on the
-    host: the same pages as over plain HTTP, redirects from one to the
-    other, and servers that are not what fetch hoped for."""
-    if not shutil.which("openssl"):
-        print("  (openssl is not installed, skipping the TLS tests)")
-        return
-    work = tempfile.mkdtemp(prefix="ringtail-tls-")
-    key, cert = os.path.join(work, "key.pem"), os.path.join(work, "cert.pem")
-    made = subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                           "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=ringtail.test"],
-                          capture_output=True)
-    if made.returncode:
-        print("  (openssl could not make a certificate, skipping the TLS tests)")
-        shutil.rmtree(work)
-        return
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-    ctx.load_cert_chain(cert, key)
+def _test_pki(work):
+    """A small PKI for the TLS tests, valid around now: a root (P-256), an
+    intermediate under it (RSA 2048), and server certificates for
+    10.0.2.2: under the intermediate a P-384 key (so the server signs
+    with ECDSA P-384), another for the wrong name, another out of its
+    dates; under the root, an RSA key (so the server signs with RSA-PSS).
+    Returns the root's PEM and an SSL context for each server, or None
+    without Python's cryptography package."""
+    try:
+        from cryptography import x509 as cx509
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        import gen_x509_ours as g
+    except ImportError:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    span = lambda a, b: g.seq(g.utc((now + datetime.timedelta(days=a)).strftime("%y%m%d%H%M%SZ")),
+                              g.utc((now + datetime.timedelta(days=b)).strftime("%y%m%d%H%M%SZ")))
+    root = g.Cert(g.name(("CN", "RingTail Test Root")), g.ec_key(0x7E57_0001), exts=g.ca_exts())
+    root.f["validity"] = span(-1, 3)
+    inter = g.Cert(g.name(("CN", "RingTail Test Intermediate")), g.rsa_key(2048, 0x7E57), root, exts=g.ca_exts(0))
+    inter.f["validity"] = span(-1, 3)
+
+    def server(key, issuer, names, days=(-1, 2), h="sha256"):
+        c = g.Cert(g.name(("CN", "ringtail test server")), key, issuer,
+                   exts=[g.san(*names), g.ku("digitalSignature"), g.eku(g.SERVER_AUTH)], h=h)
+        c.f["validity"] = span(*days)
+        chain = [c] + ([issuer] if issuer is not root else [])
+        cert_pem = "".join(cx509.load_der_x509_certificate(x.der()).public_bytes(serialization.Encoding.PEM).decode()
+                           for x in chain)
+        key_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                    serialization.NoEncryption()).decode()
+        cf, kf = os.path.join(work, "c.pem"), os.path.join(work, "k.pem")
+        open(cf, "w").write(cert_pem)
+        open(kf, "w").write(key_pem)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        ctx.load_cert_chain(cf, kf)
+        return ctx
+
+    here = [g.ip(10, 0, 2, 2), g.dns("ringtail.test")]
+    p384 = g.ec_key(0x7E57_0002, ec.SECP384R1)
+    ctxs = {"main": server(p384, inter, here, h="sha384"),
+            "rsa": server(g.rsa_key(2048, 0x7E58), root, here),
+            "name": server(g.ec_key(0x7E57_0003), inter, [g.dns("elsewhere.test")]),
+            "expired": server(g.ec_key(0x7E57_0004), inter, here, days=(-10, -5))}
     old = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     old.maximum_version = ssl.TLSVersion.TLSv1_2
-    old.load_cert_chain(cert, key)
-    shutil.rmtree(work)
+    old.load_cert_chain(os.path.join(work, "c.pem"), os.path.join(work, "k.pem"))
+    ctxs["tls12"] = old
+    root_pem = cx509.load_der_x509_certificate(root.der()).public_bytes(serialization.Encoding.PEM)
+    return root_pem, ctxs
+
+
+def tls_tests(m, t, web):
+    """fetch over TLS 1.3, against OpenSSL (through Python's ssl) on the
+    host: the certificate checked, against a test CA the guest is handed
+    (--ca) or the roots on its disk; the same pages as over plain HTTP,
+    redirects from one to the other, and servers that are not what fetch
+    hoped for."""
+    work = tempfile.mkdtemp(prefix="ringtail-tls-")
+    try:
+        pki = _test_pki(work)
+    finally:
+        shutil.rmtree(work)
+    if not pki:
+        print("  (Python's cryptography package is not installed, skipping the TLS tests)")
+        return
+    root_pem, ctxs = pki
+    ctx = ctxs["main"]
+    _Http.extra["/ca.pem"] = root_pem
 
     sweb = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Http)
     sweb.agents = []
     sweb.socket = ctx.wrap_socket(sweb.socket, server_side=True, do_handshake_on_connect=False)
+    sweb.handle_error = lambda request, address: None  # a client that refuses the certificate, as some must
     sweb.other, web.other = web.server_port, sweb.server_port
     threading.Thread(target=sweb.serve_forever, daemon=True).start()
     url, base = "10.0.2.2:%d" % web.server_port, "https://10.0.2.2:%d" % sweb.server_port
     warning = "the certificate of 10.0.2.2 was NOT checked"
+    fetch = "fetch --ca ca.pem"
 
     def tls12(c):
-        old.wrap_socket(c, server_side=True).close()
+        ctxs["tls12"].wrap_socket(c, server_side=True).close()
 
     def not_tls(c):
         c.recv(4096)
@@ -2295,39 +2346,78 @@ def tls_tests(m, t, web):
         c.recv(4096)
         c.sendall(bytes([22, 3, 3, 0, 60]) + bytes(60))  # a handshake record of zeros
 
+    def page(which):
+        def answer(c):
+            s = ctxs[which].wrap_socket(c, server_side=True)
+            s.recv(4096)
+            s.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\nserved by %-5s\n"
+                      % which.encode())
+            s.unwrap()
+        return answer
+
     others = [_one_shot(f) for f in (tls12, not_tls, garbage, lambda c: c.recv(4096))]
+    rsa, wrong_name, expired = [_one_shot(page(w)) for w in ("rsa", "name", "expired")]
     try:
-        out = plain(m.run("fetch %s/hello.txt" % base, timeout=20))
-        t.check("fetch gets a page over TLS 1.3", out.endswith("hello from the host") and "exit status" not in out, out)
-        t.check("and says the certificate was not checked", warning in out and "nothing proves who is at the other end" in out, out)
+        out = plain(m.run("fetch -o ca.pem http://%s/ca.pem" % url, timeout=20))
+        t.check("the test CA, fetched into the guest", "saved %d bytes" % len(root_pem) in out, out)
+
+        out = plain(m.run("fetch %s/hello.txt" % base, timeout=30))
+        t.check("by default the roots on the disk are trusted, and the test CA is not one of them",
+                "is not signed by anyone we trust" in out and "-k connects without checking" in out
+                and "exit status 1" in out and "hello" not in out and warning not in out, out)
+        out = plain(m.run("%s %s/hello.txt" % (fetch, base), timeout=20))
+        t.check("with --ca, fetch gets a page over TLS 1.3, its certificate checked",
+                out.endswith("hello from the host") and "exit status" not in out and warning not in out, out)
         t.check("the server got the request", sweb.agents and sweb.agents[-1].startswith("fetch (RingTail OS"), str(sweb.agents))
-        out = plain(m.run("fetch %s/hello.txt > page.txt" % base, timeout=20))
+        out = plain(m.run("fetch -k %s/hello.txt" % base, timeout=20))
+        t.check("-k gets it unchecked, and says so", out.endswith("hello from the host") and warning in out
+                and "nothing proves who is at the other end" in out, out)
+        out = plain(m.run("fetch -k %s/hello.txt > page.txt" % base, timeout=20))
         t.check("the warning is not part of the page", warning in out and plain(m.run("cat page.txt")).strip() == "hello from the host", out)
         m.run("rm page.txt")
-        out = plain(m.run("fetch -i %s/moved" % base, timeout=20))
-        t.check("a redirect over TLS, with one warning for the one server", "302" in out and "200 OK" in out
-                and out.endswith("hello from the host") and out.count(warning) == 1, out)
-        out = plain(m.run("fetch %s/rel/a" % base, timeout=20))
-        t.check("a relative redirect stays on TLS", "relative ok" in out and warning in out, out)
-        out = plain(m.run("fetch %s/same" % base, timeout=20))
-        t.check("so does one that names only the host", "hello from the host" in out and warning in out, out)
+        out = plain(m.run("%s https://10.0.2.2:%d/" % (fetch, rsa[1]), timeout=30))
+        t.check("an RSA certificate, and the server's RSA-PSS signature", "served by rsa" in out and "exit status" not in out, out)
+        out = plain(m.run("%s https://10.0.2.2:%d/" % (fetch, wrong_name[1]), timeout=20))
+        t.check("a certificate for some other name is refused", "is for some other name" in out and "exit status 1" in out
+                and "served" not in out, out)
+        out = plain(m.run("%s https://10.0.2.2:%d/" % (fetch, expired[1]), timeout=20))
+        t.check("so is one out of its dates", "has expired or is not yet valid" in out and "exit status 1" in out
+                and "served" not in out, out)
+        out = plain(m.run("fetch --ca nope.pem %s/hello.txt" % base, timeout=20))
+        t.check("a --ca file that is not there", "nope.pem: " in out and "exit status 1" in out, out)
+        out = plain(m.run("fetch --ca welcome.txt %s/hello.txt" % base, timeout=20))
+        t.check("and one with no certificates in it", "welcome.txt: no certificates in it" in out and "exit status 1" in out, out)
+        out = plain(m.run("fetch --ca", timeout=20))
+        t.check("--ca wants a file", "usage: fetch" in out, out)
+
+        out = plain(m.run("%s -i %s/moved" % (fetch, base), timeout=20))
+        t.check("a redirect over TLS", "302" in out and "200 OK" in out and out.endswith("hello from the host"), out)
+        out = plain(m.run("fetch -k -i %s/moved" % base, timeout=20))
+        t.check("and with -k, one warning for the one server", out.endswith("hello from the host") and out.count(warning) == 1, out)
+        out = plain(m.run("%s %s/rel/a" % (fetch, base), timeout=20))
+        t.check("a relative redirect stays on TLS", "relative ok" in out and warning not in out, out)
+        out = plain(m.run("%s %s/same" % (fetch, base), timeout=20))
+        t.check("so does one that names only the host", "hello from the host" in out, out)
+        out = plain(m.run("%s %s/secure" % (fetch, url), timeout=20))
+        t.check("a redirect from http to https, checked", "hello from the host" in out and warning not in out, out)
         out = plain(m.run("fetch %s/secure" % url, timeout=20))
-        t.check("a redirect from http to https", "hello from the host" in out and warning in out, out)
-        out = plain(m.run("fetch %s/abs" % base, timeout=20))
-        t.check("and from https to http", "hello from the host" in out and warning in out, out)
-        out = plain(m.run("fetch %s/loop" % base, timeout=30))
+        t.check("and refused when the roots do not know the server", "is not signed by anyone we trust" in out
+                and "exit status 1" in out, out)
+        out = plain(m.run("%s %s/abs" % (fetch, base), timeout=20))
+        t.check("and from https to http", "hello from the host" in out, out)
+        out = plain(m.run("%s %s/loop" % (fetch, base), timeout=30))
         t.check("a redirect loop over TLS gives up", "too many redirects" in out and "exit status 1" in out, out)
-        out = plain(m.run("fetch %s/nope" % base, timeout=20))
+        out = plain(m.run("%s %s/nope" % (fetch, base), timeout=20))
         t.check("a 404 over TLS", "HTTP 404" in out and "exit status 1" in out, out)
-        out = plain(m.run("fetch -o sbig.bin %s/big.bin" % base, timeout=60))
+        out = plain(m.run("%s -o sbig.bin %s/big.bin" % (fetch, base), timeout=60))
         t.check("300000 bytes over TLS", "saved 300000 bytes to sbig.bin" in out, out)
         out = plain(m.run("cmp sbig.bin big.bin", timeout=30))
         t.check("the same bytes as over plain HTTP", out.strip() == "", out)
         m.run("rm sbig.bin")
-        out = plain(m.run("fetch %s/short" % base, timeout=20))
+        out = plain(m.run("%s %s/short" % (fetch, base), timeout=20))
         t.check("a short body over TLS", "closed after 11 of 100 bytes" in out and "exit status 1" in out, out)
-        http11_tests(m, t, base)
-        out = plain(m.run("fetch -o cut.txt %s/cut" % base, timeout=20))
+        http11_tests(m, t, base, fetch)
+        out = plain(m.run("%s -o cut.txt %s/cut" % (fetch, base), timeout=20))
         t.check("a body with no stated length, and a connection that just stops, is not trusted",
                 "stopped before the server said it was done" in out and "exit status 1" in out, out)
         t.check("and is not kept", "no such file" in plain(m.run("cat cut.txt")))
@@ -2336,15 +2426,16 @@ def tls_tests(m, t, web):
                                                     "a server that sends nonsense", "a server that hangs up"],
                                            ["does not speak TLS 1.3", "did not answer with TLS", "something TLS does not allow",
                                             "closed in the middle"]):
-            out = plain(m.run("fetch -o no.txt https://10.0.2.2:%d/" % port, timeout=20))
+            out = plain(m.run("%s -o no.txt https://10.0.2.2:%d/" % (fetch, port), timeout=20))
             t.check(what + " is told apart", want in out and "exit status 1" in out and warning not in out, out)
         t.check("none of them left a file", "no such file" in plain(m.run("cat no.txt")))
-        out = plain(m.run("fetch %s/hello.txt" % base, timeout=20))
+        out = plain(m.run("%s %s/hello.txt" % (fetch, base), timeout=20))
         t.check("and fetch still works after all that", out.endswith("hello from the host"), out)
+        m.run("rm ca.pem")
     finally:
         sweb.shutdown()
         sweb.server_close()
-        for srv, _ in others:
+        for srv, _ in others + [rsa, wrong_name, expired]:
             srv.close()
 
 

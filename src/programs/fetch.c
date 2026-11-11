@@ -1,4 +1,4 @@
-// fetch [-i] [-o FILE] URL    get a page over HTTP or HTTPS
+// fetch [-i] [-k] [--ca FILE] [-o FILE] URL    get a page over HTTP or HTTPS
 //
 // URL is [http://|https://]HOST[:PORT][/PATH]. The body goes to the
 // screen, or to FILE with -o; -i prints the response headers first.
@@ -6,19 +6,23 @@
 // other. An error status (400 and up) is reported and its body left
 // unread.
 //
-// https is TLS 1.3 (lib/tls.h). The connection is encrypted, but the
-// server's certificate is NOT checked yet: nothing proves who is at the
-// other end, and fetch says so on every such connection.
+// https is TLS 1.3 (lib/tls.h), and the server must prove who it is: a
+// certificate for the name in the URL, on a path to one of the roots in
+// /roots.pem (Mozilla's list), checked against the clock (lib/x509.h).
+// --ca FILE trusts the certificates in FILE (PEM) in their place; -k
+// skips the check, and fetch says on every such connection that nothing
+// proves who is at the other end.
 #include "ulib.h"
 #include "dns.h"
 #include "dial.h"
 #include "tls.h"
+#include "x509.h"
 
 #define IDLE_MS 30000        // give up when the server goes quiet this long
 #define MAX_REDIRECTS 5
 
 static int usage(void) {
-    dprintf(STDERR_FILENO, "usage: fetch [-i] [-o FILE] URL\n");
+    dprintf(STDERR_FILENO, "usage: fetch [-i] [-k] [--ca FILE] [-o FILE] URL\n");
     return 2;
 }
 
@@ -163,12 +167,64 @@ static void hang_up(void) {
     sock = -1;
 }
 
-// The handshake, and the warning that goes with it for now.
+// Who to trust: the roots, or the --ca file, read once, on the first
+// https connection; or nobody, with -k.
+#define ROOTS_FILE "/roots.pem"
+#define MAX_PEM (4u << 20)  // the roots are some 200 KB
+
+static const char* ca_file = ROOTS_FILE;
+static int insecure;
+static x509_roots_t roots;
+static x509_policy_t policy;
+
+// Reads the PEM file of trusted certificates and the clock. 0, or a message.
+static const char* load_trust(void) {
+    static char msg[160];
+    if (roots.n) return 0;
+    dirent_t d;
+    int fd = sys_stat(ca_file, &d);
+    if (fd == 0 && (d.flags & DIRENT_DIR)) fd = -EISDIR;
+    if (fd == 0 && d.size > MAX_PEM) fd = -EFBIG;
+    if (fd == 0) fd = sys_open(ca_file, O_RDONLY);
+    char* pem = 0;
+    uint32_t len = 0;
+    if (fd >= 0) {
+        pem = malloc(d.size + 1);
+        if (!pem) {
+            sys_close(fd);
+            return "out of memory";
+        }
+        for (int r; len < d.size && (r = sys_read(fd, pem + len, d.size - len)) > 0;) len += (uint32_t)r;
+        sys_close(fd);
+    }
+    if (fd < 0) {
+        snprintf(msg, sizeof msg, "%s: %s", ca_file, strerror(fd));
+        return msg;
+    }
+    int n = x509_roots_add_pem(&roots, pem, len);
+    free(pem);
+    if (n < 0) return "out of memory";
+    if (n == 0) {
+        snprintf(msg, sizeof msg, "%s: no certificates in it that can be trusted", ca_file);
+        return msg;
+    }
+    rtc_time_t now;
+    sys_time(&now);
+    policy.roots = &roots;
+    policy.now = x509_time(now.year, now.month, now.day, now.hour, now.min, now.sec);
+    policy.max_depth = X509_MAX_DEPTH;
+    policy.leaf_ku = X509_KU_DIGITAL_SIGNATURE;
+    return 0;
+}
+
+// The handshake; with -k, the warning that goes with it.
 static int start_tls(void) {
     static const tls_io_t io = { sock_read, sock_write, sock_random, 0 };
     static char warned[sizeof host];
     tls = tls_new(&io);
-    int r = tls ? tls_connect(tls, host) : TLS_E_NOMEM;
+    if (!tls) return TLS_E_NOMEM;
+    if (!insecure) tls_set_verify(tls, x509_tls_verify, &policy);
+    int r = tls_connect(tls, host);
     if (r < 0) return r;
     if (!tls_peer_verified(tls) && strcmp(warned, host)) {
         dprintf(STDERR_FILENO,
@@ -272,7 +328,11 @@ int main(int argc, char** argv) {
     const char* url = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-i")) show = 1;
-        else if (!strcmp(argv[i], "-o")) {
+        else if (!strcmp(argv[i], "-k")) insecure = 1;
+        else if (!strcmp(argv[i], "--ca")) {
+            if (++i == argc) return usage();
+            ca_file = argv[i];
+        } else if (!strcmp(argv[i], "-o")) {
             if (++i == argc) return usage();
             out = argv[i];
         } else if (argv[i][0] == '-' || url) return usage();
@@ -296,8 +356,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         int r;
+        if (secure && !insecure && (err = load_trust())) {
+            dprintf(STDERR_FILENO, "fetch: %s\n", err);
+            return 1;
+        }
         if (secure && (r = start_tls()) < 0) {
             if (r != -EINTR) dprintf(STDERR_FILENO, "fetch: %s: %s\n", host, tls_strerror(r));
+            if (r <= TLS_E_CERT_BAD && r >= TLS_E_CERT_SIGNATURE)
+                dprintf(STDERR_FILENO, "fetch: (-k connects without checking, if you must)\n");
             return 1;
         }
         // HTTP/1.1, because plenty of servers now turn 1.0 away, but one

@@ -122,9 +122,17 @@ static int check_name(der_t n) {
                 der_next(&atv, &tag, &value) != 0 || atv.n)
                 return -1;
         }
-        if (rdn.bad) return -1;
     }
     return n.bad ? -1 : 0;
+}
+
+// A directoryName ([4], explicitly tagged): the Name inside it, in place
+// of v, which must hold that and nothing else. 0 or -1.
+static int directory_name(der_t* v) {
+    der_t name;
+    if (der_expect(v, DER_SEQUENCE, &name) != 0 || v->n || check_name(name) != 0) return -1;
+    *v = name;
+    return 0;
 }
 
 // A DNS name as a certificate may hold one: letters, digits and hyphens in
@@ -163,7 +171,7 @@ static int check_san(der_t s) {
         if (der_next(&s, &tag, &v) != 0) return -1;
         if (tag == DER_IMPLICIT(2) && !dns_ok(v.p, v.n, 1)) return -1;
         if (tag == DER_IMPLICIT(7) && v.n != 4 && v.n != 16) return -1;
-        if (tag == DER_CONTEXT(4) && (der_expect(&v, DER_SEQUENCE, &v) != 0 || check_name(v) != 0)) return -1;
+        if (tag == DER_CONTEXT(4) && directory_name(&v) != 0) return -1;
     }
     return 0;
 }
@@ -202,7 +210,7 @@ static int check_subtrees(der_t s) {
             for (uint32_t i = 0; i < half; i++)
                 if (v.p[i] & ~v.p[half + i]) return -1;
         }
-        if (tag == DER_CONTEXT(4) && (der_expect(&v, DER_SEQUENCE, &v) != 0 || check_name(v) != 0)) return -1;
+        if (tag == DER_CONTEXT(4) && directory_name(&v) != 0) return -1;
     }
     return 0;
 }
@@ -510,7 +518,7 @@ static int names_vs_constraints(const x509_t* ca, const x509_t* c, uint32_t* wor
         uint8_t tag;
         der_t v;
         if (der_next(&s, &tag, &v) != 0) return BAD;
-        if (tag == DER_CONTEXT(4) && der_expect(&v, DER_SEQUENCE, &v) != 0) return BAD;
+        if (tag == DER_CONTEXT(4) && directory_name(&v) != 0) return BAD;
         int r = name_vs_constraints(ca, tag, v, work);
         if (r) return r;
     }

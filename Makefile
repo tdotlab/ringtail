@@ -89,12 +89,12 @@ $(BUILD)/test-programs/%: $(BUILD)/u/tests/programs/%.o $(CRT0) $(ULIB) src/prog
 # Disk names are the program names in uppercase (DOS 8.3).
 upper = $(shell echo $(1) | tr a-z A-Z)
 
-$(DISK): $(PROGRAM_BINS) disk/welcome.txt tools/mkdisk.py
-	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt \
+$(DISK): $(PROGRAM_BINS) disk/welcome.txt disk/roots.pem tools/mkdisk.py
+	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt ROOTS.PEM:disk/roots.pem \
 	    $(foreach p,$(PROGRAMS),$(call upper,$(p)):$(BUILD)/programs/$(p))
 
-$(TEST_DISK): $(PROGRAM_BINS) $(TEST_PROGRAM_BINS) disk/welcome.txt tools/mkdisk.py
-	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt \
+$(TEST_DISK): $(PROGRAM_BINS) $(TEST_PROGRAM_BINS) disk/welcome.txt disk/roots.pem tools/mkdisk.py
+	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt ROOTS.PEM:disk/roots.pem \
 	    $(foreach p,$(PROGRAMS),$(call upper,$(p)):$(BUILD)/programs/$(p)) \
 	    $(foreach p,$(TEST_PROGRAMS),$(call upper,$(p)):$(BUILD)/test-programs/$(p))
 

@@ -1,11 +1,12 @@
 // Host test for certificates and path validation (src/programs/lib/x509.c)
-// against C2SP's x509-limbo: for each case, the trusted roots (read
-// through the PEM loader), the intermediates the server would send, the
-// server's certificate, the name and moment to check them for, and
-// whether the path must be accepted (x509_cases.h, which
-// tests/gen_x509_cases.py makes; where we refuse what limbo accepts or
-// the other way round, on purpose, the generator says why). Run under the
-// address and undefined-behaviour sanitizers.
+// against C2SP's x509-limbo and cases of our own: for each case, the
+// trusted roots (read through the PEM loader), the intermediates the
+// server would send, the server's certificate, the name and moment to
+// check them for, and whether the path must be accepted, or with which
+// error (x509_cases.h, which tests/gen_x509_cases.py makes; where we
+// refuse what limbo accepts or the other way round, on purpose, the
+// generator says why). Also: every root in disk/roots.pem reads. Run
+// under the address and undefined-behaviour sanitizers.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,20 +94,63 @@ static void run_case(const x509_case_t* c, unsigned* accepted) {
     }
     int r = x509_verify_chain(&pol, cert, cert_len, n, *c->dns ? c->dns : 0, ip, ip_len);
     char what[96];
-    snprintf(what, sizeof what, "%s, should be %s", err_name(r), c->ok ? "accepted" : "refused");
-    check((r == 0) == c->ok, what, c->id);
+    snprintf(what, sizeof what, "%s, should be %s", err_name(r), c->ok ? "accepted" : c->err ? err_name(c->err) : "refused");
+    check(c->err ? r == c->err : (r == 0) == c->ok, what, c->id);
     if (r == 0) (*accepted)++;
     for (uint32_t i = 0; i < n; i++) free((void*)cert[i]);
     x509_roots_free(&roots);
 }
 
+// The roots fetch trusts (disk/roots.pem): every one of them reads.
+static void test_disk_roots(void) {
+    FILE* f = fopen("../disk/roots.pem", "rb");
+    check(f != 0, "disk/roots.pem opens", "roots");
+    if (!f) return;
+    static char pem[1 << 20];
+    size_t len = fread(pem, 1, sizeof pem - 1, f);
+    fclose(f);
+    pem[len] = 0;
+    unsigned want = 0;
+    for (const char* p = pem; (p = strstr(p, "-----BEGIN CERTIFICATE-----")); p++) want++;
+    x509_roots_t roots;
+    memset(&roots, 0, sizeof roots);
+    int added = x509_roots_add_pem(&roots, pem, (uint32_t)len);
+    char what[64];
+    snprintf(what, sizeof what, "%d of %u roots read", added, want);
+    check(want > 100 && added == (int)want, what, "roots");
+    x509_roots_free(&roots);
+}
+
+// The PEM reader: what is between the markers, any text around them, and
+// certificates that do not read are left out without stopping the rest.
+static void test_pem(void) {
+    const char* good = x509_certs[x509_cases[0].leaf];
+    char* pem = malloc(4 * strlen(good) + 1024);
+    sprintf(pem,
+            "# a comment\n-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n"
+            "-----BEGIN CERTIFICATE-----\nnot base64!\n-----END CERTIFICATE-----\n"
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+            "-----BEGIN CERTIFICATE-----\r\n  %s \r\n-----END CERTIFICATE-----\r\n"
+            "-----BEGIN CERTIFICATE-----\n%s\n",
+            good, good, good);
+    x509_roots_t roots;
+    memset(&roots, 0, sizeof roots);
+    check(x509_roots_add_pem(&roots, pem, (uint32_t)strlen(pem)) == 2, "PEM: two of five read", "pem");
+    check(x509_roots_add_pem(&roots, "", 0) == 0, "PEM: nothing in nothing", "pem");
+    check(roots.n == 2 && roots.cert[0].der.n == roots.cert[1].der.n, "PEM: both the same", "pem");
+    x509_roots_free(&roots);
+    free(pem);
+}
+
 int main(void) {
+    test_disk_roots();
+    test_pem();
     unsigned accepted = 0, differs = 0;
     for (unsigned i = 0; i < N(x509_cases); i++) {
         run_case(&x509_cases[i], &accepted);
         differs += (unsigned)x509_cases[i].differs;
     }
-    printf("x509-limbo: %u cases, %u accepted, %u answered unlike limbo on purpose\n", (unsigned)N(x509_cases),
+    printf("x509: %u cases, %u accepted, %u answered unlike limbo on purpose\n", (unsigned)N(x509_cases),
            accepted, differs);
     printf("test_x509: %d checks, %d failures\n", checks, failures);
     return failures != 0;
