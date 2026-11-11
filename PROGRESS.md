@@ -3016,5 +3016,5 @@ signed content it hands the verifier verifies under the server's key. In
 the guest: the test makes its own PKI (a P-256 root, an RSA intermediate,
 P-384 and RSA leaves) and fetch refuses it by default, accepts it with
 `--ca`, refuses a wrong name and an expired certificate, takes an RSA-PSS
-server, and runs every earlier TLS test with `--ca`. Host QEMU_HOST_COUNTS,
-QEMU QEMU_COUNT.
+server, and runs every earlier TLS test with `--ca`. Host 244 + 82 + 163 + 21394 + 2024 + 3242 + 1257 + 8076 + 1618,
+QEMU 2005.
