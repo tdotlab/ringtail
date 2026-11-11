@@ -25,9 +25,9 @@ DIFF_SRCS = test_diff.c ../src/programs/lib/diffcore.c
 
 # The cryptography is built -O2, as it is for the OS: the sanitizers
 # then check the code that ships, and the tests take seconds.
-CRYPTO_LIB = ../src/lib/sha256.c ../src/lib/chacha20.c ../src/programs/lib/chachapoly.c ../src/programs/lib/x25519.c
+CRYPTO_LIB = ../src/lib/sha256.c ../src/lib/chacha20.c ../src/programs/lib/chachapoly.c ../src/programs/lib/x25519.c ../src/programs/lib/aesgcm.c
 CRYPTO_HDRS = ../src/include/sha256.h ../src/include/chacha20.h ../src/include/ct.h \
-	../src/programs/lib/chachapoly.h ../src/programs/lib/x25519.h
+	../src/programs/lib/chachapoly.h ../src/programs/lib/x25519.h ../src/programs/lib/aesgcm.h
 CRYPTO_CFLAGS = $(NETMSG_CFLAGS) -O2 -I.
 
 # test_tls replays each conversation thousands of times; --wrap lets it

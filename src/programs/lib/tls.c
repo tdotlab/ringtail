@@ -17,6 +17,7 @@
 #include "tls.h"
 #include "sha256.h"
 #include "chachapoly.h"
+#include "aesgcm.h"
 #include "x25519.h"
 #include "ct.h"
 #include "lib.h"
@@ -51,14 +52,19 @@ enum {
 #define NO_ALERT (-1)
 
 #define TLS13 0x0304
+#define SUITE_AES_128_GCM_SHA256 0x1301
 #define SUITE_CHACHA20_POLY1305_SHA256 0x1303
 #define GROUP_X25519 0x001d
 
 // One direction's keys. The key and iv come from the secret (7.3); the
 // secret is kept because a key update makes the next one from it (7.2).
+// Both suites take the same hash, so only the AEAD differs: ChaCha20-
+// Poly1305 uses key, AES-128-GCM its expansion, gcm.
 typedef struct {
     uint8_t secret[HASH];
+    uint32_t suite;
     uint8_t key[CHACHAPOLY_KEY_LEN], iv[CHACHAPOLY_NONCE_LEN];
+    aesgcm_t gcm;
     uint64_t seq;  // records sealed or opened under this key
     int on;
 } keys_t;
@@ -73,6 +79,7 @@ struct tls {
     int ccs_ok;       // the handshake is at a point where a stray ChangeCipherSpec is to be dropped (5)
     int sent_ccs, sent_close;
     keys_t rd, wr;
+    uint32_t suite;   // the one the server chose
     sha256_t transcript;  // the hash of every handshake message so far
     uint8_t master[HASH];
     uint8_t x_secret[X25519_LEN], x_public[X25519_LEN];
@@ -126,9 +133,16 @@ static void derive_secret(const tls_t* t, const uint8_t secret[HASH], const char
     tls13_expand_label(secret, label, h, HASH, out, HASH);
 }
 
-static void set_keys(keys_t* k, const uint8_t secret[HASH]) {
+static void set_keys(keys_t* k, uint32_t suite, const uint8_t secret[HASH]) {
     memcpy(k->secret, secret, HASH);
-    tls13_expand_label(secret, "key", 0, 0, k->key, sizeof k->key);
+    k->suite = suite;
+    if (suite == SUITE_AES_128_GCM_SHA256) {
+        tls13_expand_label(secret, "key", 0, 0, k->key, AESGCM_KEY_LEN);
+        aesgcm_init(&k->gcm, k->key);
+        ct_wipe(k->key, sizeof k->key);
+    } else {
+        tls13_expand_label(secret, "key", 0, 0, k->key, sizeof k->key);
+    }
     tls13_expand_label(secret, "iv", 0, 0, k->iv, sizeof k->iv);
     k->seq = 0;
     k->on = 1;
@@ -142,6 +156,19 @@ static void finished_mac(const tls_t* t, const uint8_t secret[HASH], uint8_t out
     transcript_hash(t, h);
     hmac_sha256(key, HASH, h, HASH, out);
     ct_wipe(key, sizeof key);
+}
+
+// A record sealed or opened with the suite's AEAD.
+static void seal(const keys_t* k, const uint8_t* nonce, const uint8_t* aad, uint32_t aadlen, uint8_t* data,
+                 uint32_t len, uint8_t* tag) {
+    if (k->suite == SUITE_AES_128_GCM_SHA256) aesgcm_seal(&k->gcm, nonce, aad, aadlen, data, len, data, tag);
+    else chachapoly_seal(k->key, nonce, aad, aadlen, data, len, data, tag);
+}
+
+static int open_(const keys_t* k, const uint8_t* nonce, const uint8_t* aad, uint32_t aadlen, uint8_t* data,
+                 uint32_t len, const uint8_t* tag) {
+    if (k->suite == SUITE_AES_128_GCM_SHA256) return aesgcm_open(&k->gcm, nonce, aad, aadlen, data, len, tag, data);
+    return chachapoly_open(k->key, nonce, aad, aadlen, data, len, tag, data);
 }
 
 // Each record's nonce: the iv with the record's number XORed into its end (5.3).
@@ -169,7 +196,7 @@ static int send_record(tls_t* t, uint8_t type, const uint8_t* data, uint32_t len
             o[HEADER + n] = type;
             uint8_t nonce[CHACHAPOLY_NONCE_LEN];
             nonce_for(&t->wr, nonce);
-            chachapoly_seal(t->wr.key, nonce, o, HEADER, o + HEADER, n + 1, o + HEADER, o + HEADER + n + 1);
+            seal(&t->wr, nonce, o, HEADER, o + HEADER, n + 1, o + HEADER + n + 1);
             t->wr.seq++;
             total = HEADER + n + 1 + TAG;
         } else {
@@ -254,7 +281,7 @@ static int read_record(tls_t* t, uint8_t* type, uint32_t* len) {
         uint8_t nonce[CHACHAPOLY_NONCE_LEN];
         nonce_for(&t->rd, nonce);
         uint32_t m = n - TAG;
-        if (chachapoly_open(t->rd.key, nonce, h, HEADER, h + HEADER, m, h + HEADER + m, h + HEADER))
+        if (open_(&t->rd, nonce, h, HEADER, h + HEADER, m, h + HEADER + m))
             return fail(t, TLS_E_BAD_MAC, AL_BAD_RECORD_MAC);
         t->rd.seq++;
         // Inside: the contents, the real type, then any number of zeros as
@@ -438,9 +465,10 @@ static int send_client_hello(tls_t* t, const uint8_t* cookie, uint32_t cookie_le
     *p++ = 32;  // a session id nobody uses, so the handshake looks like a TLS 1.2 one to middleboxes (D.4)
     memcpy(p, t->session_id, 32);
     p += 32;
-    put16(p, 2);
+    put16(p, 4);  // ChaCha20 first: it is ten times faster here, and as safe
     put16(p + 2, SUITE_CHACHA20_POLY1305_SHA256);
-    p += 4;
+    put16(p + 4, SUITE_AES_128_GCM_SHA256);
+    p += 6;
     *p++ = 1;  // one compression method: none
     *p++ = 0;
     uint8_t* exts = p;
@@ -561,10 +589,13 @@ static int do_server_hello(tls_t* t) {
         if (version != TLS13 || legacy_version != 0x0303) return fail(t, TLS_E_PARAM, AL_ILLEGAL_PARAMETER);
         // An extension we did not ask for (4.2).
         if (unknown) return fail(t, TLS_E_PARAM, AL_UNSUPPORTED_EXTENSION);
-        // Our session id back, the one cipher suite we offered, no compression.
-        if (sid.n != 32 || memcmp(sid.p, t->session_id, 32) != 0 || suite != SUITE_CHACHA20_POLY1305_SHA256 ||
-            compression != 0)
+        // Our session id back, a cipher suite we offered (after a retry,
+        // the one the retry named: 4.1.4), no compression.
+        if (sid.n != 32 || memcmp(sid.p, t->session_id, 32) != 0 ||
+            (suite != SUITE_CHACHA20_POLY1305_SHA256 && suite != SUITE_AES_128_GCM_SHA256) ||
+            (retried && suite != t->suite) || compression != 0)
             return fail(t, TLS_E_PARAM, AL_ILLEGAL_PARAMETER);
+        t->suite = suite;
 
         if (hrr) {
             // A retry must ask for something to be different (4.1.4). The
@@ -605,9 +636,9 @@ static int do_server_hello(tls_t* t) {
         tls13_expand_label(early, "derived", empty_hash, HASH, derived, HASH);
         hkdf_sha256_extract(derived, HASH, shared, sizeof shared, handshake);
         derive_secret(t, handshake, "s hs traffic", secret);
-        set_keys(&t->rd, secret);
+        set_keys(&t->rd, t->suite, secret);
         derive_secret(t, handshake, "c hs traffic", secret);
-        set_keys(&t->wr, secret);
+        set_keys(&t->wr, t->suite, secret);
         tls13_expand_label(handshake, "derived", empty_hash, HASH, derived, HASH);
         hkdf_sha256_extract(derived, HASH, zeros, HASH, t->master);
         ct_wipe(shared, sizeof shared);
@@ -825,7 +856,7 @@ int tls_connect(tls_t* t, const char* server_name) {
     uint8_t client_secret[HASH], server_secret[HASH];
     derive_secret(t, t->master, "c ap traffic", client_secret);
     derive_secret(t, t->master, "s ap traffic", server_secret);
-    set_keys(&t->rd, server_secret);
+    set_keys(&t->rd, t->suite, server_secret);
     ct_wipe(server_secret, sizeof server_secret);
     ct_wipe(t->master, sizeof t->master);
 
@@ -839,7 +870,7 @@ int tls_connect(tls_t* t, const char* server_name) {
     uint8_t fin[4 + HASH] = { HS_FINISHED, 0, 0, HASH };
     finished_mac(t, t->wr.secret, fin + 4);
     if ((r = send_handshake(t, fin, sizeof fin)) != 0) return r;
-    set_keys(&t->wr, client_secret);
+    set_keys(&t->wr, t->suite, client_secret);
     ct_wipe(client_secret, sizeof client_secret);
     t->state = ST_OPEN;
     return 0;
@@ -851,7 +882,7 @@ int tls_connect(tls_t* t, const char* server_name) {
 static void update_keys(keys_t* k) {
     uint8_t next[HASH];
     tls13_expand_label(k->secret, "traffic upd", 0, 0, next, HASH);
-    set_keys(k, next);
+    set_keys(k, k->suite, next);
     ct_wipe(next, sizeof next);
 }
 

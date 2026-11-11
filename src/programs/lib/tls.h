@@ -1,7 +1,8 @@
 // A TLS 1.3 client (RFC 8446): an encrypted connection over any stream
-// of bytes. One cipher suite, TLS_CHACHA20_POLY1305_SHA256, and one key
-// exchange, X25519; servers that only speak TLS 1.2, or offer neither,
-// are turned down with a message that says so.
+// of bytes. Two cipher suites, TLS_CHACHA20_POLY1305_SHA256 (offered
+// first) and TLS_AES_128_GCM_SHA256 (which every server must take), and
+// one key exchange, X25519; servers that only speak TLS 1.2, or take
+// neither, are turned down with a message that says so.
 //
 // Who the server is, it leaves to a verifier the caller gives
 // (tls_set_verify): handed the certificate chain and the server's

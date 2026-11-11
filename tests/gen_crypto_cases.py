@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Writes crypto_cases.h: inputs and the right answers for SHA-256, HMAC,
-HKDF, ChaCha20, Poly1305, ChaCha20-Poly1305 and X25519. The generated file
+HKDF, ChaCha20, Poly1305, ChaCha20-Poly1305, X25519, AES-128 and
+AES-128-GCM. The generated file
 is checked in, so test_crypto needs nothing but a compiler; rerun this only
 to change the cases.
 
@@ -15,8 +16,8 @@ hashlib and `cryptography` package, for random inputs of every awkward
 length."""
 import hashlib, json, os, random, sys
 from cryptography.hazmat.primitives import poly1305
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 
 random.seed(8446)
 rb = lambda n: bytes(random.getrandbits(8) for _ in range(n))
@@ -107,6 +108,28 @@ def main():
     for g, t in load(wp, "x25519_test.json"):
         rows.append(([bytes.fromhex(t["public"]), bytes.fromhex(t["private"]), bytes.fromhex(t["shared"])], 0, 1))
     table("x25519_cases", rows)
+
+    # AES-128 alone, two blocks at a time as the code does it: key, in, out.
+    # FIPS 197's example (C.1), keys of all zeros and all ones, then random.
+    rows = []
+    fips = bytes.fromhex("00112233445566778899aabbccddeeff")
+    keys = [bytes(range(16)), bytes(16), b"\xff" * 16] + [rb(16) for _ in range(60)]
+    for i, key in enumerate(keys):
+        data = fips + rb(16) if i == 0 else rb(32) if i % 3 else bytes(32) if i % 2 else b"\xff" * 32
+        rows.append(([key, data, Cipher(algorithms.AES(key), modes.ECB()).encryptor().update(data)], 0, 1))
+    table("aes_cases", rows)
+
+    # AES-128-GCM, laid out like aead_cases: key, nonce, aad, plain, cipher, tag.
+    rows = []
+    for g, t in load(wp, "aes_gcm_test.json"):
+        if g["keySize"] != 128 or g["ivSize"] != 96 or g["tagSize"] != 128:
+            continue  # TLS uses 128-bit keys and 96-bit nonces only
+        rows.append(([bytes.fromhex(t[k]) for k in ("key", "iv", "aad", "msg", "ct", "tag")], 0, t["result"] == "valid"))
+    for n in list(range(0, 50)) + [63, 64, 65, 95, 96, 97, 255, 256, 257, 16385]:
+        key, nonce, aad, m = rb(16), rb(12), rb(random.choice([0, 5, 5, 5, 13, 16, 17, 40])), rb(n)
+        ct = AESGCM(key).encrypt(nonce, m, aad)
+        rows.append(([key, nonce, aad, m, ct[:-16], ct[-16:]], 0, 1))
+    table("gcm_cases", rows)
 
     here = os.path.dirname(os.path.abspath(__file__))
     open(os.path.join(here, "crypto_cases.h"), "w").write("\n".join(out) + "\n")

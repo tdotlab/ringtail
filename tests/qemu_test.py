@@ -2259,8 +2259,9 @@ def _test_pki(work):
     10.0.2.2: under the intermediate a P-384 key (so the server signs
     with ECDSA P-384), another for the wrong name, another out of its
     dates; under the root, an RSA key (so the server signs with RSA-PSS).
-    Returns the root's PEM and an SSL context for each server, or None
-    without Python's cryptography package."""
+    Returns the root's PEM, an SSL context for each server, and each
+    server's certificate chain and key as PEM; or None without Python's
+    cryptography package."""
     try:
         from cryptography import x509 as cx509
         from cryptography.hazmat.primitives import serialization
@@ -2285,6 +2286,7 @@ def _test_pki(work):
                            for x in chain)
         key_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                     serialization.NoEncryption()).decode()
+        pems.append((cert_pem, key_pem))
         cf, kf = os.path.join(work, "c.pem"), os.path.join(work, "k.pem")
         open(cf, "w").write(cert_pem)
         open(kf, "w").write(key_pem)
@@ -2294,6 +2296,7 @@ def _test_pki(work):
         return ctx
 
     here = [g.ip(10, 0, 2, 2), g.dns("ringtail.test")]
+    pems = []
     p384 = g.ec_key(0x7E57_0002, ec.SECP384R1)
     ctxs = {"main": server(p384, inter, here, h="sha384"),
             "rsa": server(g.rsa_key(2048, 0x7E58), root, here),
@@ -2304,7 +2307,37 @@ def _test_pki(work):
     old.load_cert_chain(os.path.join(work, "c.pem"), os.path.join(work, "k.pem"))
     ctxs["tls12"] = old
     root_pem = cx509.load_der_x509_certificate(root.der()).public_bytes(serialization.Encoding.PEM)
-    return root_pem, ctxs
+    return root_pem, ctxs, dict(zip(["main", "rsa", "name", "expired"], pems))
+
+
+def _aes_only_server(pem, work):
+    """openssl s_server, as the server for one connection, with
+    TLS_AES_128_GCM_SHA256 its only suite, serving BIG as /big.bin (Python's
+    ssl cannot narrow TLS 1.3's suites). Returns (process, port), or None
+    when there is no openssl or it will not start."""
+    if not shutil.which("openssl"):
+        return None
+    open(os.path.join(work, "c.pem"), "w").write(pem[0])
+    open(os.path.join(work, "k.pem"), "w").write(pem[1])
+    open(os.path.join(work, "big.bin"), "wb").write(BIG)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    proc = subprocess.Popen(["openssl", "s_server", "-accept", "127.0.0.1:%d" % port, "-cert", "c.pem", "-key", "k.pem",
+                             "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256", "-naccept", "1", "-WWW"],
+                            cwd=work, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    ready = threading.Event()
+
+    def watch():
+        for line in proc.stdout:
+            if line.startswith(b"ACCEPT"):
+                ready.set()
+    threading.Thread(target=watch, daemon=True).start()
+    if not ready.wait(10):
+        proc.kill()
+        return None
+    return proc, port
 
 
 def tls_tests(m, t, web):
@@ -2321,7 +2354,7 @@ def tls_tests(m, t, web):
     if not pki:
         print("  (Python's cryptography package is not installed, skipping the TLS tests)")
         return
-    root_pem, ctxs = pki
+    root_pem, ctxs, pems = pki
     ctx = ctxs["main"]
     _Http.extra["/ca.pem"] = root_pem
 
@@ -2414,6 +2447,20 @@ def tls_tests(m, t, web):
         out = plain(m.run("cmp sbig.bin big.bin", timeout=30))
         t.check("the same bytes as over plain HTTP", out.strip() == "", out)
         m.run("rm sbig.bin")
+        aes_work = tempfile.mkdtemp(prefix="ringtail-aes-")
+        try:
+            aes = _aes_only_server(pems["main"], aes_work)
+            if aes:
+                out = plain(m.run("%s -o abig.bin https://10.0.2.2:%d/big.bin" % (fetch, aes[1]), timeout=90))
+                t.check("a server that takes only AES-128-GCM: 300000 bytes", "saved 300000 bytes to abig.bin" in out, out)
+                out = plain(m.run("cmp abig.bin big.bin", timeout=30))
+                t.check("the same bytes again", out.strip() == "", out)
+                m.run("rm abig.bin")
+                aes[0].kill()
+            else:
+                print("  (no openssl s_server, skipping the AES-128-GCM test)")
+        finally:
+            shutil.rmtree(aes_work)
         out = plain(m.run("%s %s/short" % (fetch, base), timeout=20))
         t.check("a short body over TLS", "closed after 11 of 100 bytes" in out and "exit status 1" in out, out)
         http11_tests(m, t, base, fetch)

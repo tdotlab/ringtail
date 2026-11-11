@@ -1,7 +1,8 @@
 // Host test for the cryptography TLS stands on: SHA-256, HMAC and HKDF
 // (src/lib/sha256.c), ChaCha20 (src/lib/chacha20.c), Poly1305 and the
-// two together (src/programs/lib/chachapoly.c), and X25519
-// (src/programs/lib/x25519.c). First the worked examples from the
+// two together (src/programs/lib/chachapoly.c), X25519
+// (src/programs/lib/x25519.c), and AES-128 and AES-128-GCM
+// (src/programs/lib/aesgcm.c). First the worked examples from the
 // documents that define them, then crypto_cases.h: Project Wycheproof's
 // vectors, built to catch the mistakes implementations really make, and
 // OpenSSL's answers for inputs of every awkward length
@@ -15,6 +16,7 @@
 #include "chacha20.h"
 #include "chachapoly.h"
 #include "x25519.h"
+#include "aesgcm.h"
 #include "ct.h"
 #include "crypto_cases.h"
 
@@ -189,37 +191,57 @@ static void test_poly1305(void) {
     }
 }
 
-static void test_aead(void) {
-    for (unsigned i = 0; i < N(aead_cases); i++) {
-        const crypto_case_t* c = &aead_cases[i];
+// Both AEADs through one shape: ChaCha20-Poly1305 as it is, AES-128-GCM
+// with its key expanded on each call.
+typedef void seal_fn(const uint8_t*, const uint8_t*, const void*, size_t, const uint8_t*, size_t, uint8_t*, uint8_t*);
+typedef int open_fn(const uint8_t*, const uint8_t*, const void*, size_t, const uint8_t*, size_t, const uint8_t*,
+                    uint8_t*);
+
+static void gcm_seal(const uint8_t* key, const uint8_t* nonce, const void* aad, size_t aadlen, const uint8_t* plain,
+                     size_t len, uint8_t* cipher, uint8_t* tag) {
+    aesgcm_t k;
+    aesgcm_init(&k, key);
+    aesgcm_seal(&k, nonce, aad, aadlen, plain, len, cipher, tag);
+}
+
+static int gcm_open(const uint8_t* key, const uint8_t* nonce, const void* aad, size_t aadlen, const uint8_t* cipher,
+                    size_t len, const uint8_t* tag, uint8_t* plain) {
+    aesgcm_t k;
+    aesgcm_init(&k, key);
+    return aesgcm_open(&k, nonce, aad, aadlen, cipher, len, tag, plain);
+}
+
+static void test_aead(const crypto_case_t* cases, unsigned count, seal_fn* seal, open_fn* open) {
+    for (unsigned i = 0; i < count; i++) {
+        const crypto_case_t* c = &cases[i];
         bytes_t k = hex(c->f[0]), n = hex(c->f[1]), aad = hex(c->f[2]), m = hex(c->f[3]), ct = hex(c->f[4]), tag = hex(c->f[5]);
         uint8_t* out = malloc(ct.n ? ct.n : 1);
         uint8_t t[16];
         memset(out, 0xEE, ct.n);
-        int r = chachapoly_open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out);
+        int r = open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out);
         if (c->ok) {
             check(r == 0 && (m.n == 0 || memcmp(out, m.p, m.n) == 0), "AEAD opens", i);
-            chachapoly_seal(k.p, n.p, aad.p, aad.n, m.p, m.n, out, t);
+            seal(k.p, n.p, aad.p, aad.n, m.p, m.n, out, t);
             check((ct.n == 0 || memcmp(out, ct.p, ct.n) == 0) && memcmp(t, tag.p, 16) == 0, "AEAD seals", i);
             // In place, the way TLS uses it.
-            check(chachapoly_open(k.p, n.p, aad.p, aad.n, out, ct.n, t, out) == 0 &&
+            check(open(k.p, n.p, aad.p, aad.n, out, ct.n, t, out) == 0 &&
                   (m.n == 0 || memcmp(out, m.p, m.n) == 0), "AEAD opens in place", i);
             // One changed bit anywhere must be noticed. (Every bit for short cases, a spread for long.)
             int caught = 1;
             size_t step = ct.n > 64 ? ct.n * 8 / 61 : 1;
             for (size_t bit = 0; bit < ct.n * 8; bit += step) {
                 ct.p[bit / 8] ^= (uint8_t)(1 << (bit % 8));
-                caught &= chachapoly_open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out) == -1;
+                caught &= open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out) == -1;
                 ct.p[bit / 8] ^= (uint8_t)(1 << (bit % 8));
             }
             for (size_t bit = 0; bit < aad.n * 8; bit++) {
                 aad.p[bit / 8] ^= (uint8_t)(1 << (bit % 8));
-                caught &= chachapoly_open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out) == -1;
+                caught &= open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out) == -1;
                 aad.p[bit / 8] ^= (uint8_t)(1 << (bit % 8));
             }
             for (size_t bit = 0; bit < 128; bit++) {
                 tag.p[bit / 8] ^= (uint8_t)(1 << (bit % 8));
-                caught &= chachapoly_open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out) == -1;
+                caught &= open(k.p, n.p, aad.p, aad.n, ct.p, ct.n, tag.p, out) == -1;
                 tag.p[bit / 8] ^= (uint8_t)(1 << (bit % 8));
             }
             check(caught, "AEAD notices any one changed bit", i);
@@ -229,6 +251,22 @@ static void test_aead(void) {
             check(r == -1 && untouched, "AEAD refuses a forgery and writes nothing", i);
         }
         free(k.p); free(n.p); free(aad.p); free(m.p); free(ct.p); free(tag.p); free(out);
+    }
+}
+
+// AES-128 alone: FIPS 197's example (in aes_cases) and keys of every kind.
+static void test_aes(void) {
+    for (unsigned i = 0; i < N(aes_cases); i++) {
+        const crypto_case_t* c = &aes_cases[i];
+        bytes_t k = hex(c->f[0]), in = hex(c->f[1]), want = hex(c->f[2]);
+        aesgcm_t ctx;
+        uint8_t out[32];
+        aesgcm_init(&ctx, k.p);
+        aes128_encrypt2(&ctx, in.p, out);
+        check(memcmp(out, want.p, 32) == 0, "AES-128", i);
+        aes128_encrypt2(&ctx, in.p, in.p);
+        check(memcmp(in.p, want.p, 32) == 0, "AES-128 in place", i);
+        free(k.p); free(in.p); free(want.p);
     }
 }
 
@@ -300,7 +338,9 @@ int main(void) {
     test_hmac_hkdf();
     test_chacha20();
     test_poly1305();
-    test_aead();
+    test_aead(aead_cases, N(aead_cases), chachapoly_seal, chachapoly_open);
+    test_aes();
+    test_aead(gcm_cases, N(gcm_cases), gcm_seal, gcm_open);
     test_x25519();
     test_ct();
     printf("test_crypto: %d of %d checks pass\n", checks - failures, checks);

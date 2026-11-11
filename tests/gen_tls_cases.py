@@ -58,7 +58,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, x25519, rsa, padding
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -189,9 +189,12 @@ def check_against_rfc8448():
 class Keys:
     """One direction's record protection."""
 
-    def __init__(self, secret):
-        self.secret = secret
-        self.aead = ChaCha20Poly1305(expand_label(secret, b'key', b'', 32))
+    def __init__(self, secret, suite=0x1303):
+        self.secret, self.suite = secret, suite
+        if suite == 0x1301:
+            self.aead = AESGCM(expand_label(secret, b'key', b'', 16))
+        else:
+            self.aead = ChaCha20Poly1305(expand_label(secret, b'key', b'', 32))
         self.iv = int.from_bytes(expand_label(secret, b'iv', b'', 12), 'big')
         self.seq = 0
 
@@ -207,7 +210,7 @@ class Keys:
         return self.aead.decrypt(self.nonce(), sealed, header)
 
     def next(self):
-        return Keys(expand_label(self.secret, b'traffic upd', b'', 32))
+        return Keys(expand_label(self.secret, b'traffic upd', b'', 32), self.suite)
 
 
 # ---- The certificate the servers show ----
@@ -353,6 +356,7 @@ class Server:
         self.counter = 0
         self.transcript = b''
         self.rd = self.wr = None  # Keys, once there are any
+        self.suite = 0x1303  # the cipher suite chosen; a case may choose the other
         self.hs_in = b''
         self.records_in = 0
         self.ccs_in = 0
@@ -483,7 +487,7 @@ class Server:
         hello = {'whole': whole, 'random': take(32)}
         hello['sid'] = take(take(1)[0])
         need(len(hello['sid']) == 32, 'the session id is not 32 bytes')
-        need(take(int.from_bytes(take(2), 'big')) == b'\x13\x03', 'cipher suites other than the one')
+        need(take(int.from_bytes(take(2), 'big')) == b'\x13\x03\x13\x01', 'cipher suites other than the two')
         need(take(take(1)[0]) == b'\x00', 'compression methods other than "none"')
         exts = take(int.from_bytes(take(2), 'big'))
         need(at == len(body), 'bytes after the extensions')
@@ -518,8 +522,9 @@ class Server:
     def share(self, public=None):
         return ext(51, struct.pack('>H', 0x1d) + vec16(self.public if public is None else public))
 
-    def make_hello(self, hello, version=0x0303, random=None, sid=None, suite=0x1303, comp=0, exts=None, tail=b'',
+    def make_hello(self, hello, version=0x0303, random=None, sid=None, suite=None, comp=0, exts=None, tail=b'',
                    bare=False):
+        suite = self.suite if suite is None else suite
         if exts is None:
             exts = ext(43, b'\x03\x04') + self.share()
         elif callable(exts):
@@ -530,14 +535,14 @@ class Server:
             body += vec16(exts)
         return msg(SERVER_HELLO, body + tail)
 
-    def make_retry(self, hello, cookie=b'come back with this', exts=None):
+    def make_retry(self, hello, cookie=b'come back with this', exts=None, suite=None):
         if exts is None:
             exts = ext(43, b'\x03\x04') + ext(44, vec16(cookie))
-        return self.make_hello(hello, random=HRR_RANDOM, exts=exts)
+        return self.make_hello(hello, random=HRR_RANDOM, exts=exts, suite=suite)
 
-    def retry(self, hello, cookie=b'come back with this'):
+    def retry(self, hello, cookie=b'come back with this', suite=None):
         """HelloRetryRequest and the second ClientHello (section 4.1.4)."""
-        retry = self.make_retry(hello, cookie)
+        retry = self.make_retry(hello, cookie, suite=suite)
         self.transcript = retry_transcript(hello['whole'], retry)
         self.plain(HANDSHAKE, retry)
         again = self.client_hello(cookie)
@@ -547,11 +552,14 @@ class Server:
         self.transcript += again['whole']
         return again
 
-    def hello(self, keys=True, retry=None, **tweaks):
+    def hello(self, keys=True, retry=None, retry_suite=None, **tweaks):
+        """retry_suite: the suite the HelloRetryRequest names, when not the one chosen after it."""
+        if tweaks.get('suite') in (0x1301, 0x1303):
+            self.suite = tweaks.pop('suite')
         hello = self.client_hello()
         self.transcript = hello['whole']
         if retry is not None:
-            hello = self.retry(hello, retry)
+            hello = self.retry(hello, retry, retry_suite)
         sh = self.make_hello(hello, **tweaks)
         self.transcript += sh
         self.plain(HANDSHAKE, sh)
@@ -562,7 +570,7 @@ class Server:
     def handshake_keys(self, hello):
         shared = self.private.exchange(x25519.X25519PublicKey.from_public_bytes(hello['share']))
         self.hs_secret, client, server = handshake_secrets(shared, self.transcript)
-        self.rd, self.wr = Keys(client), Keys(server)
+        self.rd, self.wr = Keys(client, self.suite), Keys(server, self.suite)
 
     def ccs(self, body=b'\x01'):
         self.plain(CCS, body)
@@ -630,7 +638,7 @@ class Server:
         master = hkdf_extract(expand_label(self.hs_secret, b'derived', sha256(b''), 32), bytes(32))
         h = sha256(self.transcript)
         self.c_ap = expand_label(master, b'c ap traffic', h, 32)
-        self.wr = Keys(expand_label(master, b's ap traffic', h, 32))
+        self.wr = Keys(expand_label(master, b's ap traffic', h, 32), self.suite)
 
     def client_flight(self, certificate=False):
         """The client's ChangeCipherSpec, its empty Certificate if asked for one, and its Finished."""
@@ -644,12 +652,12 @@ class Server:
         need(body == want, 'the client\'s Finished is wrong')
         need(not self.hs_in, 'bytes after the client\'s Finished')
         need(self.ccs_in == 1, 'the client sent %d ChangeCipherSpecs, not one' % self.ccs_in)
-        self.rd = Keys(self.c_ap)
+        self.rd = Keys(self.c_ap, self.suite)
 
     def handshake(self, ccs=True, creq=False, early=None, **kw):
         """A whole handshake that a client should accept. early: data sent before the client's
         Finished has come, as a server may (section 2)."""
-        hello_kw = {k: kw.pop(k) for k in ('retry',) if k in kw}
+        hello_kw = {k: kw.pop(k) for k in ('retry', 'suite', 'retry_suite') if k in kw}
         self.hello(**hello_kw)
         if ccs:
             self.ccs()
@@ -793,9 +801,10 @@ def bad_first(name, error, alert, send):
 def bad_flight(name, error, alert, send=None, **kw):
     """A flight the client must refuse. send: what to do in place of the usual flight."""
     case_kw = {k: kw.pop(k) for k in ('verdict', 'sig_good', 'host') if k in kw}
+    hello_kw = {k: kw.pop(k) for k in ('suite',) if k in kw}
 
     def run(S):
-        S.hello()
+        S.hello(**hello_kw)
         S.ccs()
         if send:
             send(S)
@@ -947,6 +956,23 @@ def define_cases():
         S.expect_bye()
     good('a ticket and a key update in three-byte records', update_split)
 
+    # ---- AES-128-GCM, the suite every server must take ----
+    good('AES-128-GCM', suite=0x1301, abuse=True)
+    good('AES-128-GCM after a retry', suite=0x1301, retry=b'cookie')
+
+    def aes_odd(S):
+        S.handshake(suite=0x1301, layout=7)
+        S.request()
+        S.key_update(ask=True)
+        S.data(REPLY[:25], size=3, pad=17)
+        S.request(S.case.again)
+        S.data(REPLY[25:])
+        S.data(big)
+        S.bye()
+        S.expect_bye()
+    good('AES-128-GCM in seven-byte records, padding, a key update, a full record', aes_odd,
+         again=b'and another thing\n', data=REPLY + big)
+
     junk = bytes((i * 13) & 0xff for i in range(20000))
     good('a long chain of certificates',
          certs=[(CERT, ext(5, b'\x01\x00\x00\x00')), junk, (CERT, ext(18, b'') + ext(0x1234, b'abc')), CERT * 3])
@@ -1050,7 +1076,10 @@ def define_cases():
     bad_hello('supported_versions chooses a version from the future', E_PARAM, ILLEGAL_PARAMETER,
               exts=lambda S: ext(43, b'\x03\x05') + S.share())
     bad_hello('legacy_version is not 0x0303', E_PARAM, ILLEGAL_PARAMETER, version=0x0304)
-    bad_hello('a cipher suite that was not offered', E_PARAM, ILLEGAL_PARAMETER, suite=0x1301)
+    bad_hello('a cipher suite that was not offered', E_PARAM, ILLEGAL_PARAMETER, suite=0x1302)
+    bad_hello('a suite other than the one the retry named', E_PARAM, ILLEGAL_PARAMETER, retry=b'c', suite=0x1301,
+              retry_suite=0x1303)
+    bad_hello('the other way round', E_PARAM, ILLEGAL_PARAMETER, retry=b'c', suite=0x1303, retry_suite=0x1301)
     bad_hello('someone else\'s session id', E_PARAM, ILLEGAL_PARAMETER, sid=bytes(range(32)))
     bad_hello('no session id', E_PARAM, ILLEGAL_PARAMETER, sid=b'')
     bad_hello('compression', E_PARAM, ILLEGAL_PARAMETER, comp=1)
@@ -1245,6 +1274,10 @@ def define_cases():
     bad_flight('a record with its tag wrong', E_BAD_MAC, BAD_RECORD_MAC, record(damage=flip_last))
     bad_flight('a record with its first byte wrong', E_BAD_MAC, BAD_RECORD_MAC, record(damage=flip_first))
     bad_flight('a record cut down to its tag', E_BAD_MAC, BAD_RECORD_MAC, record(damage=lambda b: b[-16:]))
+    bad_flight('AES-128-GCM, a record with its tag wrong', E_BAD_MAC, BAD_RECORD_MAC, record(damage=flip_last),
+               suite=0x1301)
+    bad_flight('AES-128-GCM, a record with its first byte wrong', E_BAD_MAC, BAD_RECORD_MAC,
+               record(damage=flip_first), suite=0x1301)
     bad_flight('a sealed record that says it is a handshake record', E_PROTOCOL, UNEXPECTED_MESSAGE,
                record(outer=HANDSHAKE))
     bad_flight('a sealed record of nothing but zeros', E_PROTOCOL, UNEXPECTED_MESSAGE, record(inner=bytes(20)))
@@ -1409,7 +1442,7 @@ def build_client(workdir):
     exe = os.path.join(workdir, 'tls_client')
     src = [os.path.join(ROOT, p) for p in (
         'tests/test_tls.c', 'src/programs/lib/tls.c', 'src/programs/lib/chachapoly.c', 'src/programs/lib/x25519.c',
-        'src/lib/sha256.c', 'src/lib/chacha20.c')]
+        'src/programs/lib/aesgcm.c', 'src/lib/sha256.c', 'src/lib/chacha20.c')]
     subprocess.run(['gcc', '-m32', '-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-DNO_CASES',
                     '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                     '-Wl,--wrap=x25519', '-Wl,--wrap=x25519_public',  # see test_tls.c
@@ -1717,6 +1750,12 @@ def main():
             exe, c, workdir, [],
             [(0.7, b'K\n'), (0.3, b'under the first key\n'), (0.3, b'k\n'), (0.3, b'under the second\n'),
              (0.3, b'K\n'), (0.3, b'under the third\n'), (0.5, b'Q\n')], [c.request, c.again]))
+        c = Case('OpenSSL s_server: AES-128-GCM only, and a key update', None, final=E_EOF,
+                 data=b'sealed with AES-128-GCM\nand under the next key\n', again=b'and this after the update\n')
+        record(c, lambda: record_s_server(
+            exe, c, workdir, ['-ciphersuites', 'TLS_AES_128_GCM_SHA256'],
+            [(0.7, b'sealed with AES-128-GCM\n'), (0.3, b'K\n'), (0.3, b'and under the next key\n'), (0.5, b'Q\n')],
+            [c.request, c.again]))
 
     if failed:
         print('%d of %d cases did not go as they should; tls_cases.h is left alone' % (failed, failed + len(out)))
