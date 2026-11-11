@@ -7,6 +7,12 @@
 // Each case has the bytes the server sent, the bytes our client sent
 // when it was recorded, and what the client should make of it all.
 //
+// Each was recorded with a stand-in for the certificate verifier, which
+// says what the case told it to (most often yes) and writes down what it
+// was handed; the generator checked that against what the server sent,
+// and checked the server's signature over what the client says was
+// signed with a library of its own. A digest of it is kept here.
+//
 // Here the client is run again against the recorded server bytes. With
 // the same random numbers it must send exactly the same bytes and reach
 // the same end. Then the recordings are abused: delivered a byte at a
@@ -17,8 +23,9 @@
 //
 //   test_tls                          run every case
 //   test_tls N                        run case N, noisily
-//   test_tls --live PORT SEED HOST REQUEST-HEX AGAIN-HEX
-//       be the client for a server on 127.0.0.1 (used when recording)
+//   test_tls --live PORT SEED HOST REQUEST-HEX AGAIN-HEX VERDICT
+//       be the client for a server on 127.0.0.1 (used when recording),
+//       with a verifier that answers VERDICT ("none": no verifier)
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,12 +52,14 @@ typedef struct {
     int connect, final;       // tls_connect's result; the result of the read that ended it
     int abuse;                // a good conversation, to be cut short and damaged
     uint32_t ignorable;       // how many of its bytes TLS says to ignore
+    int verdict;              // what the verifier says
+    const char* peer_hash;    // SHA-256 of what it was handed (see note_peer); "" when it was not asked
 } tls_record_t;
 
 #ifndef NO_CASES
 #include "tls_cases.h"
 #else  // (gen_tls_cases.py builds the client this way, to make that file)
-static const tls_record_t tls_records[] = { { "", "", 0, "", "", "", "", 0, "", 0, 0, 0, 0 } };
+static const tls_record_t tls_records[] = { { "", "", 0, "", "", "", "", 0, "", 0, 0, 0, 0, 0, "" } };
 #endif
 
 // The abuse below replays each conversation thousands of times, and
@@ -105,6 +114,9 @@ typedef struct {
     uint8_t client_hash[32];
     int connect, final, abuse;
     uint32_t ignorable;
+    int verdict;
+    int asked;               // whether the verifier is asked,
+    uint8_t peer_hash[32];   //   and the digest of what it is handed
 } tls_case_t;
 
 static uint8_t* unhex(const char* hex, uint32_t* len) {
@@ -160,14 +172,53 @@ static int fake_random(void* ctx, void* out, uint32_t n) {
 typedef struct {
     int connect, final;  // tls_connect's result; the result of the read that ended it
     buf_t data;          // what the server sent, as the application saw it
+    int verified;        // tls_peer_verified once connected
+    int asked;           // how many times the verifier was asked
+    buf_t peer;          // what it was handed, written out by note_peer
+    int verdict;         // and what it answers
 } result_t;
+
+static void put32(buf_t* b, uint32_t v) {
+    uint8_t p[4] = { (uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v };
+    put(b, p, 4);
+}
+
+// The stand-in verifier: writes down every byte it is handed (so the
+// sanitizer checks each pointer and length) and answers as told. The
+// layout: the name and a zero byte; the number of certificates and each
+// with its length before it; the scheme (2 bytes); what was signed and
+// the signature, each with its length before it. Lengths are 4 bytes,
+// most significant first.
+static int note_peer(void* ctx, const tls_peer_t* p) {
+    result_t* res = ctx;
+    buf_t* b = &res->peer;
+    b->n = 0;
+    put(b, p->name, (uint32_t)strlen(p->name) + 1);
+    put32(b, p->n_certs);
+    for (uint32_t i = 0; i < p->n_certs; i++) {
+        put32(b, p->cert_len[i]);
+        put(b, p->cert[i], p->cert_len[i]);
+    }
+    uint8_t scheme[2] = { (uint8_t)(p->scheme >> 8), (uint8_t)p->scheme };
+    put(b, scheme, 2);
+    put32(b, p->signed_len);
+    put(b, p->signed_content, p->signed_len);
+    put32(b, p->signature_len);
+    put(b, p->signature, p->signature_len);
+    res->asked++;
+    return res->verdict;
+}
 
 // The client program every case runs: connect, send the request, read
 // to the end (sending `again` once the first data has come), say goodbye.
-static void drive(const tls_io_t* io, const tls_case_t* c, result_t* res) {
+// With `verify`, the stand-in verifier is set, to answer c->verdict.
+static void drive(const tls_io_t* io, const tls_case_t* c, int verify, result_t* res) {
     memset(res, 0, sizeof *res);
+    res->verdict = c->verdict;
     tls_t* t = tls_new(io);
+    if (verify) tls_set_verify(t, note_peer, res);
     res->connect = tls_connect(t, c->host[0] ? c->host : 0);
+    res->verified = tls_peer_verified(t);
     if (res->connect == 0) {
         int r = c->request_len ? tls_write(t, c->request, c->request_len) : 0, first = 1;
         uint8_t chunk[1000];
@@ -222,11 +273,27 @@ static int replay_write(void* ctx, const void* buf, uint32_t n) {
 
 static int replay_random(void* ctx, void* out, uint32_t n) { return fake_random(&((replay_t*)ctx)->rng, out, n); }
 
-static void replay(const tls_case_t* c, const uint8_t* server, uint32_t server_len, int mode, result_t* res, buf_t* sent) {
+static void replay(const tls_case_t* c, const uint8_t* server, uint32_t server_len, int mode, int verify, result_t* res,
+                   buf_t* sent) {
     replay_t r = { server, server_len, 0, mode, c->seed, { 0 }, { c->seed, 0 } };
     tls_io_t io = { replay_read, replay_write, replay_random, &r };
-    drive(&io, c, res);
+    drive(&io, c, verify, res);
     *sent = r.out;
+}
+
+static void done(result_t* res, buf_t* sent) {
+    free(res->data.p);
+    free(res->peer.p);
+    free(sent->p);
+}
+
+// The verifier was asked exactly when it should have been, was handed
+// what it was when this was recorded, and the client believes it.
+static int peer_same(const result_t* res, const tls_case_t* c) {
+    uint8_t h[32];
+    sha256(res->peer.p, res->peer.n, h);
+    if (res->asked != c->asked || (c->asked && memcmp(h, c->peer_hash, 32) != 0)) return 0;
+    return res->verified == (res->connect == 0 && c->asked && c->verdict == 0);
 }
 
 static int same(const result_t* res, const tls_case_t* c) {
@@ -254,24 +321,34 @@ static void check(int ok, const tls_case_t* c, const char* what, const result_t*
 static void run_case(const tls_case_t* c, int verbose) {
     result_t res;
     buf_t sent;
-    replay(c, c->server, c->server_len, 0, &res, &sent);
+    replay(c, c->server, c->server_len, 0, 1, &res, &sent);
     if (verbose) {
-        printf("%s\n  connect %d: %s\n  final %d: %s\n  %u bytes read, %u sent\n", c->name, res.connect,
-               res.connect ? tls_strerror(res.connect) : "ok", res.final, res.final < 0 ? tls_strerror(res.final) : "ok",
-               res.data.n, sent.n);
+        printf("%s\n  connect %d: %s\n  final %d: %s\n  %u bytes read, %u sent\n  verifier asked %d times, "
+               "verified %d\n",
+               c->name, res.connect, res.connect ? tls_strerror(res.connect) : "ok", res.final,
+               res.final < 0 ? tls_strerror(res.final) : "ok", res.data.n, sent.n, res.asked, res.verified);
     }
     check(same(&res, c), c, "the outcome is the recorded one", &res);
     check(sent_same(&sent, c), c, "the client sends the recorded bytes", 0);
-    free(res.data.p);
-    free(sent.p);
+    check(peer_same(&res, c), c, "the verifier is handed what it was, and believed", 0);
+    done(&res, &sent);
 
     // However the bytes are cut up on arrival, nothing changes.
     for (int mode = 1; mode <= 2; mode++) {
-        replay(c, c->server, c->server_len, mode, &res, &sent);
-        check(same(&res, c) && sent_same(&sent, c), c,
+        replay(c, c->server, c->server_len, mode, 1, &res, &sent);
+        check(same(&res, c) && sent_same(&sent, c) && peer_same(&res, c), c,
               mode == 1 ? "the same, fed a byte at a time" : "the same, fed in odd pieces", &res);
-        free(res.data.p);
-        free(sent.p);
+        done(&res, &sent);
+    }
+
+    // A verifier that says yes changes nothing on the wire; without one,
+    // the same conversation goes the same way, but the server is not
+    // taken to have proved who it is.
+    if (c->verdict == 0) {
+        replay(c, c->server, c->server_len, 0, 0, &res, &sent);
+        check(same(&res, c) && sent_same(&sent, c) && res.asked == 0 && res.verified == 0, c,
+              "the same with no verifier, and not verified", &res);
+        done(&res, &sent);
     }
     if (!c->abuse) return;
 
@@ -282,13 +359,12 @@ static void run_case(const tls_case_t* c, int verbose) {
     int ok = 1;
     for (uint32_t cut = 0; cut < c->server_len; cut++) {
         memcpy(copy, c->server, cut);
-        replay(c, copy, cut, 0, &res, &sent);
+        replay(c, copy, cut, 0, 1, &res, &sent);
         int clean = res.connect == 0 && res.final == 0;
         if (clean && !same(&res, c)) ok = 0;
         if (res.connect == 0 && res.data.n > c->data_len) ok = 0;
         if (res.data.n && memcmp(res.data.p, c->data, res.data.n) != 0) ok = 0;
-        free(res.data.p);
-        free(sent.p);
+        done(&res, &sent);
     }
     check(ok, c, "cut short anywhere, it is never taken for whole", 0);
 
@@ -301,7 +377,7 @@ static void run_case(const tls_case_t* c, int verbose) {
     for (uint32_t i = 0; i < c->server_len; i++) {
         memcpy(copy, c->server, c->server_len);
         copy[i] ^= (uint8_t)(1 << (i % 8));
-        replay(c, copy, c->server_len, 0, &res, &sent);
+        replay(c, copy, c->server_len, 0, 1, &res, &sent);
         int clean = res.connect == 0 && res.final == 0;
         if (clean) {
             ignored++;
@@ -310,8 +386,7 @@ static void run_case(const tls_case_t* c, int verbose) {
             noticed++;
         }
         if (res.data.n > c->data_len || (res.data.n && memcmp(res.data.p, c->data, res.data.n) != 0)) ok = 0;
-        free(res.data.p);
-        free(sent.p);
+        done(&res, &sent);
     }
     if (ignored > c->ignorable) ok = 0;
     if (verbose) printf("  flipped a bit in each of %u bytes: %u noticed, %u ignorable\n", c->server_len, noticed, ignored);
@@ -344,7 +419,8 @@ typedef struct {
 
 static int live_random(void* ctx, void* out, uint32_t n) { return fake_random(&((live_t*)ctx)->rng, out, n); }
 
-static int live(int port, uint32_t seed, const char* host, const char* req_hex, const char* again_hex) {
+static int live(int port, uint32_t seed, const char* host, const char* req_hex, const char* again_hex,
+                const char* verdict) {
     signal(SIGPIPE, SIG_IGN);
     live_t l = { socket(AF_INET, SOCK_STREAM, 0), { seed, 0 } };
     struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
@@ -353,24 +429,27 @@ static int live(int port, uint32_t seed, const char* host, const char* req_hex, 
         perror("connect");
         return 2;
     }
-    tls_case_t c = { .name = "live", .host = host, .seed = seed };
+    tls_case_t c = { .name = "live", .host = host, .seed = seed, .verdict = atoi(verdict) };
     c.request = unhex(req_hex, &c.request_len);
     c.again = unhex(again_hex, &c.again_len);
     tls_io_t io = { sock_read, sock_write, live_random, &l };  // (the socket is first in live_t)
     result_t res;
-    drive(&io, &c, &res);
+    drive(&io, &c, strcmp(verdict, "none") != 0, &res);
     // Hang up politely: say we are done, then wait for the server to be,
     // so nothing either side sent is thrown away by a reset.
     shutdown(l.s, SHUT_WR);
     uint8_t rest[4096];
     while (read(l.s, rest, sizeof rest) > 0) {}
     close(l.s);
-    printf("connect=%d final=%d data=", res.connect, res.final);
+    printf("connect=%d final=%d verified=%d asked=%d data=", res.connect, res.final, res.verified, res.asked);
     for (uint32_t i = 0; i < res.data.n; i++) printf("%02x", res.data.p[i]);
+    printf(" peer=");
+    for (uint32_t i = 0; i < res.peer.n; i++) printf("%02x", res.peer.p[i]);
     printf("\n");
     free(c.request);
     free(c.again);
     free(res.data.p);
+    free(res.peer.p);
     return 0;
 }
 
@@ -409,18 +488,25 @@ static void test_expand_label(void) {
 }
 
 int main(int argc, char** argv) {
-    if (argc == 7 && !strcmp(argv[1], "--live"))
-        return live(atoi(argv[2]), (uint32_t)strtoul(argv[3], 0, 10), argv[4], argv[5], argv[6]);
+    if (argc == 8 && !strcmp(argv[1], "--live"))
+        return live(atoi(argv[2]), (uint32_t)strtoul(argv[3], 0, 10), argv[4], argv[5], argv[6], argv[7]);
     int n = (int)(sizeof tls_records / sizeof *tls_records), only = argc > 1 ? atoi(argv[1]) : -1;
     if (only < 0) test_expand_label();
     for (int i = 0; i < n; i++) {
         if (only >= 0 && i != only) continue;
         const tls_record_t* r = &tls_records[i];
         tls_case_t c = { .name = r->name, .host = r->host, .seed = r->seed, .client_len = r->client_len,
-                         .connect = r->connect, .final = r->final, .abuse = r->abuse, .ignorable = r->ignorable };
+                         .connect = r->connect, .final = r->final, .abuse = r->abuse, .ignorable = r->ignorable,
+                         .verdict = r->verdict, .asked = r->peer_hash[0] != 0 };
         uint32_t hash_len;
         uint8_t* hash = unhex(r->client_hash, &hash_len);
         memcpy(c.client_hash, hash, 32);
+        free(hash);
+        hash = 0;
+        if (c.asked) {
+            hash = unhex(r->peer_hash, &hash_len);
+            memcpy(c.peer_hash, hash, 32);
+        }
         c.request = unhex(r->request, &c.request_len);
         c.again = unhex(r->again, &c.again_len);
         c.server = unhex(r->server, &c.server_len);

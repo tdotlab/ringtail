@@ -3,11 +3,13 @@
 // exchange, X25519; servers that only speak TLS 1.2, or offer neither,
 // are turned down with a message that says so.
 //
-// What it does NOT do yet: check the server's certificate. The
-// connection is encrypted and nobody listening can read it, but nothing
-// proves who is at the other end; someone able to step into the path
-// can pose as the server. tls_peer_verified() says 0 so that a program
-// can tell its user.
+// Who the server is, it leaves to a verifier the caller gives
+// (tls_set_verify): handed the certificate chain and the server's
+// signature over the handshake, it says yes or no, and on a no the
+// handshake ends with the alert that fits. Without one, the connection
+// is encrypted and nobody listening can read it, but nothing proves who
+// is at the other end: tls_peer_verified() says 0 so that a program can
+// tell its user.
 //
 // No system calls in here: bytes come and go through three functions
 // the caller gives, so the host tests run this same code against
@@ -45,6 +47,13 @@ typedef struct tls tls_t;
 #define TLS_E_NOMEM     (-1010)
 #define TLS_E_CLOSED    (-1011)  // used after it was closed or had failed
 #define TLS_E_NAME      (-1012)  // the server name is too long or malformed
+// What a verifier returns to turn the server down, and the alert each sends.
+#define TLS_E_CERT_BAD         (-1020)  // a certificate that is malformed or fails a check (bad_certificate)
+#define TLS_E_CERT_UNSUPPORTED (-1021)  // a kind of key or certificate we cannot check (unsupported_certificate)
+#define TLS_E_CERT_EXPIRED     (-1022)  // out of its dates (certificate_expired)
+#define TLS_E_CERT_UNKNOWN_CA  (-1023)  // no chain to a trusted root (unknown_ca)
+#define TLS_E_CERT_NAME        (-1024)  // not a certificate for the name asked for (bad_certificate)
+#define TLS_E_CERT_SIGNATURE   (-1025)  // the signature over the handshake is wrong (decrypt_error)
 // The server sent a fatal alert: TLS_E_ALERT minus its number (RFC 8446
 // section 6), so -2040 is handshake_failure.
 #define TLS_E_ALERT     (-2000)
@@ -53,6 +62,28 @@ typedef struct tls tls_t;
 tls_t* tls_new(const tls_io_t* io);
 // Wipes the keys and frees everything. Does not say goodbye: tls_close.
 void tls_free(tls_t* t);
+
+// What a verifier is handed, all of it valid only during the call.
+typedef struct {
+    const char* name;              // the name connected to, as given (an IPv4 address too); "" for none
+    uint32_t n_certs;              // at least 1
+    const uint8_t* const* cert;    // each certificate, DER: the server's own first, then
+    const uint32_t* cert_len;      //   whatever else it sent, in its order, unchecked
+    uint16_t scheme;               // how the server signed (RFC 8446 4.2.3): one we offered, never PKCS#1
+    const uint8_t* signed_content; // what it signed (4.4.3), built here from the handshake
+    uint32_t signed_len;
+    const uint8_t* signature;      // and its signature, as sent
+    uint32_t signature_len;
+} tls_peer_t;
+
+// 0 to accept the server: its chain is good for `name` and the
+// signature verifies under the first certificate's key. Otherwise one of
+// the TLS_E_CERT_ errors (any other negative value is passed on, with an
+// internal_error alert; anything else nonzero counts as TLS_E_CERT_BAD).
+typedef int (*tls_verify_fn)(void* ctx, const tls_peer_t* peer);
+
+// Set before tls_connect. It is called once, before the server's Finished.
+void tls_set_verify(tls_t* t, tls_verify_fn fn, void* ctx);
 
 // The handshake. server_name is sent to the server so it can pick the
 // right site (it is not sent for an IPv4 address, or when NULL). 0, or
@@ -69,8 +100,8 @@ int tls_write(tls_t* t, const void* buf, uint32_t n);
 // Tells the server we are done sending. 0, or an error.
 int tls_close(tls_t* t);
 
-// Whether the server proved who it is. Always 0 for now: certificates
-// are not checked.
+// Whether the server proved who it is: 1 only when a verifier was set
+// and accepted it.
 int tls_peer_verified(const tls_t* t);
 
 // Text for any error the calls above return, errno values included.

@@ -19,6 +19,15 @@ once for each case, against a server on this machine. Three servers:
   * OpenSSL's own s_server program, for what Python cannot make it do:
     update its keys, and ask the client to update its own.
 
+Every case is run with a stand-in for the certificate verifier, which
+answers what the case says (most often yes) and writes down what the
+client handed it. That is checked here against what the server sent:
+the same certificates, and a signature that verifies, with this
+library, over what the client says the server signed. So the client's
+idea of the handshake transcript is checked against OpenSSL's and the
+scripted server's, and any verifier given these inputs is checking the
+right thing.
+
 What each case should come to is written down by hand next to it, and a
 case is recorded only if the client did exactly that. So the header is
 not "what the client happened to do": it is what the RFC says, as far
@@ -47,7 +56,8 @@ import datetime
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, x25519
+from cryptography.hazmat.primitives.asymmetric import ec, x25519, rsa, padding
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +65,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # tls.h's error numbers.
 E_EOF, E_NOT_TLS, E_VERSION, E_PROTOCOL, E_DECODE, E_PARAM = -1001, -1002, -1003, -1004, -1005, -1006
 E_BAD_MAC, E_FINISHED, E_TOO_BIG, E_NOMEM, E_CLOSED, E_NAME = -1007, -1008, -1009, -1010, -1011, -1012
+E_CERT_BAD, E_CERT_UNSUPPORTED, E_CERT_EXPIRED, E_CERT_UNKNOWN_CA = -1020, -1021, -1022, -1023
+E_CERT_NAME, E_CERT_SIGNATURE = -1024, -1025
 E_ALERT = -2000
 
 # Alerts (RFC 8446 section 6).
@@ -62,15 +74,17 @@ CLOSE_NOTIFY, UNEXPECTED_MESSAGE, BAD_RECORD_MAC, RECORD_OVERFLOW = 0, 10, 20, 2
 HANDSHAKE_FAILURE, ILLEGAL_PARAMETER, DECODE_ERROR, DECRYPT_ERROR = 40, 47, 50, 51
 PROTOCOL_VERSION, INTERNAL_ERROR, USER_CANCELED = 70, 80, 90
 MISSING_EXTENSION, UNSUPPORTED_EXTENSION, UNRECOGNIZED_NAME = 109, 110, 112
+BAD_CERTIFICATE, UNSUPPORTED_CERTIFICATE, CERTIFICATE_EXPIRED, UNKNOWN_CA = 42, 43, 45, 48
 
 CCS, ALERT, HANDSHAKE, APPDATA = 20, 21, 22, 23
 CLIENT_HELLO, SERVER_HELLO, NEW_SESSION_TICKET, ENCRYPTED_EXTENSIONS = 1, 2, 4, 8
 CERTIFICATE, CERTIFICATE_REQUEST, CERTIFICATE_VERIFY, FINISHED, KEY_UPDATE = 11, 13, 15, 20, 24
 
 HRR_RANDOM = hashlib.sha256(b'HelloRetryRequest').digest()
-# What the client says it can check a signature made with (none is checked yet).
-SIG_SCHEMES = [0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0804, 0x0805, 0x0806, 0x0809, 0x080a, 0x080b,
-               0x0401, 0x0501, 0x0601]
+# What the client says a signature may be made with: ECDSA P-256 and P-384, RSA-PSS, and RSA
+# PKCS#1, which may sign certificates but not the handshake (4.4.3).
+SIG_SCHEMES = [0x0403, 0x0503, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601]
+CV_CONTEXT = b' ' * 64 + b'TLS 1.3, server CertificateVerify\x00'
 
 HOST = 'example.test'
 REQUEST = b'GET / HTTP/1.0\r\nHost: example.test\r\n\r\n'
@@ -198,20 +212,126 @@ class Keys:
 
 # ---- The certificate the servers show ----
 
-def make_certificate():
-    key = ec.derive_private_key(0x52696e675461696c2054c4c5320746573742073657276657220633d31, ec.SECP256R1())
+# Everything here is deterministic, so the scripted cases come out the
+# same every time: ECDSA signs as RFC 6979 says, the RSA key is made
+# from primes found by a seeded search, and RSA-PSS takes its salt from
+# what it signs. (The salt is the signer's business; the verifier cannot
+# tell, which is the point of checking with a library that is not ours.)
+
+def probable_prime(n):
+    if n % 2 == 0:
+        return n == 2
+    for p in (3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47):
+        if n % p == 0:
+            return n == p
+    d, r = n - 1, 0
+    while d % 2 == 0:
+        d, r = d // 2, r + 1
+    for a in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71):
+        x = pow(a, d, n)
+        if x in (1, n - 1):
+            continue
+        for _ in range(r - 1):
+            x = x * x % n
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def seeded_prime(seed, bits):
+    for i in range(100000):
+        h = b''.join(hashlib.sha256(seed + b'/%d/%d' % (i, j)).digest() for j in range(bits // 256))
+        n = int.from_bytes(h, 'big') | 3 << (bits - 2) | 1
+        if (n - 1) % 65537 and probable_prime(n):
+            return n
+    raise RuntimeError('no prime')
+
+
+def rsa_key(seed, bits=2048):
+    p, q = seeded_prime(seed + b'/p', bits // 2), seeded_prime(seed + b'/q', bits // 2)
+    e, n = 65537, p * q
+    d = pow(e, -1, (p - 1) * (q - 1))
+    return rsa.RSAPrivateNumbers(p, q, d, d % (p - 1), d % (q - 1), pow(q, -1, p),
+                                 rsa.RSAPublicNumbers(e, n)).private_key()
+
+
+PSS_HASH = {0x0804: 'sha256', 0x0805: 'sha384', 0x0806: 'sha512'}
+PKCS1_HASH = {0x0401: hashes.SHA256(), 0x0501: hashes.SHA384(), 0x0601: hashes.SHA512()}
+ECDSA_SCHEMES = {0x0403: (ec.SECP256R1, hashes.SHA256()), 0x0503: (ec.SECP384R1, hashes.SHA384())}
+
+
+def pss_sign(key, hname, data):
+    """RSASSA-PSS (RFC 8017 9.1.1), MGF1 with the same hash, a salt as long as the hash."""
+    def H(b):
+        return hashlib.new(hname, b).digest()
+    hlen = len(H(b''))
+    priv = key.private_numbers()
+    n, d = priv.public_numbers.n, priv.d
+    em_bits = n.bit_length() - 1
+    em_len = (em_bits + 7) // 8
+    salt = H(b'salt for ' + data)
+    h = H(bytes(8) + H(data) + salt)
+    db = bytes(em_len - 2 * hlen - 2) + b'\x01' + salt
+    mask = b''.join(H(h + struct.pack('>I', i)) for i in range((len(db) + hlen - 1) // hlen))[:len(db)]
+    masked = bytearray(x ^ y for x, y in zip(db, mask))
+    masked[0] &= 0xff >> (8 * em_len - em_bits)
+    em = int.from_bytes(bytes(masked) + h + b'\xbc', 'big')
+    return pow(em, d, n).to_bytes((n.bit_length() + 7) // 8, 'big')
+
+
+def sign(key, scheme, data):
+    if scheme in ECDSA_SCHEMES:
+        return key.sign(data, ec.ECDSA(ECDSA_SCHEMES[scheme][1], deterministic_signing=True))
+    if scheme in PSS_HASH:
+        return pss_sign(key, PSS_HASH[scheme], data)
+    if scheme in PKCS1_HASH:
+        return key.sign(data, padding.PKCS1v15(), PKCS1_HASH[scheme])
+    return sha256(b'not a signature by any scheme we know' + data) * 2
+
+
+def verify(cert_der, scheme, data, sig):
+    """Whether sig is a good signature over data by the key in the certificate, in this scheme,
+    as Python's cryptography (OpenSSL underneath) sees it."""
+    try:
+        key = x509.load_der_x509_certificate(cert_der).public_key()
+        if scheme in ECDSA_SCHEMES:
+            curve, h = ECDSA_SCHEMES[scheme]
+            if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, curve):
+                return False
+            key.verify(sig, data, ec.ECDSA(h))
+        elif scheme in PSS_HASH:
+            h = {'sha256': hashes.SHA256(), 'sha384': hashes.SHA384(), 'sha512': hashes.SHA512()}[PSS_HASH[scheme]]
+            if not isinstance(key, rsa.RSAPublicKey):
+                return False
+            key.verify(sig, data, padding.PSS(padding.MGF1(h), h.digest_size), h)
+        else:
+            return False
+        return True
+    except (InvalidSignature, ValueError):
+        return False
+
+
+def make_certificate(key, h=hashes.SHA256()):
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, HOST)])
-    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
-            .serial_number(1)
-            .not_valid_before(datetime.datetime(2026, 1, 1))
-            .not_valid_after(datetime.datetime(2046, 1, 1))
-            .add_extension(x509.SubjectAlternativeName([x509.DNSName(HOST)]), critical=False)
-            .sign(key, hashes.SHA256(), ecdsa_deterministic=True))
-    return key, cert
+    builder = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+               .serial_number(1)
+               .not_valid_before(datetime.datetime(2026, 1, 1))
+               .not_valid_after(datetime.datetime(2046, 1, 1))
+               .add_extension(x509.SubjectAlternativeName([x509.DNSName(HOST)]), critical=False))
+    if isinstance(key, ec.EllipticCurvePrivateKey):
+        return builder.sign(key, h, ecdsa_deterministic=True)
+    return builder.sign(key, h)  # RSA PKCS#1 v1.5, which is deterministic
 
 
-KEY, CERT_OBJECT = make_certificate()
+KEY = ec.derive_private_key(0x52696e675461696c2054c4c5320746573742073657276657220633d31, ec.SECP256R1())
+CERT_OBJECT = make_certificate(KEY)
 CERT = CERT_OBJECT.public_bytes(serialization.Encoding.DER)
+KEY384 = ec.derive_private_key(0x52696e675461696c20502d333834, ec.SECP384R1())
+CERT384 = make_certificate(KEY384, hashes.SHA384()).public_bytes(serialization.Encoding.DER)
+RSA_KEY = rsa_key(b'RingTail TLS test RSA key')
+RSA_CERT = make_certificate(RSA_KEY).public_bytes(serialization.Encoding.DER)
 
 
 class Wrong(Exception):
@@ -236,6 +356,9 @@ class Server:
         self.hs_in = b''
         self.records_in = 0
         self.ccs_in = 0
+        self.sent_certs = None  # the certificates as sent, when m_cert made the message
+        self.before_cv = None   # the transcript hash under the CertificateVerify
+        self.cv = None          # and that message
         self.strict = False  # the scenario accounted for everything the client should send
         self.private = x25519.X25519PrivateKey.from_private_bytes(self.random(32))
         self.public = self.private.public_key().public_bytes(serialization.Encoding.Raw,
@@ -456,16 +579,18 @@ class Server:
 
     def m_cert(self, certs=None, context=b''):
         entries = b''
+        self.sent_certs = []
         for c in ([CERT] if certs is None else certs):
             der, exts = c if isinstance(c, tuple) else (c, b'')
             entries += vec24(der) + vec16(exts)
+            self.sent_certs.append(der)
         return msg(CERTIFICATE, vec8(context) + vec24(entries))
 
-    def m_cv(self):
+    def m_cv(self, key=None, scheme=0x0403):
         # The signature is over the handshake up to here (4.4.3).
-        signed = b' ' * 64 + b'TLS 1.3, server CertificateVerify\x00' + sha256(self.transcript)
-        sig = KEY.sign(signed, ec.ECDSA(hashes.SHA256(), deterministic_signing=True))
-        return msg(CERTIFICATE_VERIFY, b'\x04\x03' + vec16(sig))
+        signed = CV_CONTEXT + sha256(self.transcript)
+        sig = sign(key or KEY, scheme, signed)
+        return msg(CERTIFICATE_VERIFY, struct.pack('>H', scheme) + vec16(sig))
 
     def finished_mac(self, secret):
         return hmac.new(expand_label(secret, b'finished', b'', 32), sha256(self.transcript), 'sha256').digest()
@@ -473,16 +598,23 @@ class Server:
     def m_fin(self):
         return msg(FINISHED, self.finished_mac(self.wr.secret))
 
-    def flight(self, order=('ee', 'cert', 'cv', 'fin'), layout='each', pad=0, **instead):
+    def flight(self, order=('ee', 'cert', 'cv', 'fin'), layout='each', pad=0, certs=None, signer=None, **instead):
         """The server's sealed flight. instead: a message's name to other bytes (or a function giving
-        them, called when its turn comes) to send in its place."""
+        them, called when its turn comes) to send in its place. certs: the certificates to send;
+        signer: the key and scheme to sign with."""
+        need(set(instead) <= set(order), 'the case names a message the flight does not have: %r' % (instead,))
         msgs = []
         for name in order:
             m = instead.get(name)
+            if name == 'cv':
+                self.before_cv = sha256(self.transcript)
             if m is None:
-                m = getattr(self, 'm_' + name)()
+                m = (self.m_cert(certs) if name == 'cert' else self.m_cv(*signer) if name == 'cv' and signer
+                     else getattr(self, 'm_' + name)())
             elif callable(m):
                 m = m()
+            if name == 'cv':
+                self.cv = m
             self.transcript += m
             msgs.append(m)
         if layout == 'each':
@@ -599,10 +731,14 @@ class Server:
 # ---- The cases ----
 
 class Case:
-    def __init__(self, name, run, connect=0, final=0, data=b'', host=HOST, request=REQUEST, again=b'', abuse=False):
+    """verdict: what the stand-in verifier answers. sig_good: whether the server's signature is one
+    (a case that sends a bad one says so, and the check here must agree)."""
+    def __init__(self, name, run, connect=0, final=0, data=b'', host=HOST, request=REQUEST, again=b'', abuse=False,
+                 verdict=0, sig_good=True):
         self.name, self.run = name, run
         self.connect, self.final, self.data = connect, final, data
         self.host, self.request, self.again, self.abuse = host, request, again, abuse
+        self.verdict, self.sig_good = verdict, sig_good
         self.seed = zlib.crc32(name.encode()) & 0x7fffffff
 
     def sni(self):
@@ -622,7 +758,7 @@ def case(name, run, **kw):
 
 def good(name, run=None, data=REPLY, **kw):
     """A conversation that should work: handshake, request, reply, goodbyes."""
-    case_kw = {k: kw.pop(k) for k in ('host', 'request', 'again', 'abuse') if k in kw}
+    case_kw = {k: kw.pop(k) for k in ('host', 'request', 'again', 'abuse', 'sig_good') if k in kw}
 
     def default(S):
         S.handshake(**kw)
@@ -656,6 +792,8 @@ def bad_first(name, error, alert, send):
 
 def bad_flight(name, error, alert, send=None, **kw):
     """A flight the client must refuse. send: what to do in place of the usual flight."""
+    case_kw = {k: kw.pop(k) for k in ('verdict', 'sig_good', 'host') if k in kw}
+
     def run(S):
         S.hello()
         S.ccs()
@@ -667,7 +805,7 @@ def bad_flight(name, error, alert, send=None, **kw):
             S.silent()
         else:
             S.alert(alert)
-    case(name, run, connect=error)
+    case(name, run, connect=error, **case_kw)
 
 
 def bad_after(name, error, alert, send, data=b''):
@@ -812,16 +950,49 @@ def define_cases():
     junk = bytes((i * 13) & 0xff for i in range(20000))
     good('a long chain of certificates',
          certs=[(CERT, ext(5, b'\x01\x00\x00\x00')), junk, (CERT, ext(18, b'') + ext(0x1234, b'abc')), CERT * 3])
+    good('ECDSA with P-384 and SHA-384', certs=[CERT384], signer=(KEY384, 0x0503))
+    good('RSA-PSS with SHA-256', certs=[RSA_CERT], signer=(RSA_KEY, 0x0804))
+    good('RSA-PSS with SHA-384', certs=[RSA_CERT], signer=(RSA_KEY, 0x0805))
+    good('RSA-PSS with SHA-512', certs=[RSA_CERT], signer=(RSA_KEY, 0x0806), abuse=True)
     good('an address, so no server name', host='127.0.0.1')
     good('no server name given', host='')
     good('a server name with a dot at the end', host='example.test.')
 
-    # What the first release does not do. When certificates are checked,
-    # these become the first two cases of what must fail.
-    good('NOT CHECKED YET: a certificate that is not one',
-         certs=[b'this is not a certificate'])
-    good('NOT CHECKED YET: a signature that is not one',
-         cv=msg(CERTIFICATE_VERIFY, b'\x04\x03' + vec16(b'this is not a signature')))
+    # The verifier's answers, and the alert each sends (RFC 8446 4.4.2.4,
+    # 4.4.3, 6.2). TLS itself takes no view of what a certificate says:
+    # these two get through until a verifier says no.
+    bad_flight('a certificate that is not one, which the verifier turns down', E_CERT_BAD, BAD_CERTIFICATE,
+               certs=[b'this is not a certificate'], verdict=E_CERT_BAD, sig_good=False)
+    bad_flight('a signature that is not one, which the verifier turns down', E_CERT_SIGNATURE, DECRYPT_ERROR,
+               cv=msg(CERTIFICATE_VERIFY, b'\x04\x03' + vec16(b'this is not a signature')),
+               verdict=E_CERT_SIGNATURE, sig_good=False)
+    bad_flight('a signature by some other key', E_CERT_SIGNATURE, DECRYPT_ERROR, signer=(KEY384, 0x0503),
+               verdict=E_CERT_SIGNATURE, sig_good=False)
+    for err, alert, what in ((E_CERT_BAD, BAD_CERTIFICATE, 'bad'), (E_CERT_UNSUPPORTED, UNSUPPORTED_CERTIFICATE,
+                             'unsupported'), (E_CERT_EXPIRED, CERTIFICATE_EXPIRED, 'expired'),
+                             (E_CERT_UNKNOWN_CA, UNKNOWN_CA, 'from nobody we trust'),
+                             (E_CERT_NAME, BAD_CERTIFICATE, 'for some other name')):
+        bad_flight('the verifier says the certificate is ' + what, err, alert, verdict=err)
+    bad_flight('the verifier refuses an RSA server', E_CERT_UNKNOWN_CA, UNKNOWN_CA, certs=[RSA_CERT],
+               signer=(RSA_KEY, 0x0804), verdict=E_CERT_UNKNOWN_CA)
+    bad_flight('the verifier refuses an address', E_CERT_NAME, BAD_CERTIFICATE, host='127.0.0.1', verdict=E_CERT_NAME)
+    bad_flight('the verifier refuses, after a certificate request', E_CERT_UNKNOWN_CA, UNKNOWN_CA,
+               order=('ee', 'creq', 'cert', 'cv', 'fin'), verdict=E_CERT_UNKNOWN_CA)
+    bad_flight('the verifier runs out of memory', E_NOMEM, INTERNAL_ERROR, verdict=E_NOMEM)
+    bad_flight('the verifier fails with an errno', -5, INTERNAL_ERROR, verdict=-5)
+    bad_flight('the verifier answers something that is not an answer', E_CERT_BAD, BAD_CERTIFICATE, verdict=7)
+
+    # Schemes the server may not sign the handshake with: PKCS#1, which is
+    # for certificates only, and those we did not offer. Turned down
+    # before any verifier is asked.
+    for scheme, what in ((0x0401, 'RSA PKCS#1 with SHA-256 (certificates only)'),
+                         (0x0601, 'RSA PKCS#1 with SHA-512 (certificates only)'),
+                         (0x0603, 'ECDSA with P-521, not offered'), (0x0807, 'Ed25519, not offered'),
+                         (0x0809, 'RSA-PSS with a PSS key, not offered'), (0x0201, 'RSA with SHA-1'),
+                         (0x0000, 'scheme 0')):
+        key = RSA_KEY if scheme in PKCS1_HASH else KEY
+        bad_flight('a signature with ' + what, E_PARAM, ILLEGAL_PARAMETER, certs=[RSA_CERT if key is RSA_KEY else CERT],
+                   signer=(key, scheme), sig_good=False)
 
     def early(S):
         S.handshake(early=REPLY[:9])  # sent before the client's Finished has arrived
@@ -1252,19 +1423,63 @@ class Result:
 
 
 def run_client(exe, c, port):
-    return subprocess.Popen([exe, '--live', str(port), str(c.seed), c.host, c.request.hex(), c.again.hex()],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.Popen([exe, '--live', str(port), str(c.seed), c.host, c.request.hex(), c.again.hex(),
+                             str(c.verdict)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def client_result(proc, c):
+def parse_peer(b):
+    """What the stand-in verifier was handed, as test_tls.c's note_peer writes it out."""
+    at = b.index(0)
+    name, at = b[:at].decode(), at + 1
+
+    def take(n):
+        nonlocal at
+        need(at + n <= len(b), 'what the verifier was handed is cut short')
+        at += n
+        return b[at - n:at]
+
+    def vec():
+        return take(int.from_bytes(take(4), 'big'))
+    certs = [vec() for _ in range(int.from_bytes(take(4), 'big'))]
+    scheme = int.from_bytes(take(2), 'big')
+    signed, sig = vec(), vec()
+    need(at == len(b), 'more than the verifier was handed')
+    return name, certs, scheme, signed, sig
+
+
+def client_result(proc, c, certs=None, before_cv=None, cv=None):
+    """What the client came to, checked against the case. certs, before_cv, cv: what the server
+    sent as its certificates and CertificateVerify, and the transcript hash between them, when known."""
     out, err = proc.communicate(timeout=30)
     need(proc.returncode == 0, 'the client died: ' + err.decode(errors='replace')[-2000:])
     fields = dict(f.split('=') for f in out.decode().split())
     r = Result()
     r.connect, r.final, r.data = int(fields['connect']), int(fields['final']), bytes.fromhex(fields['data'])
+    r.verified, r.asked, r.peer = int(fields['verified']), int(fields['asked']), bytes.fromhex(fields['peer'])
     need(r.connect == c.connect, 'tls_connect gave %d, not %d' % (r.connect, c.connect))
     need(r.final == c.final, 'the last read gave %d, not %d' % (r.final, c.final))
     need(r.data == c.data, 'the client read %d bytes, not the %d it should have' % (len(r.data), len(c.data)))
+
+    # The verifier: asked once at most, always before a connection is made, and believed.
+    need(r.asked in (0, 1), 'the verifier was asked %d times' % r.asked)
+    need(r.connect != 0 or r.asked, 'connected without asking the verifier')
+    need(c.verdict == 0 or r.asked, 'the case has the verifier refuse, but it was never asked')
+    need(r.verified == (r.connect == 0 and c.verdict == 0), 'tls_peer_verified says %d' % r.verified)
+    if r.asked:
+        name, got_certs, scheme, signed, sig = parse_peer(r.peer)
+        need(name == (c.sni() or c.host), 'the verifier was told the name was %r' % name)
+        need(got_certs and len(signed) == len(CV_CONTEXT) + 32 and signed.startswith(CV_CONTEXT),
+             'the verifier was not handed a certificate and what TLS 1.3 says is signed')
+        if certs is not None:
+            need(got_certs == certs, 'the verifier was handed other certificates than the server sent')
+        if before_cv is not None:
+            need(signed == CV_CONTEXT + before_cv, 'the client\'s transcript is not the server\'s')
+        if cv is not None:
+            need(cv[4:6] == struct.pack('>H', scheme) and cv[8:] == sig, 'not the signature the server sent')
+        # And the real test of the client's transcript: whatever signed it, the signature verifies.
+        good = verify(got_certs[0], scheme, signed, sig)
+        need(good == c.sig_good, 'the server\'s signature %s, over what the client says it signed'
+             % ('does not verify' if c.sig_good else 'verifies'))
     return r
 
 
@@ -1287,26 +1502,26 @@ def record_scripted(exe, c):
         raise Wrong('the client and the server are each waiting for the other')
     finally:
         sock.close()
-    client_result(proc, c)
+    c.result = client_result(proc, c, S.sent_certs, S.before_cv, S.cv)
     return bytes(S.sent), bytes(S.got)
 
 
-def pem_files(workdir):
-    cert, key = os.path.join(workdir, 'cert.pem'), os.path.join(workdir, 'key.pem')
+def pem_files(workdir, key=KEY, cert_der=CERT):
+    cert, keyfile = os.path.join(workdir, 'cert.pem'), os.path.join(workdir, 'key.pem')
     with open(cert, 'wb') as f:
-        f.write(CERT_OBJECT.public_bytes(serialization.Encoding.PEM))
-    with open(key, 'wb') as f:
-        f.write(KEY.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        f.write(x509.load_der_x509_certificate(cert_der).public_bytes(serialization.Encoding.PEM))
+    with open(keyfile, 'wb') as f:
+        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                   serialization.NoEncryption()))
-    return cert, key
+    return cert, keyfile
 
 
-def record_python_ssl(exe, c, workdir, reply):
+def record_python_ssl(exe, c, workdir, reply, key=KEY, cert_der=CERT):
     """OpenSSL, as Python's ssl module drives it."""
-    cert, key = pem_files(workdir)
+    cert, keyfile = pem_files(workdir, key, cert_der)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-    ctx.load_cert_chain(cert, key)
+    ctx.load_cert_chain(cert, keyfile)
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     listener.listen(1)
@@ -1358,7 +1573,7 @@ def record_python_ssl(exe, c, workdir, reply):
             break
         got.extend(data)
     sock.close()
-    client_result(proc, c)
+    c.result = client_result(proc, c, [cert_der])
     return bytes(sent), bytes(got)
 
 
@@ -1435,7 +1650,7 @@ def record_s_server(exe, c, workdir, options, typed, must_print):
     for must in must_print:
         need(must in text, 's_server never printed %r; it printed:\n%s' % (must, text.decode(errors='replace')))
     need(b'error' not in text.lower(), 's_server complained:\n' + text.decode(errors='replace'))
-    client_result(proc, c)
+    c.result = client_result(proc, c, [CERT])
     return bytes(sent), bytes(got)
 
 
@@ -1486,6 +1701,11 @@ def main():
         record(c, lambda: record_python_ssl(exe, c, workdir, [len(c.data)]))
         c = Case('OpenSSL: an address, so no server name', None, data=b'ok\n', host='127.0.0.1')
         record(c, lambda: record_python_ssl(exe, c, workdir, [3]))
+        # Other keys: OpenSSL picks the scheme, from what we offer.
+        c = Case('OpenSSL: an RSA key, so RSA-PSS', None, data=b'signed with RSA-PSS\n')
+        record(c, lambda: record_python_ssl(exe, c, workdir, [len(c.data)], RSA_KEY, RSA_CERT))
+        c = Case('OpenSSL: a P-384 key', None, data=b'signed with P-384\n')
+        record(c, lambda: record_python_ssl(exe, c, workdir, [len(c.data)], KEY384, CERT384))
 
         # s_server sends what is typed at it; a line that starts with K
         # or k is not sent but makes it update its key (K: and ask the
@@ -1513,7 +1733,9 @@ def main():
                 f.write(',\n')
             f.write('      "%s", %d,\n' % (hashlib.sha256(client).hexdigest(), len(client)))
             f.write(hex_lines(c.data).lstrip() if not c.data else hex_lines(c.data))
-            f.write(',\n      %d, %d, %d, %d },\n' % (c.connect, c.final, 1 if c.abuse else 0, ignorable_bytes(server)))
+            f.write(',\n      %d, %d, %d, %d, %d, "%s" },\n' % (
+                c.connect, c.final, 1 if c.abuse else 0, ignorable_bytes(server), c.verdict,
+                hashlib.sha256(c.result.peer).hexdigest() if c.result.asked else ''))
         f.write('};\n')
     total = sum(len(s) for _, s, _ in out)
     print('%d conversations recorded, %d bytes from the servers' % (len(out), total))

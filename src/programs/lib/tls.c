@@ -44,6 +44,7 @@ enum {
 };
 enum {
     AL_CLOSE_NOTIFY = 0, AL_UNEXPECTED_MESSAGE = 10, AL_BAD_RECORD_MAC = 20, AL_RECORD_OVERFLOW = 22,
+    AL_BAD_CERTIFICATE = 42, AL_UNSUPPORTED_CERTIFICATE = 43, AL_CERTIFICATE_EXPIRED = 45, AL_UNKNOWN_CA = 48,
     AL_ILLEGAL_PARAMETER = 47, AL_DECODE_ERROR = 50, AL_DECRYPT_ERROR = 51, AL_PROTOCOL_VERSION = 70,
     AL_INTERNAL_ERROR = 80, AL_USER_CANCELED = 90, AL_MISSING_EXTENSION = 109, AL_UNSUPPORTED_EXTENSION = 110,
 };
@@ -76,7 +77,13 @@ struct tls {
     uint8_t master[HASH];
     uint8_t x_secret[X25519_LEN], x_public[X25519_LEN];
     uint8_t random[32], session_id[32];
-    char name[256];
+    char name[256];   // the name for the server (none for an address)
+    char asked[256];  // the name or address the caller gave, for the verifier
+    tls_verify_fn verify;
+    void* verify_ctx;
+    int verified;
+    uint8_t* certs;   // a copy of the Certificate message's body, kept for the verifier
+    uint32_t certs_len;
     uint8_t* hs;      // handshake bytes received and not yet used up: hs[hs_at .. hs_len)
     uint32_t hs_at, hs_len, hs_cap;
     uint32_t app_at, app_len;  // application data opened and not yet handed out, in `in`
@@ -391,16 +398,25 @@ static cur_t sub(cur_t* c, uint32_t n) {
 
 // ---- The handshake ----
 
-// Signature schemes the server may sign its handshake with (4.2.3).
-// None is checked yet (see tls.h), so this is every one in common use.
+// Signature schemes the server may sign with (4.2.3): the ones the
+// verifier is to check, which between them cover the web. The same list
+// says what may sign the certificates, hence PKCS#1, which TLS 1.3 allows
+// there and nowhere else (4.4.3).
 static const uint16_t sig_schemes[] = {
-    0x0403, 0x0503, 0x0603,  // ECDSA with P-256, P-384, P-521
-    0x0807, 0x0808,          // Ed25519, Ed448
-    0x0804, 0x0805, 0x0806,  // RSA-PSS with an ordinary RSA key
-    0x0809, 0x080a, 0x080b,  // RSA-PSS with a PSS-only key
-    0x0401, 0x0501, 0x0601,  // RSA PKCS#1 (for certificates only)
+    0x0403, 0x0503,          // ECDSA with P-256 and SHA-256, P-384 and SHA-384
+    0x0804, 0x0805, 0x0806,  // RSA-PSS (with an ordinary RSA key) and SHA-256, -384, -512
+    0x0401, 0x0501, 0x0601,  // RSA PKCS#1 v1.5 and SHA-256, -384, -512: certificates only
 };
 #define N_SIGS (sizeof sig_schemes / sizeof *sig_schemes)
+
+// Whether the server may sign the handshake with this scheme: one we
+// offered, and not PKCS#1.
+static int handshake_scheme_ok(uint32_t scheme) {
+    if ((scheme & 0xff) == 0x01) return 0;
+    for (uint32_t i = 0; i < N_SIGS; i++)
+        if (sig_schemes[i] == scheme) return 1;
+    return 0;
+}
 
 static int send_handshake(tls_t* t, const uint8_t* msg, uint32_t len) {
     sha256_update(&t->transcript, msg, len);
@@ -625,6 +641,60 @@ static int scan_extensions(cur_t* c, uint64_t* seen, uint64_t* big) {
     return exts.bad || c->bad ? -1 : twice;
 }
 
+// Hands the verifier the chain and the signature, and ends the handshake
+// with the matching alert if it says no. Anything but a clear yes is a no.
+static int ask_verifier(tls_t* t, uint32_t scheme, const uint8_t* signature, uint32_t signature_len) {
+    // The chain: each CertificateEntry's cert_data. Its shape was checked when it came.
+    cur_t c = { t->certs, t->certs_len, 0 };
+    take(&c, take8(&c));
+    cur_t list = sub(&c, take24(&c)), count = list;
+    uint32_t n = 0;
+    while (count.n && !count.bad) {
+        sub(&count, take24(&count));
+        sub(&count, take16(&count));
+        n++;
+    }
+    const uint8_t** cert = malloc(n * sizeof *cert);
+    uint32_t* cert_len = malloc(n * sizeof *cert_len);
+    if (!cert || !cert_len) {
+        free(cert);
+        free(cert_len);
+        return fail(t, TLS_E_NOMEM, AL_INTERNAL_ERROR);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        cur_t one = sub(&list, take24(&list));
+        cert[i] = one.p;
+        cert_len[i] = one.n;
+        sub(&list, take16(&list));
+    }
+
+    // 64 spaces, the context string, a zero byte, the transcript hash (4.4.3).
+    static const char context[] = "TLS 1.3, server CertificateVerify";
+    uint8_t content[64 + sizeof context + HASH];
+    memset(content, ' ', 64);
+    memcpy(content + 64, context, sizeof context);  // (with its terminating zero)
+    transcript_hash(t, content + 64 + sizeof context);
+
+    tls_peer_t peer = { t->asked, n, cert, cert_len, (uint16_t)scheme, content, sizeof content, signature, signature_len };
+    int v = t->verify(t->verify_ctx, &peer);
+    free(cert);
+    free(cert_len);
+    ct_wipe(t->certs, t->certs_len);
+    free(t->certs);
+    t->certs = 0;
+    t->certs_len = 0;
+    switch (v) {
+    case 0: t->verified = 1; return 0;
+    case TLS_E_CERT_BAD:
+    case TLS_E_CERT_NAME: return fail(t, v, AL_BAD_CERTIFICATE);
+    case TLS_E_CERT_UNSUPPORTED: return fail(t, v, AL_UNSUPPORTED_CERTIFICATE);
+    case TLS_E_CERT_EXPIRED: return fail(t, v, AL_CERTIFICATE_EXPIRED);
+    case TLS_E_CERT_UNKNOWN_CA: return fail(t, v, AL_UNKNOWN_CA);
+    case TLS_E_CERT_SIGNATURE: return fail(t, v, AL_DECRYPT_ERROR);
+    }
+    return v < 0 ? fail(t, v, AL_INTERNAL_ERROR) : fail(t, TLS_E_CERT_BAD, AL_BAD_CERTIFICATE);
+}
+
 // The rest of the server's flight, all under the handshake keys:
 // EncryptedExtensions, perhaps CertificateRequest, Certificate,
 // CertificateVerify, Finished (4.3, 4.4).
@@ -678,14 +748,25 @@ static int do_server_flight(tls_t* t, int* cert_requested) {
     // (No certificate at all is a decode_error too: 4.4.2.4.)
     if (c.bad || c.n || list.bad || !certs) return fail(t, TLS_E_DECODE, AL_DECODE_ERROR);
     if (context_len) return fail(t, TLS_E_PARAM, AL_ILLEGAL_PARAMETER);
+    if (t->verify) {
+        // The message moves on in hs once used; the verifier needs it until CertificateVerify.
+        if (!(t->certs = malloc(len))) return fail(t, TLS_E_NOMEM, AL_INTERNAL_ERROR);
+        memcpy(t->certs, body, len);
+        t->certs_len = len;
+    }
     hs_done(t, 1);
 
-    // The server's signature over the handshake (4.4.3). Not checked: see tls.h.
+    // The server's signature over the handshake so far (4.4.3), with the
+    // key in its certificate. What it signed is built here, so that a
+    // verifier given it checks the signature over this handshake and no
+    // other.
     if ((r = get_message(t, HS_CERTIFICATE_VERIFY, &body, &len)) != 0) return r;
     c = (cur_t){ body, len, 0 };
-    take16(&c);
+    uint32_t scheme = take16(&c);
     cur_t sig = sub(&c, take16(&c));
     if (c.bad || c.n || !sig.n) return fail(t, TLS_E_DECODE, AL_DECODE_ERROR);
+    if (!handshake_scheme_ok(scheme)) return fail(t, TLS_E_PARAM, AL_ILLEGAL_PARAMETER);
+    if (t->verify && (r = ask_verifier(t, scheme, sig.p, sig.n)) != 0) return r;
     hs_done(t, 1);
 
     // Finished (4.4.4): the server's checksum of everything up to here.
@@ -703,8 +784,12 @@ int tls_connect(tls_t* t, const char* server_name) {
     // The name goes into the hello as it is, so it must be a plain host
     // name. An address is not a name and is left out (RFC 6066).
     uint32_t ip;
-    t->name[0] = 0;
-    if (server_name && parse_ipv4(server_name, &ip) != 0) {
+    t->name[0] = t->asked[0] = 0;
+    if (server_name && parse_ipv4(server_name, &ip) == 0) {
+        size_t n = strlen(server_name);
+        if (n >= sizeof t->asked) return fail(t, TLS_E_NAME, NO_ALERT);
+        memcpy(t->asked, server_name, n + 1);
+    } else if (server_name) {
         size_t n = strlen(server_name);
         if (n && server_name[n - 1] == '.') n--;
         if (n == 0 || n > 253) return fail(t, TLS_E_NAME, NO_ALERT);
@@ -716,6 +801,7 @@ int tls_connect(tls_t* t, const char* server_name) {
         }
         memcpy(t->name, server_name, n);
         t->name[n] = 0;
+        memcpy(t->asked, t->name, n + 1);
     }
     uint8_t fresh[32 + 32 + X25519_LEN];
     int r = t->io.random(t->io.ctx, fresh, sizeof fresh);
@@ -847,10 +933,13 @@ int tls_close(tls_t* t) {
     return r ? fail(t, r, NO_ALERT) : 0;
 }
 
-int tls_peer_verified(const tls_t* t) {
-    (void)t;
-    return 0;
+void tls_set_verify(tls_t* t, tls_verify_fn fn, void* ctx) {
+    if (t->state != ST_NEW) return;
+    t->verify = fn;
+    t->verify_ctx = ctx;
 }
+
+int tls_peer_verified(const tls_t* t) { return t->verified && (t->state == ST_OPEN || t->state == ST_EOF); }
 
 tls_t* tls_new(const tls_io_t* io) {
     tls_t* t = malloc(sizeof *t);
@@ -867,6 +956,7 @@ void tls_free(tls_t* t) {
         ct_wipe(t->hs, t->hs_cap);
         free(t->hs);
     }
+    free(t->certs);
     ct_wipe(t, sizeof *t);
     free(t);
 }
@@ -897,6 +987,12 @@ const char* tls_strerror(int err) {
     case TLS_E_NOMEM: return "out of memory";
     case TLS_E_CLOSED: return "the connection is closed";
     case TLS_E_NAME: return "not a host name a certificate could be for";
+    case TLS_E_CERT_BAD: return "the server's certificate is not one we can trust";
+    case TLS_E_CERT_UNSUPPORTED: return "the server's certificate uses a kind of key or signature we cannot check";
+    case TLS_E_CERT_EXPIRED: return "the server's certificate has expired or is not yet valid";
+    case TLS_E_CERT_UNKNOWN_CA: return "the server's certificate is not signed by anyone we trust";
+    case TLS_E_CERT_NAME: return "the server's certificate is for some other name";
+    case TLS_E_CERT_SIGNATURE: return "the server's signature does not match its certificate";
     }
     if (err <= TLS_E_ALERT && err > TLS_E_ALERT - 256) {
         int code = TLS_E_ALERT - err;
