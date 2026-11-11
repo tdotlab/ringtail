@@ -36,8 +36,9 @@ TLS_SRCS = test_tls.c ../src/programs/lib/tls.c $(CRYPTO_LIB)
 
 SIG_LIB = ../src/programs/lib/sig.c ../src/programs/lib/sha512.c ../src/lib/sha256.c
 SIG_HDRS = ../src/programs/lib/sig.h ../src/programs/lib/sha512.h ../src/programs/lib/der.h
+X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 
-HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_crypto test_tls test_sig
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_crypto test_tls test_sig test_x509
 
 all: $(HOST_TESTS)
 
@@ -65,6 +66,9 @@ test_tls: $(TLS_SRCS) $(CRYPTO_HDRS) ../src/programs/lib/tls.h tls_cases.h
 test_sig: test_sig.c $(SIG_LIB) $(SIG_HDRS) sig_cases.h
 	$(CC) $(CRYPTO_CFLAGS) -o $@ test_sig.c $(SIG_LIB)
 
+test_x509: $(X509_SRCS) $(SIG_HDRS) ../src/programs/lib/x509.h ../src/programs/lib/tls.h x509_cases.h
+	$(CC) $(CRYPTO_CFLAGS) -o $@ $(X509_SRCS)
+
 run: $(HOST_TESTS)
 	./$(TEST) || qemu-i386 ./$(TEST)
 	./test_netmsg
@@ -74,6 +78,7 @@ run: $(HOST_TESTS)
 	./test_crypto
 	./test_tls
 	./test_sig
+	./test_x509
 	@if command -v fsck.fat >/dev/null; then \
 		fsck.fat -n test_disk.img >/dev/null && echo "fsck.fat: disk image is clean"; \
 	else echo "fsck.fat not installed, skipping the image check"; fi
