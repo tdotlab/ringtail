@@ -17,7 +17,7 @@
 //
 //   test_tls                          run every case
 //   test_tls N                        run case N, noisily
-//   test_tls --live PORT SEED HOST REQUEST-HEX
+//   test_tls --live PORT SEED HOST REQUEST-HEX AGAIN-HEX
 //       be the client for a server on 127.0.0.1 (used when recording)
 #include <stdint.h>
 #include <stdio.h>
@@ -30,7 +30,94 @@
 #include <arpa/inet.h>
 #include "tls.h"
 #include "sha256.h"
+
+// A recorded conversation, as tls_cases.h has it: bytes are hex strings.
+typedef struct {
+    const char* name;
+    const char* host;         // the name the client asks for; "" for none
+    uint32_t seed;            // of the client's random numbers
+    const char* request;      // what the client sends once connected
+    const char* again;        // and what it sends after its first read gives data
+    const char* server;       // every byte the server sent
+    const char* client_hash;  // SHA-256 of every byte the client sent,
+    uint32_t client_len;      //   and how many there were
+    const char* data;         // what the client should read
+    int connect, final;       // tls_connect's result; the result of the read that ended it
+    int abuse;                // a good conversation, to be cut short and damaged
+    uint32_t ignorable;       // how many of its bytes TLS says to ignore
+} tls_record_t;
+
+#ifndef NO_CASES
 #include "tls_cases.h"
+#else  // (gen_tls_cases.py builds the client this way, to make that file)
+static const tls_record_t tls_records[] = { { "", "", 0, "", "", "", "", 0, "", 0, 0, 0, 0 } };
+#endif
+
+// The abuse below replays each conversation thousands of times, and
+// every replay would do the same two X25519 computations, which are
+// most of a handshake's work. The linker is told (--wrap) to send the
+// client's calls here instead, where an answer worked out once is
+// remembered. The real function has a test of its own (test_crypto).
+int __real_x25519(uint8_t shared[32], const uint8_t secret[32], const uint8_t their_public[32]);
+void __real_x25519_public(uint8_t public[32], const uint8_t secret[32]);
+
+static struct {
+    uint8_t secret[32], other[32], out[32];
+    int result, used;
+} memo[64];
+static uint32_t memo_next;
+
+int __wrap_x25519(uint8_t shared[32], const uint8_t secret[32], const uint8_t their_public[32]) {
+    for (uint32_t i = 0; i < 64; i++) {
+        if (memo[i].used && !memcmp(memo[i].secret, secret, 32) && !memcmp(memo[i].other, their_public, 32)) {
+            memcpy(shared, memo[i].out, 32);
+            return memo[i].result;
+        }
+    }
+    uint32_t i = memo_next++ % 64;
+    memcpy(memo[i].secret, secret, 32);
+    memcpy(memo[i].other, their_public, 32);
+    memo[i].result = __real_x25519(memo[i].out, secret, their_public);
+    memo[i].used = 1;
+    memcpy(shared, memo[i].out, 32);
+    return memo[i].result;
+}
+
+void __wrap_x25519_public(uint8_t public[32], const uint8_t secret[32]) {
+    static const uint8_t base[32] = { 9 };  // the public value is the secret times the curve's base point
+    __wrap_x25519(public, secret, base);
+}
+
+// tls.c wants this from the system's library; here the host's will do.
+int parse_ipv4(const char* s, uint32_t* out) {
+    struct in_addr a;
+    if (inet_pton(AF_INET, s, &a) != 1) return -1;
+    *out = ntohl(a.s_addr);
+    return 0;
+}
+
+// The same with the hex undone.
+typedef struct {
+    const char *name, *host;
+    uint32_t seed;
+    uint8_t *request, *again, *server, *data;
+    uint32_t request_len, again_len, server_len, data_len, client_len;
+    uint8_t client_hash[32];
+    int connect, final, abuse;
+    uint32_t ignorable;
+} tls_case_t;
+
+static uint8_t* unhex(const char* hex, uint32_t* len) {
+    uint32_t n = (uint32_t)strlen(hex) / 2;
+    uint8_t* p = malloc(n + 1);
+    for (uint32_t i = 0; i < n; i++) {
+        unsigned v = 0;
+        sscanf(hex + 2 * i, "%2x", &v);
+        p[i] = (uint8_t)v;
+    }
+    *len = n;
+    return p;
+}
 
 static int failures, checks;
 
@@ -76,22 +163,21 @@ typedef struct {
 } result_t;
 
 // The client program every case runs: connect, send the request, read
-// to the end, say goodbye.
-static void drive(const tls_io_t* io, const char* host, const uint8_t* req, uint32_t reqlen, result_t* res) {
+// to the end (sending `again` once the first data has come), say goodbye.
+static void drive(const tls_io_t* io, const tls_case_t* c, result_t* res) {
     memset(res, 0, sizeof *res);
     tls_t* t = tls_new(io);
-    res->connect = tls_connect(t, host[0] ? host : 0);
+    res->connect = tls_connect(t, c->host[0] ? c->host : 0);
     if (res->connect == 0) {
-        int w = reqlen ? tls_write(t, req, reqlen) : 0;
-        if (w < 0) {
-            res->final = w;
-        } else {
-            uint8_t chunk[1000];
-            int r;
-            while ((r = tls_read(t, chunk, sizeof chunk)) > 0) put(&res->data, chunk, (uint32_t)r);
-            res->final = r;
-            tls_close(t);
+        int r = c->request_len ? tls_write(t, c->request, c->request_len) : 0, first = 1;
+        uint8_t chunk[1000];
+        while (r >= 0 && (r = tls_read(t, chunk, sizeof chunk)) > 0) {
+            put(&res->data, chunk, (uint32_t)r);
+            if (first && c->again_len) r = tls_write(t, c->again, c->again_len);
+            first = 0;
         }
+        res->final = r;
+        tls_close(t);
     } else if (tls_read(t, &res->final, 1) != res->connect || tls_write(t, "x", 1) != res->connect) {
         res->connect = -1;  // a dead connection must stay dead, with the same error
     }
@@ -134,16 +220,24 @@ static int replay_write(void* ctx, const void* buf, uint32_t n) {
     return 0;
 }
 
+static int replay_random(void* ctx, void* out, uint32_t n) { return fake_random(&((replay_t*)ctx)->rng, out, n); }
+
 static void replay(const tls_case_t* c, const uint8_t* server, uint32_t server_len, int mode, result_t* res, buf_t* sent) {
     replay_t r = { server, server_len, 0, mode, c->seed, { 0 }, { c->seed, 0 } };
-    tls_io_t io = { replay_read, replay_write, fake_random, &r };
-    drive(&io, c->host, c->request, c->request_len, res);
+    tls_io_t io = { replay_read, replay_write, replay_random, &r };
+    drive(&io, c, res);
     *sent = r.out;
 }
 
 static int same(const result_t* res, const tls_case_t* c) {
     return res->connect == c->connect && res->final == c->final && res->data.n == c->data_len &&
            (c->data_len == 0 || memcmp(res->data.p, c->data, c->data_len) == 0);
+}
+
+static int sent_same(const buf_t* sent, const tls_case_t* c) {
+    uint8_t h[32];
+    sha256(sent->p, sent->n, h);
+    return sent->n == c->client_len && memcmp(h, c->client_hash, 32) == 0;
 }
 
 static void check(int ok, const tls_case_t* c, const char* what, const result_t* res) {
@@ -167,15 +261,14 @@ static void run_case(const tls_case_t* c, int verbose) {
                res.data.n, sent.n);
     }
     check(same(&res, c), c, "the outcome is the recorded one", &res);
-    check(sent.n == c->client_len && (sent.n == 0 || memcmp(sent.p, c->client, sent.n) == 0), c,
-          "the client sends the recorded bytes", 0);
+    check(sent_same(&sent, c), c, "the client sends the recorded bytes", 0);
     free(res.data.p);
     free(sent.p);
 
     // However the bytes are cut up on arrival, nothing changes.
     for (int mode = 1; mode <= 2; mode++) {
         replay(c, c->server, c->server_len, mode, &res, &sent);
-        check(same(&res, c) && sent.n == c->client_len && (sent.n == 0 || memcmp(sent.p, c->client, sent.n) == 0), c,
+        check(same(&res, c) && sent_same(&sent, c), c,
               mode == 1 ? "the same, fed a byte at a time" : "the same, fed in odd pieces", &res);
         free(res.data.p);
         free(sent.p);
@@ -244,50 +337,41 @@ static int sock_write(void* ctx, const void* buf, uint32_t n) {
     return 0;
 }
 
-static int live(int port, uint32_t seed, const char* host, const char* req_hex) {
+typedef struct {
+    int s;
+    rng_t rng;
+} live_t;
+
+static int live_random(void* ctx, void* out, uint32_t n) { return fake_random(&((live_t*)ctx)->rng, out, n); }
+
+static int live(int port, uint32_t seed, const char* host, const char* req_hex, const char* again_hex) {
     signal(SIGPIPE, SIG_IGN);
-    int s = socket(AF_INET, SOCK_STREAM, 0);
+    live_t l = { socket(AF_INET, SOCK_STREAM, 0), { seed, 0 } };
     struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (connect(s, (struct sockaddr*)&a, sizeof a) != 0) {
+    if (connect(l.s, (struct sockaddr*)&a, sizeof a) != 0) {
         perror("connect");
         return 2;
     }
-    uint32_t reqlen = (uint32_t)strlen(req_hex) / 2;
-    uint8_t* req = malloc(reqlen + 1);
-    for (uint32_t i = 0; i < reqlen; i++) {
-        unsigned v;
-        sscanf(req_hex + 2 * i, "%2x", &v);
-        req[i] = (uint8_t)v;
-    }
-    rng_t rng = { seed, 0 };
-    tls_io_t io = { sock_read, sock_write, fake_random, &s };
-    io.ctx = &s;
-    // fake_random wants its own context: wrap the two.
-    struct { int s; rng_t rng; } both = { s, rng };
-    (void)both;
-    static rng_t live_rng;
-    live_rng = rng;
-    io.random = fake_random;
+    tls_case_t c = { .name = "live", .host = host, .seed = seed };
+    c.request = unhex(req_hex, &c.request_len);
+    c.again = unhex(again_hex, &c.again_len);
+    tls_io_t io = { sock_read, sock_write, live_random, &l };  // (the socket is first in live_t)
     result_t res;
-    // The socket functions take &s, the random function &live_rng: one ctx will not do for both.
-    extern int live_random(void* ctx, void* out, uint32_t n);
-    io.random = live_random;
-    drive(&io, host, req, reqlen, &res);
-    shutdown(s, SHUT_WR);
-    close(s);
+    drive(&io, &c, &res);
+    // Hang up politely: say we are done, then wait for the server to be,
+    // so nothing either side sent is thrown away by a reset.
+    shutdown(l.s, SHUT_WR);
+    uint8_t rest[4096];
+    while (read(l.s, rest, sizeof rest) > 0) {}
+    close(l.s);
     printf("connect=%d final=%d data=", res.connect, res.final);
     for (uint32_t i = 0; i < res.data.n; i++) printf("%02x", res.data.p[i]);
     printf("\n");
-    free(req);
+    free(c.request);
+    free(c.again);
     free(res.data.p);
     return 0;
-}
-
-static rng_t live_rng_state;
-int live_random(void* ctx, void* out, uint32_t n) {
-    (void)ctx;
-    return fake_random(&live_rng_state, out, n);
 }
 
 // The key schedule's one building block, against RFC 8448's worked
@@ -325,17 +409,28 @@ static void test_expand_label(void) {
 }
 
 int main(int argc, char** argv) {
-    if (argc == 6 && !strcmp(argv[1], "--live")) {
-        live_rng_state = (rng_t){ (uint32_t)atoi(argv[3]), 0 };
-        return live(atoi(argv[2]), (uint32_t)atoi(argv[3]), argv[4], argv[5]);
-    }
-    int n = (int)(sizeof tls_cases / sizeof *tls_cases);
-    if (argc > 1) {
-        int i = atoi(argv[1]);
-        if (i >= 0 && i < n) run_case(&tls_cases[i], 1);
-    } else {
-        test_expand_label();
-        for (int i = 0; i < n; i++) run_case(&tls_cases[i], 0);
+    if (argc == 7 && !strcmp(argv[1], "--live"))
+        return live(atoi(argv[2]), (uint32_t)strtoul(argv[3], 0, 10), argv[4], argv[5], argv[6]);
+    int n = (int)(sizeof tls_records / sizeof *tls_records), only = argc > 1 ? atoi(argv[1]) : -1;
+    if (only < 0) test_expand_label();
+    for (int i = 0; i < n; i++) {
+        if (only >= 0 && i != only) continue;
+        const tls_record_t* r = &tls_records[i];
+        tls_case_t c = { .name = r->name, .host = r->host, .seed = r->seed, .client_len = r->client_len,
+                         .connect = r->connect, .final = r->final, .abuse = r->abuse, .ignorable = r->ignorable };
+        uint32_t hash_len;
+        uint8_t* hash = unhex(r->client_hash, &hash_len);
+        memcpy(c.client_hash, hash, 32);
+        c.request = unhex(r->request, &c.request_len);
+        c.again = unhex(r->again, &c.again_len);
+        c.server = unhex(r->server, &c.server_len);
+        c.data = unhex(r->data, &c.data_len);
+        run_case(&c, only >= 0);
+        free(hash);
+        free(c.request);
+        free(c.again);
+        free(c.server);
+        free(c.data);
     }
     printf("test_tls: %d of %d checks pass (%d recorded conversations)\n", checks - failures, checks, n);
     return failures ? 1 : 0;

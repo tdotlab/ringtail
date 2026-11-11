@@ -243,18 +243,19 @@ static int read_record(tls_t* t, uint8_t* type, uint32_t* len) {
         }
         // With a key in place nothing but sealed records may come.
         if (outer != REC_APPDATA) return fail(t, TLS_E_PROTOCOL, AL_UNEXPECTED_MESSAGE);
-        if (n < 1 + TAG) return fail(t, TLS_E_BAD_MAC, AL_BAD_RECORD_MAC);
+        if (n < TAG) return fail(t, TLS_E_BAD_MAC, AL_BAD_RECORD_MAC);
         uint8_t nonce[CHACHAPOLY_NONCE_LEN];
         nonce_for(&t->rd, nonce);
         uint32_t m = n - TAG;
         if (chachapoly_open(t->rd.key, nonce, h, HEADER, h + HEADER, m, h + HEADER + m, h + HEADER))
             return fail(t, TLS_E_BAD_MAC, AL_BAD_RECORD_MAC);
         t->rd.seq++;
-        // Inside: the contents, the real type, then any number of zeros as padding.
+        // Inside: the contents, the real type, then any number of zeros as
+        // padding. All of it together has a limit of its own (5.4).
+        if (m > MAX_PLAIN + 1) return fail(t, TLS_E_TOO_BIG, AL_RECORD_OVERFLOW);
         while (m && h[HEADER + m - 1] == 0) m--;
         if (!m) return fail(t, TLS_E_PROTOCOL, AL_UNEXPECTED_MESSAGE);
         *type = h[HEADER + --m];
-        if (m > MAX_PLAIN) return fail(t, TLS_E_TOO_BIG, AL_RECORD_OVERFLOW);
         if (*type < REC_ALERT || *type > REC_APPDATA) return fail(t, TLS_E_PROTOCOL, AL_UNEXPECTED_MESSAGE);
         *len = m;
         return 0;
@@ -771,9 +772,9 @@ static void update_keys(keys_t* k) {
 // Handshake messages that come once the connection is up (4.6).
 static int post_handshake(tls_t* t) {
     for (;;) {
-        uint8_t type;
-        const uint8_t* body;
-        uint32_t len;
+        uint8_t type = 0;
+        const uint8_t* body = 0;
+        uint32_t len = 0;
         int r = hs_peek(t, &type, &body, &len);
         if (r <= 0) return r;
         if (type == HS_NEW_SESSION_TICKET) {
