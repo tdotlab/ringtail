@@ -23,6 +23,7 @@
 #include "task.h"
 #include "mm.h"
 #include "netpriv.h"
+#include "random.h"
 #include "tcp.h"
 
 #define ICMP_ECHO_REPLY   0
@@ -98,14 +99,12 @@ uint16_t csum_fold(uint32_t sum) {
 
 static int mac_eq(const uint8_t* a, const uint8_t* b) { return memcmp(a, b, ETH_ALEN) == 0; }
 
-// Not for secrets: ports, DHCP transaction ids. xorshift32, stirred
-// with the clock each time so that two boots part ways quickly.
+// Ports, transaction ids, the secret behind TCP's sequence numbers:
+// all things a stranger must not be able to guess, so they come from
+// the kernel's generator (random.h).
 uint32_t net_random(void) {
-    static uint32_t x = 0x2545F491u;
-    x ^= timer_micros();
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
+    uint32_t x;
+    random_bytes(&x, sizeof x);
     return x;
 }
 

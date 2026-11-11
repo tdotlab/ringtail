@@ -7,6 +7,7 @@
 #include "task.h"
 #include "mm.h"
 #include "drivers.h"
+#include "random.h"
 #include "ringtail/abi.h"
 
 typedef struct {
@@ -165,6 +166,7 @@ static void handle_irq(int irq) {
         outb(PIC1_CMD, PIC_EOI);
         return;
     }
+    random_event((uint32_t)irq);  // when it came is something nobody could have known
     if (irq_handlers[irq]) irq_handlers[irq]();
     if (irq >= 8) outb(PIC2_CMD, PIC_EOI);
     outb(PIC1_CMD, PIC_EOI);

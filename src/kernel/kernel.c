@@ -9,6 +9,7 @@
 #include "mm.h"
 #include "fs.h"
 #include "net.h"
+#include "random.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002u
 #define MB_FLAG_CMDLINE (1u << 2)
@@ -100,6 +101,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     gdt_init();
     idt_init();
     fpu_init();
+    random_init();
     setup_memory();
     task_init();
     gfx_init_font();  // needs text mode, so before anything can switch

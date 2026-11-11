@@ -4,9 +4,8 @@
 // each time. An answer counts only if it comes from that server's
 // address and port, carries the query's ID and repeats its question;
 // anything else is ignored, so a stranger who wants to slip in a false
-// one has to guess the ID and the random port the kernel bound. The ID
-// comes from a generator seeded with the clock, the task and that port:
-// weak, but the port is the harder half to guess.
+// one has to guess the ID and the random port the kernel bound. Both
+// come from the kernel's random number generator.
 #include "ulib.h"
 #include "dns.h"
 
@@ -19,13 +18,10 @@ typedef struct {
     char domain[64];
 } ctx_t;
 
-static uint32_t rng;
-
 static uint16_t new_id(void) {
-    rng ^= rng << 13;
-    rng ^= rng >> 17;
-    rng ^= rng << 5;
-    return (uint16_t)(rng >> 8);
+    uint16_t id = 0;
+    sys_random(&id, sizeof id);
+    return id;
 }
 
 static int open_ctx(ctx_t* c, uint32_t server, int port) {
@@ -45,8 +41,6 @@ static int open_ctx(ctx_t* c, uint32_t server, int port) {
         sys_close(c->fd);
         return p;
     }
-    rng ^= sys_ticks() * 2654435761u ^ (uint32_t)sys_getpid() << 16 ^ (uint32_t)p << 3;
-    if (!rng) rng = 0x9E3779B9u;
     return 0;
 }
 

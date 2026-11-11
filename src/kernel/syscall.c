@@ -16,6 +16,8 @@
 #include "drivers.h"
 #include "arch.h"
 #include "net.h"
+#include "random.h"
+#include "ct.h"
 #include "ringtail/abi.h"
 
 typedef int (*syscall_fn)(uint32_t a, uint32_t b, uint32_t c);
@@ -355,6 +357,16 @@ static int sys_fdtype(uint32_t fd, uint32_t b, uint32_t c) {
     return file_fdtype((int)fd);
 }
 
+static int sys_random(uint32_t ubuf, uint32_t len, uint32_t c) {
+    (void)c;
+    uint8_t buf[RANDOM_MAX];
+    if (len > sizeof buf) return -EINVAL;
+    random_bytes(buf, len);
+    int r = copy_to_user((void*)ubuf, buf, len) ? -EFAULT : (int)len;
+    ct_wipe(buf, sizeof buf);  // they may be somebody's key
+    return r;
+}
+
 static int sys_sendto(uint32_t fd, uint32_t umsg, uint32_t c) {
     (void)c;
     struct socket* s;
@@ -661,6 +673,7 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_SOCKADDR] = sys_sockaddr,
     [SYS_POLLFD] = sys_pollfd,
     [SYS_FDTYPE] = sys_fdtype,
+    [SYS_RANDOM] = sys_random,
 };
 
 void syscall_handle(regs_t* r) {

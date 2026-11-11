@@ -50,6 +50,9 @@ static inline int sys_shutdown(int fd, int how) { return SC2(SYS_SHUTDOWN, fd, h
 static inline int sys_sockaddr(int fd, int peer, sock_addr_t* a) { return SC3(SYS_SOCKADDR, fd, peer, a); }
 static inline int sys_pollfd(pollfd_t* fds, int n, int timeout_ms) { return SC3(SYS_POLLFD, fds, n, timeout_ms); }
 static inline int sys_fdtype(int fd) { return SC1(SYS_FDTYPE, fd); }
+// Random bytes fit for keys, from the kernel's generator. At most
+// RANDOM_MAX a call.
+static inline int sys_random(void* buf, uint32_t len) { return SC2(SYS_RANDOM, buf, len); }
 static inline int sys_seek(int fd, int32_t off, int whence) { return SC3(SYS_SEEK, fd, off, whence); }
 static inline int sys_list(int index, char* buf, uint32_t size) { return SC3(SYS_LIST, index, buf, size); }
 static inline int sys_spawn(const char* name) { return SC2(SYS_SPAWN, name, 0); }

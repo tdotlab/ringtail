@@ -67,7 +67,8 @@
 #define SYS_SOCKADDR    57  // (fd, peer, sock_addr_t*) -> 0; the local address, or with peer the remote one
 #define SYS_POLLFD      58  // (pollfd_t*, n, timeout_ms) -> how many descriptors have something
 #define SYS_FDTYPE      59  // (fd)                    -> FDTYPE_*
-#define NUM_SYSCALLS    60
+#define SYS_RANDOM      60  // (buf, len)              -> len; random bytes fit for keys, 256 at most a call
+#define NUM_SYSCALLS    61
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -307,6 +308,12 @@ typedef struct { int fd, events, revents; } pollfd_t;
 #define FDTYPE_PIPE 3
 #define FDTYPE_UDP  4
 #define FDTYPE_TCP  5
+
+// SYS_RANDOM: bytes nobody can predict, for keys and anything else an
+// attacker must not guess. They come from the kernel's generator, which
+// feeds on interrupt timing (and the CPU's own generator where it has
+// one). Never blocks. At most RANDOM_MAX bytes a call (-EINVAL beyond).
+#define RANDOM_MAX 256
 
 // SYS_NETCONF. NETCONF_GET fills in the configuration. NETCONF_STATIC
 // sets ip, mask, gw and dns by hand (gw and dns may be 0 for none) and
