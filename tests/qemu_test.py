@@ -275,7 +275,14 @@ def tests(m, t):
     # server; nobody else on 10.0.2.0/24 answers.
     t.check("finds the network card", "Network: e1000 82540EM 52:54:00:12:34:56\n" in boot, boot)
     t.check("and gets an address from DHCP before the shell starts",
-            "Network: 10.0.2.15/24, gateway 10.0.2.2, DNS 10.0.2.3 (DHCP)\nType 'help'" in boot, boot)
+            "Network: 10.0.2.15/24, gateway 10.0.2.2, DNS 10.0.2.3 (DHCP)\nClock: " in boot, boot)
+    # QEMU's DHCP names no time server, so the boot sync asks the pool,
+    # which may or may not answer from here: any of its three endings will do.
+    clock = re.search(r"\nClock: ([^\n]*)\nType 'help'", boot)
+    t.check("then the clock is set from pool.ntp.org, or said not to be, in one line",
+            clock and "pool.ntp.org" in clock.group(1) and re.match(
+                r"(set to \d{4}-\d\d-\d\d \d\d:\d\d:\d\d by |\d{4}-\d\d-\d\d \d\d:\d\d:\d\d, "
+                r"(right to within half a second by |as the CMOS has it \())", clock.group(1)), boot)
     out = m.run("pci")
     t.check("pci lists the bus", re.search(r"00:03\.0  8086:100e  Intel ethernet +irq 11", out) and
             "Intel IDE controller" in out, out)
@@ -1137,6 +1144,35 @@ def _ntp_tests(m, t, srv):
     srv.set("good")
     out, _ = sntp("10.0.2.2")
     t.check("sntp puts it right again", "the clock was 2028-03-01 00:00:" in out and abs(skew()) < 3, out)
+
+    # -b, as init runs it at boot: one line, one quick try.
+    srv.set("good", offset=7200)  # forward: back could cross the build's floor
+    out, _ = sntp("-b 10.0.2.2")
+    t.check("sntp -b sets the clock and says so in one line",
+            re.fullmatch(r"Clock: set to \d{4}-\d\d-\d\d \d\d:\d\d:\d\d by 10\.0\.2\.2 \(it was 7\d{3}\.\d{3} s slow\)\n", out)
+            and abs(skew() - 7200) < 3, out)
+    srv.set("good")
+    out, _ = sntp("-b -q 10.0.2.2")
+    t.check("-b -q says how far off and leaves it", re.fullmatch(
+            r"Clock: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d, 7\d{3}\.\d{3} s fast by 10\.0\.2\.2; left as it is\n", out)
+            and abs(skew() - 7200) < 3, out)
+    out, _ = sntp("-b 10.0.2.2")
+    t.check("and without -q puts it right", "Clock: set to " in out and "s fast)" in out and abs(skew()) < 3, out)
+    out, _ = sntp("-b 10.0.2.2")
+    t.check("a clock that is right is said to be", re.fullmatch(
+            r"Clock: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d, right to within half a second by 10\.0\.2\.2\n", out), out)
+    srv.set("silent")
+    out, took = sntp("-b 10.0.2.2")
+    t.check("with no answer, -b gives up after one try of a second, in one line", re.fullmatch(
+            r"Clock: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d, as the CMOS has it \(10\.0\.2\.2: no answer\)\n\[exit status 1\]\n", out)
+            and len(srv.requests) == 1 and 0.5 < took < 2.5, "%.2f s, %d requests: %r" % (took, len(srv.requests), out))
+    srv.set("good", at=epoch(2001, 1, 1))
+    out, _ = sntp("-b 10.0.2.2")
+    t.check("and a time before the build is turned down in the same line",
+            "as the CMOS has it (10.0.2.2: says it is 2001-01-01 00:00:0" in out and
+            ", before this system was built)\n[exit status 1]\n" in out and out.count("\n") == 2 and abs(skew()) < 3, out)
+    out = plain(m.run("net"))
+    t.check("QEMU's DHCP names no time server", "Time:" not in out, out)
 
     for bad in ["-x", "-p", "-p 0 a", "-p 65536 a", "a b"]:
         out = m.run("sntp " + bad)

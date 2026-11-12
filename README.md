@@ -133,12 +133,15 @@ and `sntp` against `tests/ntp_server.py`, a time server that answers
 in whatever manner the test asks (an hour off, forged, kisses of death
 with escape codes in them, unsynchronised, silent, late, slow, from
 2001 or 2101): the clock is set an hour on and back, to within a tenth
-of a second, and is left alone when it should be; the kernel refuses
+of a second, and is left alone when it should be; `sntp -b` answers in
+its one line, once, quickly; the kernel refuses
 dates that do not exist and times before the build, and runs a leap
-day into March. Afterwards it runs fsck.fat and mtools against the disk. Then it boots
+day into March. The boot's own sync asks pool.ntp.org, since QEMU's
+DHCP names no time server, and passes however that ends. Afterwards it runs fsck.fat and mtools against the disk. Then it boots
 again on a socket network whose only other host is `tests/net_peer.py`,
-which puts raw Ethernet frames on the wire and plays the network's DHCP
-and DNS server. It checks the DHCP messages field by field and a lease's
+which puts raw Ethernet frames on the wire and plays the network's DHCP,
+DNS and time server: the guest must set its clock at boot from the time
+server DHCP names, without looking anything up. It checks the DHCP messages field by field and a lease's
 whole life (renewing, rebinding, running out, NAKs, lying servers, an
 address set by hand), ARP and pings of every size and shape, packets
 that must be ignored (bad checksums, fragments, other addresses,
@@ -161,7 +164,8 @@ and the physical frame pool are sized from the Multiboot memory map. A program's
 
 Tasks: a round-robin, preemptive scheduler runs on the 100 Hz PIT. The
 kernel's own tasks (idle, init) and user programs are scheduled the same
-way. init starts SAKLAS from the disk, hands it the terminal, and starts a
+way. init gives DHCP its chance, runs `sntp -b` once if the network is
+up, then starts SAKLAS from the disk, hands it the terminal, and starts a
 fresh one whenever it ends. A program that faults is killed and the fault is
 logged (`faults` in the shell). A kill takes effect at the next safe
 point, never in the middle of a kernel operation. The tty belongs to one
@@ -247,7 +251,8 @@ closed port gets ICMP port unreachable unless it was a broadcast. The
 DHCP client (RFC 2131) runs in the net task: DISCOVER at boot, renewing
 at T1 straight to the server, rebinding at T2 by broadcast, starting over
 when the lease runs out or on a NAK, which it answers more slowly each
-time. init gives it five seconds before starting the shell. `net static`
+time. It asks for, and keeps, the time servers (option 42) as well as
+the DNS ones. init gives it five seconds before starting the shell. `net static`
 turns it off and sets the address by hand; `net dhcp` starts it again,
 asking for the address DHCP gave last. The DNS resolver is user code
 (`src/programs/lib/dns.c` over `dnsmsg.c`), linked into the programs
@@ -300,7 +305,12 @@ clock for the exchange is the CMOS second it waits to turn over plus
 timer ticks since, so the offset is good to about 10 ms. A wire
 timestamp is placed in the 136-year era nearest the machine's own
 clock, so the 2036 wrap is handled and a clock reset to 2000 still
-finds 2026.
+finds 2026. Without a server named, sntp asks the time servers DHCP
+gave (`net` lists them as Time), or pool.ntp.org if there are none.
+init runs `sntp -b` at boot, once the network has an address: one try
+of a second at no more than two addresses, then one line, "Clock:",
+saying what it set, or that it left the CMOS time and why, before the
+shell starts.
 
 TLS is user code (`src/programs/lib/tls.c`), a TLS 1.3 client
 (RFC 8446) over any stream of bytes: it makes no system calls and
@@ -395,7 +405,7 @@ Programs on the disk:
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
-| sntp | `sntp [-q] [-p PORT] [SERVER]`: asks a time server (default pool.ntp.org) how far off the clock is and sets it, unless it is right to within half a second; `-q` only asks. Refuses a time before the system was built. |
+| sntp | `sntp [-q] [-b] [-p PORT] [SERVER]`: asks a time server (default: the ones DHCP named, else pool.ntp.org) how far off the clock is and sets it, unless it is right to within half a second; `-q` only asks, `-b` is quick and says it all in one line, as at boot. Refuses a time before the system was built. |
 | fetch | `fetch [-i] [-k] [--ca FILE] [-o FILE] URL`: gets a page over HTTP/1.1, or over HTTPS when the URL starts with `https://`, following up to five redirects. -i shows the headers, -o saves the body. HTTPS checks the server's certificate against the roots in `/roots.pem`, or against the certificates in FILE with --ca; -k skips the check and says so each time. |
 | httpd | `httpd [-p PORT] [-q] [DIR]`: serves DIR (default: the current directory) over HTTP on port 8080, one connection at a time. A directory gives its index.html or a listing; `..` is refused. Logs each request unless -q. Ctrl+C stops it. |
 | nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
@@ -467,11 +477,13 @@ These are deliberate, or simply not done yet. Programs get the x87 FPU
 (its state is saved per task) but not SSE. Long names are ASCII only (a name
 with other characters shows as its short alias). The clock is the CMOS
 one, with no time zone (UTC under QEMU) and no changes for summer time;
-it is set only when someone runs `sntp`, which nothing does at boot
-yet, it is set to the second, and it is not disciplined between sets.
-`sntp` takes one answer from one server, with no NTS, so nobody can
-vouch for it: someone in the middle can set the clock to any time after
-the system was built. DHCP's NTP server option is not asked for. There is no
+it is set by `sntp`, once at boot and whenever someone runs it, to the
+second, and it is not disciplined between sets. A network that comes
+up after boot does not get a sync of its own, and a boot with no
+answer from DNS waits on the resolver (up to 4 s a DNS server) before
+the shell starts. `sntp` takes one answer from one server, with no NTS,
+so nobody can vouch for it: someone in the middle, or a lying DHCP
+server, can set the clock to any time after the system was built. There is no
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and

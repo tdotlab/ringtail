@@ -8,6 +8,7 @@
 #define OPT_DNS      6
 #define OPT_HOSTNAME 12
 #define OPT_DOMAIN   15
+#define OPT_NTP      42
 #define OPT_REQUESTED 50
 #define OPT_LEASE    51
 #define OPT_TYPE     53
@@ -42,7 +43,7 @@ uint32_t dhcp_build(uint8_t* p, const dhcp_req_t* r) {
     if (r->requested) { *o++ = OPT_REQUESTED; *o++ = 4; wr32(o, r->requested); o += 4; }
     if (r->server) { *o++ = OPT_SERVER; *o++ = 4; wr32(o, r->server); o += 4; }
     if (r->type == DHCPDISCOVER || r->type == DHCPREQUEST) {
-        static const uint8_t params[] = { OPT_MASK, OPT_ROUTER, OPT_DNS, OPT_DOMAIN, OPT_LEASE, OPT_T1, OPT_T2 };
+        static const uint8_t params[] = { OPT_MASK, OPT_ROUTER, OPT_DNS, OPT_DOMAIN, OPT_NTP, OPT_LEASE, OPT_T1, OPT_T2 };
         *o++ = OPT_PARAMS; *o++ = sizeof params; memcpy(o, params, sizeof params); o += sizeof params;
         *o++ = OPT_MAXSIZE; *o++ = 2; *o++ = 1500 >> 8; *o++ = 1500 & 255;
         *o++ = OPT_HOSTNAME; *o++ = 8; memcpy(o, "ringtail", 8); o += 8;
@@ -89,6 +90,11 @@ int dhcp_parse(const uint8_t* p, uint32_t len, dhcp_msg_t* m) {
             m->dns[0] = m->dns[1] = 0;
             if (n >= 4) m->dns[0] = rd32(v);
             if (n >= 8) m->dns[1] = rd32(v + 4);
+            break;
+        case OPT_NTP:  // the same shape: addresses, most preferred first
+            m->ntp[0] = m->ntp[1] = 0;
+            if (n >= 4) m->ntp[0] = rd32(v);
+            if (n >= 8) m->ntp[1] = rd32(v + 4);
             break;
         case OPT_LEASE: if (n == 4) { m->lease = rd32(v); m->have |= DHCP_HAVE_LEASE; } break;
         case OPT_T1: if (n == 4) { m->t1 = rd32(v); m->have |= DHCP_HAVE_T1; } break;

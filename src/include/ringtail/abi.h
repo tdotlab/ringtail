@@ -328,7 +328,10 @@ typedef struct { int fd, events, revents; } pollfd_t;
 // mode says which of the two is in charge; with DHCP, ip is 0 until a
 // server has answered, lease is the seconds left (-1 for no end) and
 // server the DHCP server. domain is the DNS domain a server gave, for
-// trying names without a dot in it ("printer" as printer.lan).
+// trying names without a dot in it ("printer" as printer.lan). ntp
+// is the time servers a DHCP server named (option 42), 0 for none;
+// NETCONF_STATIC ignores it and there are none with an address set by
+// hand.
 #define NETCONF_GET    0
 #define NETCONF_STATIC 1
 #define NETCONF_DHCP   2
@@ -338,6 +341,7 @@ typedef struct {
     int lease;
     unsigned server;
     char domain[64];
+    unsigned ntp[2];
 } netconf_t;
 
 #endif

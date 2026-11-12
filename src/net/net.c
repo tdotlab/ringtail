@@ -509,8 +509,8 @@ void net_init(void) {
 
 // From init, before the shell: give DHCP a few seconds, so that the
 // first command typed finds an address, and say what came of it.
-void net_boot_wait(void) {
-    if (!net_dev) return;
+int net_boot_wait(void) {
+    if (!net_dev) return 0;
     uint32_t until = timer_ticks() + BOOT_WAIT;
     while (!net_cfg.ip && (int32_t)(timer_ticks() - until) < 0) task_sleep_ticks(5);
     char line[128];
@@ -526,6 +526,7 @@ void net_boot_wait(void) {
     mutex_unlock(&net_lock);
     if (sb.len) kprintf("Network: %s\n", line);
     else kprintf_color(COLOR_DIM, "Network: no answer from DHCP yet; still asking\n");
+    return sb.len > 0;
 }
 
 // ---- SYS_PING ----
@@ -609,6 +610,8 @@ int net_conf(int op, netconf_t* c) {
         c->dns[0] = net_cfg.dns[0];
         c->dns[1] = net_cfg.dns[1];
         strlcpy(c->domain, net_cfg.domain, sizeof c->domain);
+        c->ntp[0] = net_cfg.ntp[0];
+        c->ntp[1] = net_cfg.ntp[1];
         dhcp_conf(c);
         mutex_unlock(&net_lock);
         return 0;
@@ -631,7 +634,7 @@ int net_conf(int op, netconf_t* c) {
         if (c->dns[i] && !ip_unicast(c->dns[i])) return -EINVAL;
     c->domain[sizeof c->domain - 1] = 0;
     if (!domain_ok(c->domain)) return -EINVAL;
-    ipconf_t n = { ip, mask, c->gw, { c->dns[0], c->dns[1] }, "" };
+    ipconf_t n = { ip, mask, c->gw, { c->dns[0], c->dns[1] }, "", { 0, 0 } };
     strlcpy(n.domain, c->domain, sizeof n.domain);
     mutex_lock(&net_lock);
     dhcp_stop();
@@ -684,6 +687,10 @@ void net_format(sbuf_t* sb) {
         print_ip(sb, net_cfg.dns[i]);
     }
     if (net_cfg.domain[0]) sbprintf(sb, ", domain %s", net_cfg.domain);
+    for (int i = 0; i < 2 && net_cfg.ntp[i]; i++) {
+        sbprintf(sb, i ? ", " : "\nTime:     ");
+        print_ip(sb, net_cfg.ntp[i]);
+    }
     sbprintf(sb, "\nFrames:   %u in, %u out", st.rx, st.tx);
     if (st.tx_failed) sbprintf(sb, " (%u failed)", st.tx_failed);
     sbprintf(sb, "; %u dropped, %u for others, %u fragments, %u bad at the card\n",

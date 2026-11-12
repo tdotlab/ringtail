@@ -40,6 +40,7 @@ typedef struct {
     uint32_t xid, yiaddr, server;
     uint8_t chaddr[6];
     uint32_t mask, router, dns[2];
+    uint32_t ntp[2];         // time servers (option 42), the first two
     uint32_t lease, t1, t2;  // seconds
     int have;
     char domain[64];         // "" unless a sensible one was given

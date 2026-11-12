@@ -17,6 +17,7 @@ import threading
 import time
 
 import dns_server
+import ntp_server
 
 GUEST_MAC = bytes.fromhex("525400123456")
 PEER_MAC = bytes.fromhex("020000000007")
@@ -148,6 +149,10 @@ class Peer:
         self.lease, self.t1, self.t2 = 3600, None, None
         self.dns_servers = [GW_IP]
         self.domain = b"lan"
+        # Time: DHCP names 10.0.2.2 (option 42), which answers SNTP with
+        # the host's time.
+        self.ntp_servers = [GW_IP]
+        self.ntp_queries = []  # (source port, request) of every SNTP request
         # DNS at 10.0.2.2:53 answers from the test zone; 10.0.2.7:53 is
         # a server that fails everything, for a resolver to move on from.
         self.zone = dns_server.Zone(extra={"printer.lan": "10.0.2.7", "gw.lan": "10.0.2.2"})
@@ -192,6 +197,9 @@ class Peer:
             if dport == 53 and f[30:34] in (GW_IP, PEER_IP):
                 self._dns(f)
                 return True
+            if dport == 123 and f[30:34] == GW_IP:
+                self._ntp(f)
+                return True
             return False
         if typ == ETH_IP and f[23] == 1 and f[34] == 8 and f[26:29] == OUR_NET:
             total = struct.unpack("!H", f[16:18])[0]
@@ -226,6 +234,8 @@ class Peer:
         opts += bytes([6, 4 * len(self.dns_servers)]) + b"".join(self.dns_servers)
         if self.domain:
             opts += bytes([15, len(self.domain)]) + self.domain
+        if self.ntp_servers:
+            opts += bytes([42, 4 * len(self.ntp_servers)]) + b"".join(self.ntp_servers)
         opts += bytes([51, 4]) + struct.pack("!I", self.lease)
         if self.t1 is not None:
             opts += bytes([58, 4]) + struct.pack("!I", self.t1)
@@ -280,6 +290,18 @@ class Peer:
             return
         for d in self.zone.handle(q):
             reply(d)
+
+    def _ntp(self, f):
+        total = struct.unpack("!H", f[16:18])[0]
+        q, sport = f[42:14 + total], struct.unpack("!H", f[34:36])[0]
+        self.ntp_queries.append((sport, q))
+        if len(q) < 48:
+            return
+        now = time.time()
+        reply = (struct.pack("!BBbbII", 4 << 3 | 4, 2, 6, -20, 0x100, 0x200) + b"\xc0\x00\x02\x01" +
+                 struct.pack("!Q", ntp_server.ntp_ts(now - 30)) + q[40:48] + struct.pack("!QQ", ntp_server.ntp_ts(now),
+                 ntp_server.ntp_ts(time.time())))
+        self.send(eth(f[6:12], GW_MAC, ETH_IP, ipv4(GW_IP, f[26:30], udp(GW_IP, f[26:30], 123, sport, reply), proto=17)))
 
     def dhcp_wait(self, count, timeout):
         """Waits until the guest has sent count DHCP messages in all."""
@@ -396,6 +418,12 @@ def _peer_tests(m, p, prompt, t):
     boot = plain(m.expect(prompt, 30))
     t.check("[peer] boots with the card on a socket network", "Network: e1000 82540EM 52:54:00:12:34:56" in boot, boot)
     dhcp_boot_tests(p, t, boot)
+    out = plain(m.run("net"))
+    t.check("[peer] net shows the time server", "\nTime:     10.0.2.2\n" in out, out)
+    n = len(p.ntp_queries)
+    out = plain(m.run("sntp -q", timeout=20))
+    t.check("[peer] and sntp asks it when told no server", re.search(r"^10\.0\.2\.2: stratum 2, offset [+-]\d", out, re.M)
+            and len(p.ntp_queries) == n + 1 and not p.dns_queries, out)
 
     # ARP: we ask who 10.0.2.15 is.
     p.send(eth(BROADCAST, PEER_MAC, ETH_ARP, arp(1, PEER_MAC, PEER_IP, bytes(6), GUEST_IP)))
@@ -531,12 +559,16 @@ def dhcp_boot_tests(p, t, boot):
             d["xid"] != ANY, str(d))
     o = d["opts"]
     t.check("[peer] and the options a server needs",
-            o.get(61) == b"\x01" + GUEST_MAC and set(o.get(55, b"")) >= {1, 3, 6, 15, 51} and
+            o.get(61) == b"\x01" + GUEST_MAC and set(o.get(55, b"")) >= {1, 3, 6, 15, 42, 51} and
             o.get(57) == struct.pack("!H", 1500) and o.get(12) == b"ringtail" and 50 not in o and 54 not in o, str(o))
     t.check("[peer] in the 300 bytes old servers insist on", d["len"] >= 300, str(d["len"]))
     t.check("[peer] REQUEST takes the offer from the server that made it",
             r["xid"] == d["xid"] and r["opts"].get(50) == GUEST_IP and r["opts"].get(54) == GW_IP and
             r["ciaddr"] == ANY and r["eth_dst"] == BROADCAST and r["ip_dst"] == ALL, str(r))
+    t.check("[peer] then sets the clock from the time server DHCP named, before the shell starts",
+            re.search(r"\nClock: (set to \S+ \S+ by 10\.0\.2\.2 \(it was|\S+ \S+, right to within half a second "
+                      r"by 10\.0\.2\.2\n)", boot) and len(p.ntp_queries) == 1 and not p.dns_queries,
+            boot + str(p.ntp_queries) + str(p.dns_queries))
 
 
 def udp_tests(m, p, prompt, t):
@@ -717,6 +749,12 @@ def dhcp_tests(m, p, t):
             out + str(p.ping_sources[-1:]))
     out = plain(m.run("host a.test"))
     t.check("[peer] with the DNS server given", "a.test has address 192.0.2.1\n" in out, out)
+    out = plain(m.run("net"))
+    t.check("[peer] and no time server", "Time:" not in out, out)
+    n = len(p.ntp_queries)
+    out = plain(m.run("sntp -q", timeout=30))
+    t.check("[peer] so sntp falls back on pool.ntp.org", "sntp: pool.ntp.org" in out and "[exit status 1]" in out and
+            len(p.ntp_queries) == n, out)
     time.sleep(1)
     t.check("[peer] and DHCP says nothing more", len(p.dhcp_log) == k, str(p.dhcp_log[k:]))
     out = plain(m.run("net dhcp", timeout=20))

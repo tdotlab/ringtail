@@ -67,7 +67,8 @@ static void test_dhcp_build(void) {
     CHECK(o && n == 4 && rd32(o) == 0x0A00020F, "option 50, the address wanted");
     CHECK(!find_opt(p, 54, &n), "no server id in a DISCOVER");
     o = find_opt(p, 55, &n);
-    CHECK(o && n == 7 && o[0] == 1 && o[1] == 3 && o[2] == 6, "option 55 asks for mask, router, DNS...");
+    CHECK(o && n == 8 && o[0] == 1 && o[1] == 3 && o[2] == 6, "option 55 asks for mask, router, DNS...");
+    CHECK(o && memchr(o, 42, (size_t)n), "...and time servers (42)");
     o = find_opt(p, 57, &n);
     CHECK(o && n == 2 && o[0] == 5 && o[1] == 220, "option 57: 1500 bytes will do");
     o = find_opt(p, 12, &n);
@@ -106,7 +107,8 @@ static void test_dhcp_parse(void) {
     static const uint8_t offer[] = {
         53, 1, 2, 54, 4, 10, 0, 2, 2, 1, 4, 255, 255, 255, 0, 3, 8, 10, 0, 2, 2, 10, 0, 2, 1,
         6, 12, 10, 0, 2, 3, 8, 8, 8, 8, 1, 1, 1, 1, 51, 4, 0, 1, 81, 128, 58, 4, 0, 0, 0, 100,
-        59, 4, 0, 0, 0, 200, 15, 13, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', '.', 0, 255,
+        59, 4, 0, 0, 0, 200, 15, 13, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', '.', 0,
+        42, 12, 10, 0, 2, 4, 10, 0, 2, 5, 10, 0, 2, 6, 255,
     };
     int len = server_msg(p, 77, 0x0A00020F, offer, sizeof offer);
     CHECK(dhcp_parse(p, (uint32_t)len, &m) == 0, "an offer parses");
@@ -116,6 +118,7 @@ static void test_dhcp_parse(void) {
     CHECK(m.lease == 86400 && m.t1 == 100 && m.t2 == 200, "lease, T1 and T2");
     CHECK(m.have == (DHCP_HAVE_MASK | DHCP_HAVE_LEASE | DHCP_HAVE_T1 | DHCP_HAVE_T2), "and which of those came");
     CHECK(!strcmp(m.domain, "example.com"), "the domain, without its trailing dot and NUL");
+    CHECK(m.ntp[0] == 0x0A000204 && m.ntp[1] == 0x0A000205, "the first two time servers");
 
     CHECK(dhcp_parse(p, 239, &m) == -1, "too short for the cookie");
     p[0] = 1;
@@ -148,12 +151,21 @@ static void test_dhcp_parse(void) {
     static const uint8_t two_dns[] = { 53, 1, 5, 6, 4, 1, 1, 1, 1, 6, 4, 9, 9, 9, 9, 255 };
     CHECK(dhcp_parse(p, (uint32_t)server_msg(p, 1, 1, two_dns, sizeof two_dns), &m) == 0 &&
           m.dns[0] == 0x09090909 && m.dns[1] == 0, "a repeated option: the last one counts");
+    static const uint8_t ntp_odd[] = { 53, 1, 5, 42, 3, 1, 2, 3, 255 };
+    CHECK(dhcp_parse(p, (uint32_t)server_msg(p, 1, 1, ntp_odd, sizeof ntp_odd), &m) == 0 && m.ntp[0] == 0,
+          "a time server option too short for an address");
+    static const uint8_t ntp_two[] = { 53, 1, 5, 42, 8, 1, 1, 1, 1, 2, 2, 2, 2, 255 };
+    CHECK(dhcp_parse(p, (uint32_t)server_msg(p, 1, 1, ntp_two, sizeof ntp_two), &m) == 0 &&
+          m.ntp[0] == 0x01010101 && m.ntp[1] == 0x02020202, "exactly two time servers");
+    static const uint8_t ntp_again[] = { 53, 1, 5, 42, 8, 1, 1, 1, 1, 2, 2, 2, 2, 42, 4, 9, 9, 9, 9, 255 };
+    CHECK(dhcp_parse(p, (uint32_t)server_msg(p, 1, 1, ntp_again, sizeof ntp_again), &m) == 0 &&
+          m.ntp[0] == 0x09090909 && m.ntp[1] == 0, "time servers given twice: the last option counts, all of it");
 }
 
 static void fuzz_dhcp(void) {
     static const uint8_t base[] = {
         53, 1, 5, 54, 4, 10, 0, 2, 2, 1, 4, 255, 255, 255, 0, 3, 4, 10, 0, 2, 2, 6, 8, 10, 0, 2, 3, 8, 8, 8, 8,
-        51, 4, 0, 1, 81, 128, 15, 7, 'a', '.', 'b', '-', 'c', '.', 0, 255,
+        51, 4, 0, 1, 81, 128, 15, 7, 'a', '.', 'b', '-', 'c', '.', 0, 42, 8, 10, 0, 2, 4, 10, 0, 2, 5, 255,
     };
     uint8_t p[576];
     int ok = 1;

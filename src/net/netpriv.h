@@ -31,6 +31,7 @@ extern uint8_t net_txbuf[ETH_FRAME_MAX];
 typedef struct {
     uint32_t ip, mask, gw, dns[2];
     char domain[64];
+    uint32_t ntp[2];  // time servers DHCP named; never set by hand
 } ipconf_t;
 extern ipconf_t net_cfg;
 

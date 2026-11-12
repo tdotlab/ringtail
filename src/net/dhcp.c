@@ -173,6 +173,8 @@ static void take_lease(const dhcp_msg_t* m, uint64_t now) {
     for (int i = 0, n = 0; i < 2; i++)
         if (ip_unicast(m->dns[i])) c.dns[n++] = m->dns[i];
     strlcpy(c.domain, m->domain, sizeof c.domain);
+    for (int i = 0, n = 0; i < 2; i++)
+        if (ip_unicast(m->ntp[i])) c.ntp[n++] = m->ntp[i];
     net_set_config(&c);
 
     if (m->server) d.server = m->server;

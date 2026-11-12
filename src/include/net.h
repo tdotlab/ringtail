@@ -36,8 +36,9 @@ typedef struct netdev {
 void net_init(void);
 // For drivers' interrupt handlers: frames have arrived.
 void net_rx_notify(void);
-// From init: wait a little for DHCP and report the address.
-void net_boot_wait(void);
+// From init: wait a little for DHCP and report the address. 1 if there
+// is one.
+int net_boot_wait(void);
 // The system calls, with their structs already copied into the kernel.
 int net_ping(ping_t* p);
 int net_conf(int op, netconf_t* c);
