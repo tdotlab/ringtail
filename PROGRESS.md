@@ -3049,3 +3049,52 @@ records, a ServerHello that switches suite after a retry (both ways), and
 OpenSSL's `s_server` restricted to AES with a key update. In the guest,
 fetch downloads 300000 bytes from an `openssl s_server` that takes only
 AES-128-GCM and they match. Host 244 + 82 + 163 + 21394 + 2024 + 3795 + 1307 + 8076 + 1618, QEMU 2007.
+
+---
+## v0.28.0 "Time Will Tell"
+
+The clock gets set. A new `sntp` asks a time server what time it is, init
+runs it at boot, and DHCP can say which server to ask. TLS checks
+certificate dates against this clock, so a CMOS that was wrong made good
+certificates look expired.
+
+- `sntp [-q] [-b] [-p PORT] [SERVER]`: SNTP (RFC 4330) over UDP. The
+  request is version 4 with a random transmit timestamp and nothing else
+  (RFC 9109), a fresh one for each try. A reply counts only from the
+  address and port asked, in server mode, echoing that timestamp;
+  kiss-o'-death (its code shown with escapes made safe) and
+  unsynchronised servers are refused. Wire times count from 1900 and wrap
+  in 2036, so each is placed in the era nearest the machine's own clock.
+  `-q` only measures, `-b` is the quick form init uses.
+- `SYS_SETTIME` (61) and `rtc_write`: the CMOS takes whole seconds and
+  keeps its own sub-second phase, so the write holds the divider in reset
+  and releases it after, which starts the next second half a second on;
+  sntp sets the clock at the half second. Good to about 10 ms. The kernel
+  refuses a time before the last commit the system was built from
+  (`RINGTAIL_TIME_FLOOR`), so a liar cannot wind the clock back to make an
+  expired certificate look good, and anything after 2099. New `ERANGE`.
+- `civil.c`: calendar dates by Hinnant's algorithm in unsigned 32 bits,
+  1970 to 2105, checked for every day in the range.
+- init runs `sntp -b` once DHCP has an address, before the shell: one
+  quick try, one "Clock:" line either way.
+- DHCP asks for option 42 and keeps the first two time servers; `net`
+  shows them as Time, `SYS_NETCONF` hands them to programs, and sntp
+  with no server asks them before falling back on pool.ntp.org.
+
+Not done: nothing syncs a network that comes up after boot, the clock is
+not disciplined between sets, and NTP without NTS is unauthenticated, so
+someone in the middle can set any time after the build.
+
+Testing: `tests/test_netmsg.c` covers the SNTP request and parser (modes,
+nonce, kisses, strata, versions, zero timestamps, era wrap, 400000 fuzzed
+replies), the calendar and option 42, with a mutation sweep over the
+checks. `tests/ntp_server.py` is a time server on the host that
+misbehaves in fourteen ways; in the guest sntp sets the clock an hour on
+and back to within a tenth of a second, turns away forged, kissing,
+unsynchronised, silent and 2001 or 2101 answers, and the kernel refuses
+dates that do not exist and runs a leap day into March. `net_peer.py` now
+plays the time server too: the guest must sync from the server DHCP
+names, at boot, with no DNS lookup, and fall back on the pool after
+`net static`. Also fixed: the sntp tests waited out TIME-WAIT before
+their memory check, and PLAN-TLS.md is gone (all of it is done).
+Host 244 + 170 + 163 + 21394 + 2024 + 3795 + 1307 + 8076 + 1618, QEMU 2066.

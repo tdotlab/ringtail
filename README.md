@@ -8,7 +8,7 @@ scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 UDP and TCP, an address from DHCP, a DNS resolver, an SNTP client to
 set the clock and a TLS 1.3 client, so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
-Current version: **v0.27.0 "Plan B"**. See PROGRESS.md for the history.
+Current version: **v0.28.0 "Time Will Tell"**. See PROGRESS.md for the history.
 
 ## Building and running
 
