@@ -510,6 +510,92 @@ for args in ["x y", "y x", "-r x y", "-q x y", "-rq x y", "-rs x y", "-N x y", "
 case("echo -e 'a\\0b' > b1", "echo -e 'a\\0c' > b2", "?diff b1 b2", "?diff -q b1 b2", "diff b1 b1", "diff -s b1 b1", "cp b1 b3", "diff b1 b3")
 case("mkdir x", "mkdir y", "echo 1 > \"x/s p\"", "echo 2 > \"y/s p\"", "?diff x y", "?diff -q x y", "?diff \"x/s p\" y")
 
+# ----------------------------------------------------------------- tac
+# `echo -e '...\c'` writes exactly what is inside, with no newline of its own.
+def raw(text):
+    return f"echo -e '{text}\\c' | "
+
+for inp in [r"a\nb\nc\n", r"a\nb\nc", r"\n\na\n\n", r"x\n", "x", r"one\n\ntwo\n\n\n", r"\n", r"\n\n", r"a\n\nb"]:
+    case(raw(inp) + "tac")
+case("echo -n | tac")
+for sp in [",", "XX", "ab", "'\\n'", "XYZ", "abab"]:
+    for inp in ["a,b,c", "a,b,c,", ",a,b,c", "a,,b", ",", ",,", "XXXX", "aXXXb", "XXaXXbXX", "aXYZbXYZc", "abababab", "xabcabyab", "x"]:
+        case(raw(inp) + f"tac -s {sp}")
+        case(raw(inp) + f"tac -b -s {sp}")
+case(raw("a,b,c") + "tac -s, ")
+case(raw("a,b,c") + "tac -bs,")
+case(raw("a,b,c") + "tac -sb,")
+case(raw("a,b,c") + "tac -s ,")
+case(raw("a,b,c,") + "tac -b -s , -b")
+case(raw("a,b,c") + "tac -s , -s ';'")
+case(raw("a;b,c") + "tac -s , -s ';'")
+# an empty separator is a NUL byte (tr makes the NULs visible)
+case(raw(r"a\0b\0c\0") + "tac -s '' | tr '\\000' '/'")
+case(raw(r"a\0b\0c") + "tac -s '' | tr '\\000' '/'")
+case(raw(r"a\0b\0c\0") + "tac -b -s '' | tr '\\000' '/'")
+case(raw(r"a\0b\nc\n") + "tac | tr '\\000' '/'")
+# files and standard input
+case("echo -e '1\\n2\\n\\c' > f1", "echo -e '3\\n4\\c' > f2", "tac f1 f2", "tac f2 f1", "tac f1 f1", "tac f1 - f2 < f1")
+case("echo -e '1\\n2\\n\\c' > f1", "echo -e 'x\\ny\\n\\c' | tac - f1", "echo -e 'x\\ny\\n\\c' | tac f1 -")
+case("echo -e 'p,q\\n\\c' > f1", "echo -e 'r,s' > f2", "tac -s , f1 f2", "tac -b -s , f1 f2")
+case("echo -e 'a\\nb\\n\\c' > f1", "tac -- f1", "tac f1 > f2", "cat f2", "tac f2 | tac")
+case("seq 1 5 | tac", "seq 1 2000 | tac | head -n 3", "seq 1 2000 | tac | tail -n 2", "seq 1 5000 | tac | wc -l", "seq 1 3000 | tac | tac | tail -n 1")
+case("seq 1 300 | tr '\\n' ' ' | tac -s ' ' | head -c 40")
+
+# ------------------------------------------------------------------ rev
+for inp in [r"abc\n", r"abc", r"a\nbc\ndef\n", r"\n\nab\n", r"\n", r"x\n\n", r"ab cd  ef\n", r"a\tb\n", r"x y\nz", "a", r"123456789012345678901234567890\n",
+            r"\"quoted\" 'text'\n", r"back\\slash\n", r"a\0b\n"]:
+    case(raw(inp) + "rev | tr '\\000' '/'")
+case("seq 1 100 | tr '\\n' ' ' | rev")
+case("seq 1 400 | tr '\\n' ',' | rev | wc -c", "seq 1 400 | tr '\\n' ',' | rev | tr ',' ' ' | head -c 30")
+case("seq 1 40 | rev", "seq 1 40 | rev | rev | head -n 3", "seq 10 20 | rev | sort | head -n 4")
+case("echo -e 'ab' > f1", "echo -e 'cd\\nef' > f2", "rev f1 f2", "rev f2 f1", "echo -e 'xy\\c' > f3", "rev f3 f2", "rev f3 f3")
+case("echo -e 'abc\\ndef\\n' > f1", "rev f1 | rev | cmp - f1", "rev -- f1")
+case("echo -e 'hello world\\n' | rev | rev", "echo hello | rev | tac", "echo -e 'one\\ntwo' | rev | tac")
+
+# ------------------------------------------------------------------- nl
+SIMPLE = r"a\n\nb\n  \nc\n"
+for inp in [SIMPLE, r"a\nb", r"\n", "", r"x", r"\n\n\n", r"one\n\n\n\ntwo\n\n\nthree\n"]:
+    for fl in ["", "-ba", "-bn", "-bt", "-b a", "-b t", "-b n"]:
+        case(raw(inp) + f"nl {fl}")
+FLAGS = ["-nln", "-nrn", "-nrz", "-n ln", "-n rz", "-nrz -w3", "-nln -w 8", "-w1", "-w 2", "-w 12", "-w+4", "-w ' 4'", "-s:", "-s ' | '", "-s ''", "-s 'ab'",
+         "-s '\\t'", "-v5", "-v -3", "-v -3 -nrz", "-v 0", "-v +7", "-v 99999999", "-v 123456 -w3", "-v 12 -nln -w 5 -s '|'", "-i2", "-i -1", "-i0", "-i 10 -v 5", "-i -5 -v 0 -nrz",
+         "-ba -nrz -w3 -s: -v10 -i5", "-ba -w 2 -nln -s '--'", "-bn -v 7", "-ba -l2", "-ba -l3", "-ba -l 1", "-ba -l5", "-l2", "-ba -l2 -i3 -v 0",
+         "-b 'p^a'", "-bp^a", "-bpa", "-b 'p[a-c]'", "-b 'p^$'", "-b p", "-b 'p.'", "-bp'^[ab]' -nrz", "-b 'px\\|a'", "-b 'pb*'", "-bpc -s:"]
+for fl in FLAGS:
+    case(raw(SIMPLE) + f"nl {fl}")
+# numbers up to the end of what 64 bits hold (a line that would need more is an error: see the status checks)
+case(raw(r"a\nb\n") + "nl -v 9223372036854775806", raw(r"a\n\nb\n") + "nl -v 9223372036854775806", raw(r"a\nb\n") + "nl -v 9223372036854775807 -i 0", raw(r"a\nb\nc\n") + "nl -v 9223372036854775800 -i 3")
+case(raw(r"a\nb\n") + "nl -v -9223372036854775807 -i -1 -nrz", raw(r"a\n") + "nl -v -9223372036854775808", raw(r"a\nb\nc\n") + "nl -v -9223372036854775800 -i -3 -w 25", raw(r"a\n") + "nl -v 9223372036854775807 -nln -w 30")
+case(raw(r"one\n\n\n\ntwo\n\n\nthree\n\n") + "nl -ba -l2")
+case(raw(r"one\n\n\n\ntwo\n\n\nthree\n\n") + "nl -ba -l3 -nrz")
+case(raw(r"a\n\n\n\n\n\n\nb\n") + "nl -ba -l3")
+case(raw(r"a\n\n\n\n\n\n\nb\n") + "nl -ba -l4")
+case(raw(r"a\n\n\n\nb\n\n\nc\n") + "nl -l2")
+# files and standard input: the numbers go on from one to the next
+case("echo -e 'a\\nb\\n\\c' > f1", "echo -e 'c\\n\\nd\\c' > f2", "nl f1 f2", "nl f2 f1", "nl f1 - f2 < f2", "nl -ba f1 f2", "nl -v 10 -s: f1 f2 f1", "nl f1 -w3 f2", "nl -w3 -s: -- f1", "nl - < f1")
+case("echo -e 'a\\nb\\n\\c' > f1", "nl f1 > f2", "cat f2", "nl f2", "nl -ba f2")
+case("seq 1 12 | nl", "seq 1 12 | nl -w2 -nln -s '.'", "seq 95 105 | nl -w 3 -v 95 -nrz", "seq 1 2500 | nl | tail -n 2", "seq 1 20 | nl -i 7 -w 4 | tail -n 3")
+case("seq 1 6 | nl -b 'p[135]'", "seq 1 6 | nl -b 'p[135]' -nln -s '>'", "seq 1 30 | nl -b 'p3'")
+# pages: header, body and footer, and the markers that tell them apart
+PG = r"top\n\\:\\:\\:\nH1\nH2\n\\:\\:\nb1\n\nb2\n\\:\nf1\nf2\n\\:\\:\\:\nH3\n\\:\\:\nb3\n\\:\\:\nb4\n"
+for fl in ["", "-ha", "-fa", "-ha -fa", "-ba", "-ba -ha -fa", "-ha -fa -bn", "-hn -fn -ba", "-p", "-p -ha", "-p -ba -ha -fa", "-ha -v 5", "-ha -p -v 5", "-ha -fa -nrz -w2 -s:",
+           "-ht -ft", "-hp^H -fp^f", "-hp1 -fp2 -b 'p[0-9]'", "-ba -l2 -ha -fa", "-ha -fa -i3", "-ha -fa -i3 -p", "-hn -bt -fa -v -2"]:
+    case(raw(PG) + f"nl {fl}")
+# other markers
+for d, markers in [("'@:'", r"@:\n@:@:\n@:@:@:\n"), ("@", r"@:\n@:@:\n@:@:@:\n"), ("'ab'", r"ab\nabab\nababab\n"), ("'abc'", r"abc\nabcabc\nabcabcabc\n"), ("'x'", r"x:\nx:x:\nx:x:x:\n"),
+                   ("'#!'", r"#!#!#!\nz\n#!#!\n#!\n"), ("''", r"\\:\n\\:\\:\nz\n")]:
+    case(raw(r"p\n" + markers + r"q\nr\n") + f"nl -d {d} -ba -ha -fa")
+    case(raw(r"p\n" + markers + r"q\nr\n") + f"nl -d{d} -ba")
+case(raw(r"\\:\\:\\:\nx\n\\:\\:\\:\nx\n") + "nl -ha")
+case(raw(r"a\n\\:\\:\\:\\:\nb\n\\:\n\\:\\:\\:\n\\:\\:\\:\nc\n") + "nl -ba -ha -fa")
+case(raw(r" \\:\\:\\:\nb\n\\:\\:\\: \nc\n\\:\\:\\:\\:\\:\\:\nd\n") + "nl -ba -ha -fa")
+case(raw(r"\\:\\:\\:") + "nl -ba -ha")
+case(raw(r"x\n\\:\\:\\:") + "nl -ba -ha")
+case(raw(r"x\n\\:\\:\\:\ny") + "nl -ba -ha -v 3")
+# a page marker starts the numbers again, so it also forgives a number that ran out
+case(raw(r"a\n\\:\\:\nb\n") + "nl -v 9223372036854775807", raw(r"a\nb\n") + "nl -v 9223372036854775807 -i -1", raw(r"a\nb\nc\n") + "nl -v 9223372036854775806 -i 0")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:

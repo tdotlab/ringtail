@@ -37,11 +37,6 @@ Every task ends the same way, or it is not done:
 Good warm-ups. Each is a new file in `src/programs/`, added to the Makefile
 the way the others are, with GNU-checked cases.
 
-**tac, rev, nl.** `tac` prints lines last first, `rev` reverses each line,
-`nl` numbers lines (`-b a|t`, `-n ln|rn|rz`, `-w`, `-s`; the default skips
-empty lines, as GNU does). Watch the last line without a newline: GNU
-`tac` has an odd rule there, and the test will show it.
-
 **paste, comm, fold, expand.** `paste [-d LIST] [-s] FILE...` (with `-` for
 standard input); `comm [-123] A B` on sorted input; `fold [-w N] [-s]`;
 `expand [-t N]` and `unexpand [-a]`. The ones that read two files at once

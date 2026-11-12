@@ -432,6 +432,9 @@ Programs on the disk:
 | uniq | `uniq [-c \| -d \| -u] [-i] [-f N] [-s N] [-w N] [INPUT [OUTPUT]]`: collapses runs of equal lines, with -c counts, -d only the repeated, -u only the single. Streams, so it works on any size; run `sort` first. |
 | cut | `cut -b\|-c\|-f LIST [-d DELIM] [-s] [--complement] [--output-delimiter=STR] [FILE...]`: bytes or tab-separated (or `-d`) fields of each line, picked by a list like `1,3-5,8-`. A line with no delimiter passes through unless `-s`. |
 | tr | `tr [-cCdst] SET1 [SET2]`: translates, deletes (`-d`) or squeezes (`-s`) bytes of standard input. Sets take ranges, `[:alpha:]`-style classes, `[c*N]` repeats and `\n \t \NNN` escapes; `-c` is the complement of SET1. |
+| tac | `tac [-b] [-s SEP] [FILE...]`: each file with its records last first. `-b` puts the separator before its record, `-s` changes it from a newline (an empty string means a NUL byte). A last line with no newline is written first, joined to the one after it, as GNU does. Reads the whole file into memory; no `-r`. |
+| rev | `rev [FILE...]`: each line back to front. Works on bytes, not characters, so a multi-byte UTF-8 letter comes out in pieces. A last line with no newline stays without one. |
+| nl | `nl [-b\|-h\|-f STYLE] [-n ln\|rn\|rz] [-w N] [-s SEP] [-v N] [-i N] [-l N] [-d CC] [-p] [FILE...]`: numbers lines, counting on from file to file. Styles are `a` (all), `t` (non-empty, the default for the body), `n` (none) and `pREGEX` (basic syntax). Lines made of `\:\:\:`, `\:\:` and `\:` start a header, body and footer and restart the numbers unless `-p`. Numbers are 64 bits; running out is an error. |
 | tee | `tee [-a] FILE...`: copies standard input to standard output and to the files (`-a` appends). Passes data on as it arrives. |
 | basename | `basename NAME [SUFFIX]` or `basename [-a] [-s SUFFIX] NAME...`: the last part of a path, with an optional suffix taken off. |
 | dirname | `dirname NAME...`: a path without its last part. |

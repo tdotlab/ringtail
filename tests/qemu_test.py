@@ -2168,6 +2168,67 @@ def gnu_text_tests(m, t):
     for f in ["da", "db", "big1", "big2"]:
         run("rm " + f)
 
+    # ---- v0.29.0: tac, rev and nl: statuses and messages, and what the generated cases cannot show ----
+    run("echo -e 'a\\nb\\n\\c' > nf1")
+    out, rc = st("tac nosuch nf1")
+    t.check("tac reports a missing file and goes on", out == "tac: nosuch: no such file or directory\nb\na" and rc == 1, out)
+    out, rc = st("echo -e 'x\\ny' | tac nf1 -")
+    t.check("tac takes - for standard input", out == "b\na\ny\nx" and rc == 0, out)
+    out, rc = st("tac -q nf1")
+    t.check("tac shows the usage for a bad option", "usage: tac" in out and rc == 2, out)
+    out, rc = st("tac -s")
+    t.check("tac -s wants its separator", "usage: tac" in out and rc == 2, out)
+    out, rc = st("tac")
+    t.check("tac with only the keyboard to read says how to use it", "usage: tac" in out and rc == 2, out)
+    run("seq 1 20000 > nbig")
+    t.check("tac reads a file bigger than its first buffer",
+            run("tac nbig | head -n 2").replace("\n", " ").strip() == "20000 19999" and run("tac nbig | tail -n 1").strip() == "1"
+            and run("tac nbig | wc -l").strip() == "20000", run("tac nbig | wc -l"))
+    t.check("tac -s ' ' on one long line", run("echo -e '1 2 3 4 5\\c' | tac -s ' '").strip() == "54 3 2 1")
+    run("rm nbig")
+    # the prompt starts on a fresh line even when the last line has no newline
+    m.send("echo -n abc | tac\r")
+    raw = re.sub(r"\x1b\[[0-9;]*m", "", m.expect(PROMPT, 15)).replace("\r\n", "\n")
+    t.check("tac ends the screen output with a newline", raw.endswith("abc\nringtail:/> "), repr(raw))
+    m.send("echo -n abc | rev\r")
+    raw = re.sub(r"\x1b\[[0-9;]*m", "", m.expect(PROMPT, 15)).replace("\r\n", "\n")
+    t.check("rev ends the screen output with a newline", raw.endswith("cba\nringtail:/> "), repr(raw))
+    out, rc = st("echo abc | rev nosuch - nf1")
+    t.check("rev reports a missing file, reads - and goes on", out == "rev: nosuch: no such file or directory\ncba\na\nb" and rc == 1, out)
+    out, rc = st("rev -q")
+    t.check("rev shows the usage for a bad option", "usage: rev" in out and rc == 2, out)
+    out, rc = st("rev")
+    t.check("rev with only the keyboard to read says how to use it", "usage: rev" in out and rc == 2, out)
+    for opt, what in [("-b x", "invalid body numbering style: 'x'"), ("-h x", "invalid header numbering style: 'x'"), ("-f ''", "invalid footer numbering style: ''"),
+                      ("-n xx", "invalid line numbering format: 'xx'"), ("-n r", "invalid line numbering format: 'r'"), ("-w 0", "invalid line number field width: '0'"),
+                      ("-w -1", "invalid line number field width: '-1'"), ("-w 2147483648", "invalid line number field width: '2147483648'"),
+                      ("-w 3x", "invalid line number field width: '3x'"), ("-w 0x3", "invalid line number field width: '0x3'"),
+                      ("-l 0", "invalid line number of blank lines: '0'"), ("-v x", "invalid starting line number: 'x'"),
+                      ("-v 9223372036854775808", "invalid starting line number: '9223372036854775808'"), ("-v ''", "invalid starting line number: ''"),
+                      ("-i 1.5", "invalid line number increment: '1.5'"), ("-i -9223372036854775809", "invalid line number increment: '-9223372036854775809'"),
+                      ("-b 'p\\('", "invalid regular expression")]:
+        out, rc = st(f"nl {opt} nf1")
+        t.check(f"nl {opt} is refused with status 1", out.startswith("nl: " + what) and rc == 1, out)
+    out, rc = st("nl nosuch nf1")
+    t.check("nl reports a missing file and goes on", out == "nl: nosuch: no such file or directory\n     1\ta\n     2\tb" and rc == 1, out)
+    out, rc = st("nl -X nf1")
+    t.check("nl shows the usage for a bad option", "usage: nl" in out and rc == 2, out)
+    out, rc = st("nl nf1 -w")
+    t.check("nl -w wants a width", "usage: nl" in out and rc == 2, out)
+    out, rc = st("nl")
+    t.check("nl with only the keyboard to read says how to use it", "usage: nl" in out and rc == 2, out)
+    out, rc = st("echo -e 'a\\nb' | nl -v 9223372036854775807")
+    t.check("nl stops when the numbers run out, after the lines it could number",
+            out == "9223372036854775807\ta\nnl: line number overflow" and rc == 1, out)
+    out, rc = st("echo -e 'a\\n\\\\:\\\\:\\nb\\nc' | nl -p -v 9223372036854775807")
+    t.check("-p keeps the numbers running out across a page",
+            out == "9223372036854775807\ta\n\nnl: line number overflow" and rc == 1, out)
+    out, rc = st("echo -e 'a\\nb' | nl -v -9223372036854775807 -i -2")
+    t.check("and the same downwards", out == "-9223372036854775807\ta\nnl: line number overflow" and rc == 1, out)
+    out, rc = st("echo x | nl -w 200 | wc -c")
+    t.check("a wide number field is as wide as asked", out.strip() == "203" and rc == 0, out)
+    run("rm nf1")
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is
