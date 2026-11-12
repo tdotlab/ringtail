@@ -9,7 +9,6 @@ UDP and TCP, an address from DHCP, a DNS resolver and a TLS 1.3 client,
 so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
 Current version: **v0.27.0 "Plan B"**. See PROGRESS.md for the history.
-Current version: **v0.25.0 "Trust Me"**. See PROGRESS.md for the history.
 
 ## Building and running
 
