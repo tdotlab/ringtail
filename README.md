@@ -10,6 +10,11 @@ set the clock and a TLS 1.3 client, so `ping example.com` works and `fetch` gets
 with the server's certificate checked against Mozilla's list of roots.
 Current version: **v0.28.0 "Time Will Tell"**. See PROGRESS.md for the history.
 
+![RingTail booting in QEMU: the banner, an address from DHCP, the clock set over the network, then a few commands at the shell](docs/boot.png)
+
+A boot in QEMU, with the clock set by a time server; `run hello` is a program
+read off the FAT16 disk.
+
 ## Building and running
 
 You need nasm, grub-mkrescue (with xorriso), qemu-system-i386, python3
