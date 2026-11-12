@@ -68,7 +68,8 @@
 #define SYS_POLLFD      58  // (pollfd_t*, n, timeout_ms) -> how many descriptors have something
 #define SYS_FDTYPE      59  // (fd)                    -> FDTYPE_*
 #define SYS_RANDOM      60  // (buf, len)              -> len; random bytes fit for keys, 256 at most a call
-#define NUM_SYSCALLS    61
+#define SYS_SETTIME     61  // (const rtc_time_t*)     -> 0; sets the clock (see below)
+#define NUM_SYSCALLS    62
 
 #define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
 #define EXIT_FAULTED (-2)
@@ -126,7 +127,12 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 typedef struct { char name[NAME_MAX + 1]; unsigned size; unsigned flags; unsigned id; unsigned mdate, mtime; } dirent_t;
 
 // SYS_TIME: the wall clock, in whatever zone the CMOS was set to (UTC
-// under QEMU).
+// under QEMU). SYS_SETTIME sets it, to the second: -EINVAL for a date
+// or time that does not exist, -ERANGE for one before the kernel was
+// built (so a lying time server cannot wind the clock back to when an
+// expired certificate was good) or after 2099 (the chip keeps two digits
+// of year). The chip starts counting half a second after the call: to
+// set it exactly, call when the time is t and a half.
 typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 
 // Values from -4095 to -1 are errors. Anything else is a result,
@@ -192,6 +198,7 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 #define EFBIG         27
 #define ENOSPC        28
 #define EPIPE         32
+#define ERANGE        34
 #define ENAMETOOLONG  36
 #define ENOSYS        38
 #define ENOTEMPTY     39

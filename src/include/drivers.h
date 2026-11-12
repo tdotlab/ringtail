@@ -20,6 +20,9 @@ uint32_t timer_micros(void);
 
 // ---- Real-time clock (CMOS) ----
 void rtc_read(rtc_time_t* t);
+// Sets the clock to t, which must be valid with a year from 2000 to 2099.
+// The chip's next second starts half a second after the call.
+void rtc_write(const rtc_time_t* t);
 
 // ---- Serial port (COM1) ----
 void serial_init(void);

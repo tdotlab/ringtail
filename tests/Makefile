@@ -1,5 +1,5 @@
 # Host tests: the kernel heap and FAT16 code built as a 32-bit Linux
-# program against a RAM disk; the DHCP and DNS message code (the parts
+# program against a RAM disk; the DHCP, DNS and SNTP message code (the parts
 # that read bytes off the wire), the TCP engine (run against a
 # simulated network), the regular-expression engine grep uses (run
 # against GNU grep's answers), diff's core (against GNU diff's), the
@@ -13,7 +13,7 @@ CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fno-builtin -I../src/include
 TEST = test_heap_diskfs
 SRCS = test_heap_diskfs.c ../src/mm/heap.c ../src/fs/diskfs.c ../src/lib/string.c
 
-NETMSG_SRCS = test_netmsg.c ../src/net/dhcpmsg.c ../src/programs/lib/dnsmsg.c
+NETMSG_SRCS = test_netmsg.c ../src/net/dhcpmsg.c ../src/programs/lib/dnsmsg.c ../src/programs/lib/ntpmsg.c ../src/lib/civil.c
 NETMSG_CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
 	-I../src/include -I../src/net -I../src/programs/lib
 
@@ -45,7 +45,7 @@ all: $(HOST_TESTS)
 $(TEST): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
 
-test_netmsg: $(NETMSG_SRCS) ../src/net/dhcpmsg.h ../src/programs/lib/dnsmsg.h
+test_netmsg: $(NETMSG_SRCS) ../src/net/dhcpmsg.h ../src/programs/lib/dnsmsg.h ../src/programs/lib/ntpmsg.h ../src/include/civil.h
 	$(CC) $(NETMSG_CFLAGS) -o $@ $(NETMSG_SRCS)
 
 test_tcp: $(TCP_SRCS) ../src/net/tcp.h

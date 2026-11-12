@@ -18,6 +18,8 @@
 #include "net.h"
 #include "random.h"
 #include "ct.h"
+#include "civil.h"
+#include "timefloor.h"  // RINGTAIL_TIME_FLOOR, made by the Makefile
 #include "ringtail/abi.h"
 
 typedef int (*syscall_fn)(uint32_t a, uint32_t b, uint32_t c);
@@ -133,6 +135,17 @@ static int sys_time(uint32_t ut, uint32_t b, uint32_t c) {
     rtc_time_t t;
     rtc_read(&t);
     return copy_to_user((void*)ut, &t, sizeof t) ? -EFAULT : 0;
+}
+// The floor is the time of the last commit when the kernel was built:
+// the code did not exist before then, so a clock set earlier is wrong.
+static int sys_settime(uint32_t ut, uint32_t b, uint32_t c) {
+    (void)b; (void)c;
+    rtc_time_t t;
+    if (copy_from_user(&t, (const void*)ut, sizeof t)) return -EFAULT;
+    if (!civil_valid(&t)) return t.year > CIVIL_MAX_YEAR ? -ERANGE : -EINVAL;
+    if (t.year > 2099 || civil_to_unix(&t) < RINGTAIL_TIME_FLOOR) return -ERANGE;
+    rtc_write(&t);
+    return 0;
 }
 static int sys_save(uint32_t upath, uint32_t ubuf, uint32_t len) {
     char path[PATH_MAX];
@@ -659,6 +672,7 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_RENAME] = sys_rename,
     [SYS_STAT] = sys_stat,
     [SYS_TIME] = sys_time,
+    [SYS_SETTIME] = sys_settime,
     [SYS_POLL] = sys_poll,
     [SYS_PING] = sys_ping,
     [SYS_SOCKET] = sys_socket,

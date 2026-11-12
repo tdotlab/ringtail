@@ -22,6 +22,7 @@ import tempfile
 import time
 
 import dns_server
+import ntp_server
 import http.server
 import ssl
 import threading
@@ -332,6 +333,7 @@ def tests(m, t):
     t.check("pings leave memory as they found it", m.run("mem") == mem_before, mem_before)
 
     dns_tests(m, t)
+    ntp_tests(m, t)
     tcp_tests(m, t)
     text_tests(m, t)
     netconf_tests(m, t)
@@ -1006,6 +1008,136 @@ def _dns_tests(m, t, srv):
 
     out = m.run("net")
     t.check("the resolver closes its sockets", "UDP:      0 sockets" in out, out)
+    t.check("and leaves memory as it found it", m.run("mem") == mem_before, mem_before)
+
+
+def ntp_tests(m, t):
+    """sntp and SYS_SETTIME, against a time server of our own on the host
+    (tests/ntp_server.py). The clock goes back to the host's at the end,
+    whatever happened, since the TLS tests check certificates against it."""
+    srv = ntp_server.Server()
+    try:
+        _ntp_tests(m, t, srv)
+    finally:
+        srv.set("good")
+        m.run(f"sntp -p {srv.port} 10.0.2.2", timeout=20)
+        srv.close()
+
+
+def _ntp_tests(m, t, srv):
+    mem_before = m.run("mem")
+    epoch = lambda *a: datetime.datetime(*a, tzinfo=datetime.timezone.utc).timestamp()
+
+    def sntp(args, timeout=20):
+        start = time.time()
+        out = plain(m.run(f"sntp -p {srv.port} {args}", timeout=timeout)) + "\n"
+        return out, time.time() - start
+
+    def skew(target=None):  # the guest's clock less target (the host's UTC by default), in seconds
+        out = plain(m.run("date"))
+        mt = re.match(r"(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)", out.strip())
+        guest = datetime.datetime(*map(int, mt.groups())) if mt else None
+        return (guest - (target or utcnow())).total_seconds() if guest else 1e9
+
+    def offset(out):  # (stratum, offset, delay) from sntp's report, or None
+        mo = re.search(r"10\.0\.2\.2: stratum (\d+), offset ([+-]\d+\.\d{3}) s, delay (\d+\.\d{3}) s\n", out)
+        return (int(mo.group(1)), float(mo.group(2)), float(mo.group(3))) if mo else None
+
+    srv.set("good")
+    out, _ = sntp("10.0.2.2")
+    r = offset(out)
+    t.check("sntp asks and says how far off the clock is", r and r[0] == 2 and abs(r[1]) < 1.5 and r[2] < 0.5, out)
+    t.check("a clock that is right is left alone", "left as it is" in out or "is now" in out and abs(skew()) < 3, out)
+    q = srv.requests[0][0] if srv.requests else b""
+    t.check("the request is 48 bytes, version 4, client mode", len(q) == 48 and q[0] == 0x23, q.hex())
+    t.check("and says nothing else but a random transmit timestamp", q[1:40] == bytes(39) and
+            abs(int.from_bytes(q[40:44], "big") - (int(time.time()) + ntp_server.EPOCH) % 2 ** 32) > 86400, q.hex())
+
+    srv.set("good", offset=3600)
+    out, _ = sntp("-q 10.0.2.2")
+    r = offset(out)
+    t.check("-q measures an hour slow", r and abs(r[1] - 3600) < 1.5, out)
+    t.check("and only measures", "clock was" not in out and abs(skew()) < 3, out)
+    out, _ = sntp("10.0.2.2")
+    t.check("without -q the clock is set", "the clock was " in out and " and is now " in out and
+            "exit status" not in out, out)
+    t.check("an hour on", abs(skew() - 3600) < 3, out)
+    out, _ = sntp("-q 10.0.2.2")
+    r = offset(out)
+    t.check("to within a tenth of a second", r and abs(r[1]) < 0.1, out)
+    srv.set("good")
+    out, _ = sntp("10.0.2.2")
+    r = offset(out)
+    t.check("and back an hour", r and abs(r[1] + 3600) < 1.5 and abs(skew()) < 3, out)
+
+    for mode, good in [("forged", "a reply to some other request is not believed"), ("v3", "a version 3 reply"),
+                       ("leap", "a reply announcing a leap second")]:
+        srv.set(mode)
+        out, _ = sntp("-q 10.0.2.2")
+        r = offset(out)
+        t.check(good, r and abs(r[1]) < 1.5 and len(srv.requests) == 1, out)
+    srv.set("slow")
+    out, _ = sntp("-q 10.0.2.2")
+    r = offset(out)
+    t.check("a server that takes half a second: the round trip leaves it out", r and r[2] < 0.3 and abs(r[1]) < 1.5, out)
+
+    for mode, why in [("kiss", "the server sent a kiss-o'-death (RATE)"),
+                      ("kiss-evil", "the server sent a kiss-o'-death (\\027[2J)"),
+                      ("unsync", "the server does not know the time itself"),
+                      ("stratum16", "the server does not know the time itself"),
+                      ("zero", "the answer made no sense")]:
+        srv.set(mode)
+        out, took = sntp("10.0.2.2")
+        t.check(f"{mode}: {why}", f"sntp: 10.0.2.2: {why}\n" in out and "[exit status 1]" in out and
+                "\x1b[2J" not in out, repr(out))
+        t.check(f"{mode}: and no second try", len(srv.requests) == 1 and took < 2.5, "%d requests" % len(srv.requests))
+    t.check("none of them touched the clock", abs(skew()) < 3)
+
+    for mode, what in [("silent", "silence"), ("mode3", "a reply in client mode"), ("short", "a short reply")]:
+        srv.set(mode)
+        out, took = sntp("10.0.2.2")
+        t.check(f"{what} is no answer, after two tries of 2 s", "sntp: 10.0.2.2: no answer\n" in out and
+                "[exit status 1]" in out and 3.5 < took < 6.5 and len(srv.requests) == 2, "%.2f s: %s" % (took, out))
+    nonces = [q[40:48] for q, _ in srv.requests]
+    t.check("each try with its own nonce", len(set(nonces)) == 2, str(nonces))
+    srv.set("late")
+    out, took = sntp("-q 10.0.2.2")
+    t.check("an unanswered request is sent again", offset(out) and len(srv.requests) == 2 and 1.5 < took < 4,
+            "%.2f s: %s" % (took, out))
+
+    srv.set("good", at=epoch(2001, 1, 1))
+    out, _ = sntp("10.0.2.2")
+    t.check("a time before the system was built is refused by the kernel",
+            "sntp: the server says it is 2001-01-01 00:00:0" in out and
+            "before this system was built; the clock is left alone\n" in out and "[exit status 1]" in out, out)
+    srv.set("good", at=epoch(2101, 1, 1))
+    out, _ = sntp("10.0.2.2")
+    t.check("a time 75 years on cannot be placed", "more than 68 years from ours" in out and "[exit status 1]" in out, out)
+    t.check("and the clock is still right", abs(skew()) < 3)
+
+    out = plain(m.run("rtcset"))
+    t.check("SYS_SETTIME refuses dates that do not exist, and times it will not hold",
+            "feb29in2100=-22 apr31=-22 month0=-22 month13=-22 day0=-22 hour24=-22 min60=-22 sec60=-22 year1969=-22 "
+            "year2100=-34 year2106=-34 year2001=-34 year2020=-34 null=-14 kernel=-14" in out, out)
+    out = plain(m.run("rtcset 2031 5 6 7 8 9"))
+    t.check("and sets one that does", re.search(r"set=0 read=2031-05-06 07:08:(09|10)", out), out)
+    m.run("write ntpstamp.txt x")
+    out = plain(m.run("ls ntpstamp.txt"))
+    t.check("a file written then is stamped with it", "2031-05-06 07:08" in out, out)
+    m.run("rm ntpstamp.txt")
+    out = plain(m.run("rtcset 2028 2 29 23 59 58"))
+    t.check("a leap day", "set=0 read=2028-02-29 23:59:5" in out, out)
+    time.sleep(2.5)
+    t.check("which the clock runs on into March", abs(skew(datetime.datetime(2028, 3, 1, 0, 0, 0))) < 3)
+    srv.set("good")
+    out, _ = sntp("10.0.2.2")
+    t.check("sntp puts it right again", "the clock was 2028-03-01 00:00:" in out and abs(skew()) < 3, out)
+
+    for bad in ["-x", "-p", "-p 0 a", "-p 65536 a", "a b"]:
+        out = m.run("sntp " + bad)
+        t.check(f"sntp {bad} is a usage error", "usage: sntp" in out and "[exit status 2]" in out, out)
+    out = m.run("net")
+    t.check("sntp closes its socket", "UDP:      0 sockets" in out, out)
     t.check("and leaves memory as it found it", m.run("mem") == mem_before, mem_before)
 
 

@@ -5,8 +5,8 @@ C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
 FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
-UDP and TCP, an address from DHCP, a DNS resolver and a TLS 1.3 client,
-so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
+UDP and TCP, an address from DHCP, a DNS resolver, an SNTP client to
+set the clock and a TLS 1.3 client, so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
 Current version: **v0.27.0 "Plan B"**. See PROGRESS.md for the history.
 
@@ -46,14 +46,20 @@ rules, remounts, the depth limit), a non-default cluster size and
 malformed volumes. At the
 end, fsck.fat checks the image the run left behind.
 
-`tests/test_netmsg.c` builds the DHCP and DNS message code, the parts
+`tests/test_netmsg.c` builds the DHCP, DNS and SNTP message code, the parts
 that read bytes off the wire, under AddressSanitizer and UBSan. It
 checks the DHCP client's messages byte by byte and the parser on offers,
 NAKs, bad options and bad domains, then the DNS name rules, query
 encoding and answer parsing: CNAME chains, compression (pointer loops,
 forward pointers, names over 255 bytes), truncation, rcodes, and bytes
-that must be escaped before a terminal sees them. Both parsers then eat
-several hundred thousand mutated messages.
+that must be escaped before a terminal sees them. For SNTP it checks
+the request (nothing in it but a random nonce) and every reason to
+ignore or refuse a reply (the wrong mode or nonce, a kiss-o'-death, a
+server that is not synchronised, missing timestamps), which era a
+timestamp belongs to on either side of the 2036 wrap, and the offset
+and round trip from the four timestamps; and the calendar code the
+clock is set through, every day from 1970 to 2105 both ways. All three
+parsers then eat several hundred thousand mutated messages.
 
 `tests/test_crypto.c` checks SHA-256, HMAC, HKDF, ChaCha20, Poly1305,
 the two together, AES-128, AES-128-GCM and X25519 against the worked examples in the
@@ -122,8 +128,14 @@ installed),
 `net static` and
 `net dhcp`, and `host` against `tests/dns_server.py`, a DNS server on the host whose
 names each misbehave in their own way (aliases, loops, SERVFAIL, silence,
-forged answers, truncation, a compression loop, escape codes in names).
-Afterwards it runs fsck.fat and mtools against the disk. Then it boots
+forged answers, truncation, a compression loop, escape codes in names),
+and `sntp` against `tests/ntp_server.py`, a time server that answers
+in whatever manner the test asks (an hour off, forged, kisses of death
+with escape codes in them, unsynchronised, silent, late, slow, from
+2001 or 2101): the clock is set an hour on and back, to within a tenth
+of a second, and is left alone when it should be; the kernel refuses
+dates that do not exist and times before the build, and runs a leap
+day into March. Afterwards it runs fsck.fat and mtools against the disk. Then it boots
 again on a socket network whose only other host is `tests/net_peer.py`,
 which puts raw Ethernet frames on the wire and plays the network's DHCP
 and DNS server. It checks the DHCP messages field by field and a lease's
@@ -269,6 +281,27 @@ sequence numbers, ports, and DNS and DHCP ids come from it, and so do
 TLS keys. Its weak moment is straight after boot on a CPU without
 RDRAND, when there has been little to collect.
 
+The clock is the CMOS chip's (`src/drivers/rtc.c`), read on every
+`time` call. `settime` sets it to the second, holding the chip's
+divider in reset while it writes, so that its next second starts half
+a second after the call; a caller that wants it exact calls at the
+half second. The kernel refuses a time before the last commit it was
+built from (`RINGTAIL_TIME_FLOOR`, which the Makefile writes to
+`build/gen/timefloor.h`), since a clock set before the code existed is
+wrong, and since an expired certificate looks good again to a clock
+wound back to when it was. `sntp` (`src/programs/sntp.c` over
+`lib/ntpmsg.c`) is the client, RFC 4330 SNTP: it sends a version 4
+request whose only content is a random transmit timestamp, believes
+a reply only from the address and port it asked, in server mode,
+echoing that timestamp, and refuses one from a server that is not
+synchronised or sends a kiss-o'-death. Each try gets a fresh nonce,
+two tries of 2 s per address and four addresses at most. Its own
+clock for the exchange is the CMOS second it waits to turn over plus
+timer ticks since, so the offset is good to about 10 ms. A wire
+timestamp is placed in the 136-year era nearest the machine's own
+clock, so the 2036 wrap is handled and a clock reset to 2000 still
+finds 2026.
+
 TLS is user code (`src/programs/lib/tls.c`), a TLS 1.3 client
 (RFC 8446) over any stream of bytes: it makes no system calls and
 reaches the socket and the random numbers through three functions the
@@ -313,9 +346,9 @@ src/mm         heap, physical frames, paging and checked user copies
 src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000
 src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
-src/lib        string and printf subset, SHA-256 and ChaCha20, shared by the kernel and programs
+src/lib        string and printf subset, SHA-256, ChaCha20 and calendar dates, shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
-src/programs   user programs (the shell among them), their C library (lib/: runtime, malloc, DNS, TLS) and linker script
+src/programs   user programs (the shell among them), their C library (lib/: runtime, malloc, DNS, SNTP, TLS) and linker script
 tools          mkdisk.py, the FAT16 image builder
 tests          host unit tests, the QEMU integration suite, test programs
 ```
@@ -362,6 +395,7 @@ Programs on the disk:
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
+| sntp | `sntp [-q] [-p PORT] [SERVER]`: asks a time server (default pool.ntp.org) how far off the clock is and sets it, unless it is right to within half a second; `-q` only asks. Refuses a time before the system was built. |
 | fetch | `fetch [-i] [-k] [--ca FILE] [-o FILE] URL`: gets a page over HTTP/1.1, or over HTTPS when the URL starts with `https://`, following up to five redirects. -i shows the headers, -o saves the body. HTTPS checks the server's certificate against the roots in `/roots.pem`, or against the certificates in FILE with --ca; -k skips the check and says so each time. |
 | httpd | `httpd [-p PORT] [-q] [DIR]`: serves DIR (default: the current directory) over HTTP on port 8080, one connection at a time. A directory gives its index.html or a listing; `..` is refused. Logs each request unless -q. Ctrl+C stops it. |
 | nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
@@ -432,7 +466,12 @@ are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 These are deliberate, or simply not done yet. Programs get the x87 FPU
 (its state is saved per task) but not SSE. Long names are ASCII only (a name
 with other characters shows as its short alias). The clock is the CMOS
-one, with no time zone (UTC under QEMU) and no changes for summer time. There is no
+one, with no time zone (UTC under QEMU) and no changes for summer time;
+it is set only when someone runs `sntp`, which nothing does at boot
+yet, it is set to the second, and it is not disciplined between sets.
+`sntp` takes one answer from one server, with no NTS, so nobody can
+vouch for it: someone in the middle can set the clock to any time after
+the system was built. DHCP's NTP server option is not asked for. There is no
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
 EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and
@@ -447,8 +486,10 @@ Certificates are checked, but not everything about them is: there is
 no revocation (no CRLs, no OCSP), so a certificate its CA has taken
 back is still believed until it runs out, and no certificate
 transparency or certificate policies. The dates are checked against the
-machine's clock, which is whatever the CMOS says; a clock that is far
-wrong makes good certificates look expired. A name must be plain ASCII
+machine's clock, which is whatever the CMOS says until `sntp` sets it;
+a clock that is far wrong makes good certificates look expired, and one
+wound back makes expired ones look good (the kernel will not wind it
+back past the build, which bounds that). A name must be plain ASCII
 (an internationalised name in its xn-- form works). The roots are a
 copy taken when the disk was built, and nothing updates them. TLS is
 1.3 only, with two cipher suites (ChaCha20-Poly1305, AES-128-GCM) and

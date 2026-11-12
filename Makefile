@@ -23,7 +23,7 @@ QEMU := qemu-system-i386
 COMMON := $(ARCH) -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-builtin \
           -fno-stack-protector -fno-omit-frame-pointer -march=i686 \
           -fno-asynchronous-unwind-tables -MMD -MP
-KCFLAGS := $(COMMON) -mgeneral-regs-only -DRINGTAIL_KERNEL -Isrc/include
+KCFLAGS := $(COMMON) -mgeneral-regs-only -DRINGTAIL_KERNEL -Isrc/include -I$(BUILD)/gen
 UCFLAGS := $(COMMON) -mno-sse -mno-mmx -Isrc/include -Isrc/programs/lib
 LDFLAGS := $(ARCH) -nostdlib -static -no-pie -Wl,--build-id=none
 ASFLAGS := -f elf32
@@ -35,7 +35,7 @@ KERNEL := $(BUILD)/ringtail.bin
 
 # The user library is an archive, so a program gets only the parts it
 # uses (the resolver stays out of hello). crt0 goes in every program.
-ULIB_C := $(wildcard src/programs/lib/*.c) src/lib/string.c src/lib/printf.c src/lib/sha256.c src/lib/chacha20.c
+ULIB_C := $(wildcard src/programs/lib/*.c) src/lib/string.c src/lib/printf.c src/lib/sha256.c src/lib/chacha20.c src/lib/civil.c
 ULIB_OBJS := $(ULIB_C:%.c=$(BUILD)/u/%.o)
 CRT0 := $(BUILD)/u/src/programs/lib/crt0.o
 ULIB := $(BUILD)/u/libu.a
@@ -50,7 +50,7 @@ DISK := $(BUILD)/disk.img
 TEST_DISK := $(BUILD)/test-disk.img
 ISO := $(BUILD)/ringtail.iso
 
-.PHONY: all kernel programs disk test-disk iso run run-serial test test-host test-qemu clean
+.PHONY: all kernel programs disk test-disk iso run run-serial test test-host test-qemu clean FORCE
 all: iso disk
 
 kernel: $(KERNEL)
@@ -58,6 +58,17 @@ programs: $(PROGRAM_BINS)
 disk: $(DISK)
 test-disk: $(TEST_DISK)
 iso: $(ISO)
+
+# The kernel will not set its clock earlier than this: the time of the
+# last commit (or SOURCE_DATE_EPOCH, or now, outside a git checkout).
+# The header is rewritten only when the value changes, so an unchanged
+# tree does not rebuild.
+TIME_FLOOR := $(or $(SOURCE_DATE_EPOCH),$(shell git log -1 --format=%ct 2>/dev/null),$(shell date +%s))
+$(BUILD)/gen/timefloor.h: FORCE
+	@mkdir -p $(dir $@)
+	@echo '#define RINGTAIL_TIME_FLOOR $(TIME_FLOOR)u' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+$(BUILD)/k/src/kernel/syscall.o: $(BUILD)/gen/timefloor.h
 
 $(BUILD)/k/%.o: %.c
 	@mkdir -p $(dir $@)

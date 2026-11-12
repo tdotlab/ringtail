@@ -145,6 +145,7 @@ const char* strerror(int err) {
     case EFBIG: return "file too large";
     case ENOSPC: return "disk full";
     case EPIPE: return "broken pipe";
+    case ERANGE: return "out of range";
     case ENAMETOOLONG: return "name too long";
     case ENOSYS: return "no such system call";
     case ENOTEMPTY: return "directory not empty";

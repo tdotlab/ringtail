@@ -36,6 +36,7 @@ static inline int sys_getcwd(char* buf, uint32_t size) { return SC2(SYS_GETCWD, 
 static inline int sys_rename(const char* from, const char* to) { return SC2(SYS_RENAME, from, to); }
 static inline int sys_stat(const char* path, dirent_t* d) { return SC2(SYS_STAT, path, d); }
 static inline int sys_time(rtc_time_t* t) { return SC1(SYS_TIME, t); }
+static inline int sys_settime(const rtc_time_t* t) { return SC1(SYS_SETTIME, t); }
 static inline int sys_poll(uint32_t ticks) { return SC1(SYS_POLL, ticks); }
 static inline int sys_ping(ping_t* p) { return SC1(SYS_PING, p); }
 static inline int sys_socket(int type) { return SC1(SYS_SOCKET, type); }

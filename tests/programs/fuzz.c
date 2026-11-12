@@ -119,6 +119,7 @@ static const call_t calls[] = {
     { SYS_BIND, "bind" }, { SYS_SENDTO, "sendto" }, { SYS_RECVFROM, "recvfrom" }, { SYS_NETCONF, "netconf" },
     { SYS_LISTEN, "listen" }, { SYS_ACCEPT, "accept" }, { SYS_CONNECT, "connect" }, { SYS_SHUTDOWN, "shutdown" },
     { SYS_SOCKADDR, "sockaddr" }, { SYS_POLLFD, "pollfd" }, { SYS_FDTYPE, "fdtype" },
+    { SYS_SETTIME, "settime" },  // random words are never a date after the build, so it only fails
     { 0, "unknown" },
 };
 #define NCALLS ((int)(sizeof calls / sizeof calls[0]))

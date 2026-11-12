@@ -1,6 +1,8 @@
-// Host tests for the two pieces of the network stack that read what
-// strangers send: the DHCP messages (src/net/dhcpmsg.c) and the DNS
-// messages (src/programs/lib/dnsmsg.c). Built 32-bit with the address
+// Host tests for the pieces of the network stack that read what
+// strangers send: the DHCP messages (src/net/dhcpmsg.c), the DNS
+// messages (src/programs/lib/dnsmsg.c) and the SNTP messages
+// (src/programs/lib/ntpmsg.c), with the calendar arithmetic the clock
+// is set through (src/lib/civil.c). Built 32-bit with the address
 // and undefined-behaviour sanitizers, so a read past the end of a
 // packet is a failure even when it happens to return a harmless byte.
 // Each parser also gets a few hundred thousand mangled messages.
@@ -10,6 +12,8 @@
 #include <string.h>
 #include "dhcpmsg.h"
 #include "dnsmsg.h"
+#include "ntpmsg.h"
+#include "civil.h"
 
 static int passed, failed;
 #define CHECK(cond, what) do { \
@@ -440,6 +444,221 @@ static void fuzz_dns(void) {
     CHECK(parsed > 1000, "and plenty of them still parsed");
 }
 
+// ---- SNTP ----
+
+static void wr64(uint8_t* p, uint64_t v) { wr32(p, (uint32_t)(v >> 32)); wr32(p + 4, (uint32_t)v); }
+
+#define NONCE 0x0123456789ABCDEFull
+#define T(s, f) ((uint64_t)(s) << 32 | (uint32_t)(f))  // fixed point from seconds and a fraction
+#define NOW_NTP (1794445077u + NTP_UNIX_EPOCH)        // 2026-11-12 in seconds since 1900
+
+// A server's reply to the request carrying NONCE: version 4, stratum 2,
+// received at NOW_NTP + 1/4 s and sent at NOW_NTP + 1/2 s.
+static void good_reply(uint8_t* p) {
+    memset(p, 0, NTP_SIZE);
+    p[0] = 0 << 6 | 4 << 3 | 4;
+    p[1] = 2;
+    p[2] = 6;
+    p[3] = (uint8_t)-20;
+    wr32(p + 12, 0xC0000201);
+    wr64(p + 16, T(NOW_NTP - 30, 0));
+    wr64(p + 24, NONCE);
+    wr64(p + 32, T(NOW_NTP, 0x40000000));
+    wr64(p + 40, T(NOW_NTP, 0x80000000));
+}
+
+static void test_ntp_request(void) {
+    uint8_t p[NTP_SIZE];
+    memset(p, 0xEE, sizeof p);
+    ntp_build_request(p, NONCE);
+    CHECK(p[0] == 0x23, "version 4, client mode, no leap warning");
+    int zero = 1;
+    for (int i = 1; i < 40; i++) zero &= p[i] == 0;
+    CHECK(zero, "everything else zero: nothing about our clock goes out");
+    CHECK(p[40] == 0x01 && p[43] == 0x67 && p[47] == 0xEF, "the nonce as the transmit timestamp, big-endian");
+}
+
+static void test_ntp_parse(void) {
+    uint8_t p[NTP_SIZE + 20], q[NTP_SIZE + 20];
+    ntp_reply_t r;
+    good_reply(p);
+    CHECK(ntp_parse(p, NTP_SIZE, NONCE, &r) == 0, "a good reply");
+    CHECK(r.leap == 0 && r.version == 4 && r.stratum == 2 && r.refid == 0xC0000201, "its header");
+    CHECK(r.recv == T(NOW_NTP, 0x40000000) && r.xmit == T(NOW_NTP, 0x80000000), "its timestamps");
+
+    memcpy(q, p, NTP_SIZE);
+    memset(q + NTP_SIZE, 0xAB, 20);
+    CHECK(ntp_parse(q, NTP_SIZE + 20, NONCE, &r) == 0, "extensions or a MAC after it are ignored");
+    CHECK(ntp_parse(p, NTP_SIZE - 1, NONCE, &r) == NTP_E_NOTOURS, "47 bytes is not a reply");
+    CHECK(ntp_parse(p, 0, NONCE, &r) == NTP_E_NOTOURS, "nor is nothing");
+    CHECK(ntp_parse(p, NTP_SIZE, NONCE ^ 1, &r) == NTP_E_NOTOURS, "a reply to another request (one bit of the nonce)");
+    CHECK(ntp_parse(p, NTP_SIZE, NONCE ^ (1ull << 63), &r) == NTP_E_NOTOURS, "(the top bit)");
+    for (int mode = 0; mode < 8; mode++) {
+        if (mode == 4) continue;
+        memcpy(q, p, NTP_SIZE);
+        q[0] = (uint8_t)((q[0] & ~7) | mode);
+        CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_NOTOURS, "only mode 4 is a server's reply");
+    }
+    uint8_t req[NTP_SIZE];
+    ntp_build_request(req, NONCE);
+    memcpy(req + 24, req + 40, 8);  // our own request bounced back, origin and all
+    CHECK(ntp_parse(req, NTP_SIZE, NONCE, &r) == NTP_E_NOTOURS, "our request reflected back");
+
+    memcpy(q, p, NTP_SIZE);
+    q[1] = 0;
+    memcpy(q + 12, "RATE", 4);
+    CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_KISS && !strcmp(r.kiss, "RATE"), "stratum 0 is a kiss-o'-death");
+    memcpy(q + 12, "\x1b[2J", 4);
+    CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_KISS && !memcmp(r.kiss, "\x1b[2J", 5), "its code as sent");
+    wr64(q + 24, NONCE + 1);
+    CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_NOTOURS, "and not believed unless it is ours");
+
+    memcpy(q, p, NTP_SIZE);
+    q[0] |= 3 << 6;
+    CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_UNSYNC, "leap indicator 3: the server is not synchronised");
+    for (int li = 1; li <= 2; li++) {
+        memcpy(q, p, NTP_SIZE);
+        q[0] = (uint8_t)(q[0] | li << 6);
+        CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == 0 && r.leap == li, "a leap second warning is fine");
+    }
+    int strata[] = { 1, 15 };
+    for (int i = 0; i < 2; i++) {
+        memcpy(q, p, NTP_SIZE);
+        q[1] = (uint8_t)strata[i];
+        CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == 0 && r.stratum == strata[i], "strata 1 to 15");
+    }
+    int bad_strata[] = { 16, 17, 255 };
+    for (int i = 0; i < 3; i++) {
+        memcpy(q, p, NTP_SIZE);
+        q[1] = (uint8_t)bad_strata[i];
+        CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_UNSYNC, "stratum 16 and up: unsynchronised");
+    }
+    for (int v = 0; v < 8; v++) {
+        memcpy(q, p, NTP_SIZE);
+        q[0] = (uint8_t)((q[0] & ~0x38) | v << 3);
+        int e = ntp_parse(q, NTP_SIZE, NONCE, &r);
+        CHECK(v >= 1 && v <= 4 ? e == 0 && r.version == v : e == NTP_E_BADREPLY, "versions 1 to 4 only");
+    }
+    memcpy(q, p, NTP_SIZE);
+    wr64(q + 32, 0);
+    CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_BADREPLY, "no receive timestamp");
+    memcpy(q, p, NTP_SIZE);
+    wr64(q + 40, 0);
+    CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == NTP_E_BADREPLY, "no transmit timestamp");
+    memcpy(q, p, NTP_SIZE);
+    wr64(q + 32, 1);
+    CHECK(ntp_parse(q, NTP_SIZE, NONCE, &r) == 0, "a timestamp of one fraction is not zero");
+}
+
+static void test_ntp_time(void) {
+    uint32_t now = 1794445077u;  // 2026-11-12 03:37:57
+    CHECK(ntp_to_unix(T(NOW_NTP, 5), now) == T(now, 5), "now is now, fraction and all");
+    CHECK(ntp_to_unix(T(NTP_UNIX_EPOCH, 0), now) == T(0, 0) - 0 && ntp_to_unix(T(NTP_UNIX_EPOCH, 7), now) == 7,
+          "1970 is 0");
+    // Era 1 starts at 2036-02-07 06:28:16, Unix 2085978496.
+    CHECK(ntp_to_unix(T(0, 0), now) == T(2085978496u, 0), "seconds 0 seen from 2026 is the 2036 wrap");
+    CHECK(ntp_to_unix(T(0xFFFFFFFFu, 0), now) == T(2085978495u, 0), "and the second before it is in era 0");
+    CHECK(ntp_to_unix(T(1000, 0), 2085978000u) == T(2085979496u, 0), "seen from just before the wrap");
+    CHECK(ntp_to_unix(T(0xFFFFFF00u, 0), 2085979000u) == T(2085978240u, 0), "and era 0 seen from just after");
+    CHECK(ntp_to_unix(T(NOW_NTP, 0), 0) == T(now, 0), "2026 seen from a clock reset to 1970");
+    CHECK(ntp_to_unix(T(123010304u, 0), 0) == 0, "2040 from 1970 is more than 68 years: refused, not 1904");
+    CHECK(ntp_to_unix(T(123010304u, 0), now) == T(123010304u + 2085978496u, 0), "but from 2026 it is 2040");
+    CHECK(ntp_to_unix(T(NTP_UNIX_EPOCH - 1, 0), 100) == 0, "1969 is refused");
+    // Unix 2^32 is NTP seconds 2^32 + NTP_UNIX_EPOCH, which wraps to NTP_UNIX_EPOCH.
+    CHECK(ntp_to_unix(T(NTP_UNIX_EPOCH, 0), 0xFFFFFF00u) == 0, "and 2106 past 32 bits");
+    CHECK(ntp_to_unix(T(NTP_UNIX_EPOCH + 5, 0), 0xFFFFFF00u) == 0, "(not just where it wraps to 0)");
+    CHECK(ntp_to_unix(T(NTP_UNIX_EPOCH - 1, 9), 0xFFFFFF00u) == T(0xFFFFFFFFu, 9), "but its last second is not");
+
+    int64_t off, delay;
+    ntp_offset(T(100, 0), T(110, 0x80000000), T(110, 0x80000000), T(101, 0), &off, &delay);
+    CHECK(off == (int64_t)T(10, 0) && delay == (int64_t)T(1, 0), "ten seconds slow, a second's round trip");
+    ntp_offset(T(1000, 0), T(900, 0x40000000), T(900, 0xC0000000), T(1001, 0), &off, &delay);
+    // ((900.25 - 1000) + (900.75 - 1001)) / 2 = -100; 1 s round trip less the server's 0.5 s
+    CHECK(off == -(int64_t)T(100, 0) && delay == (int64_t)T(0, 0x80000000), "fast, with the server taking half a second");
+    ntp_offset(T(5, 0), T(5, 0), T(9, 0), T(6, 0), &off, &delay);
+    CHECK(delay == 0, "a delay below zero (the server's clock ran fast) counts as none");
+    uint64_t t1 = T(0, 0), t2 = T(now, 0), t4 = T(0, 0x10000000);
+    ntp_offset(t1, t2, t2, t4, &off, &delay);
+    CHECK(off == (int64_t)T(now, 0) - 0x08000000 && delay == 0x10000000, "56 years off, without overflow");
+    ntp_offset(t2, t1, t1, t2, &off, &delay);
+    CHECK(off == -(int64_t)T(now, 0) && delay == 0, "and the other way");
+}
+
+static void fuzz_ntp(void) {
+    uint8_t base[NTP_SIZE + 20];
+    good_reply(base);
+    memset(base + NTP_SIZE, 0, 20);
+    int ok = 1, parsed = 0;
+    for (int i = 0; i < 300000; i++) {
+        uint8_t m[NTP_SIZE + 20];
+        memcpy(m, base, sizeof m);
+        for (int k = 1 + (int)(rnd() % 4); k > 0; k--) {
+            int at = (int)(rnd() % (i % 3 ? 24u : sizeof m));  // mostly the header, which is where the checks are
+            if (rnd() % 2) m[at] = (uint8_t)rnd();
+            else m[at] ^= (uint8_t)(1 << (rnd() % 8));
+        }
+        int len = rnd() % 4 ? NTP_SIZE : (int)(rnd() % (sizeof m + 1));
+        uint8_t* p = (uint8_t*)malloc((size_t)len + 1);
+        memcpy(p, m, (size_t)len);
+        ntp_reply_t r;
+        int e = ntp_parse(p, len, NONCE, &r);
+        if (e == 0) {
+            parsed++;
+            ok &= len >= NTP_SIZE && (p[0] & 7) == 4 && !memcmp(p + 24, base + 24, 8) && r.leap < 3 &&
+                  r.version >= 1 && r.version <= 4 && r.stratum >= 1 && r.stratum <= 15 && r.recv && r.xmit;
+        } else if (e == NTP_E_KISS) {
+            ok &= p[1] == 0 && !memcmp(p + 24, base + 24, 8) && r.kiss[4] == 0;
+        } else {
+            ok &= e == NTP_E_NOTOURS || e == NTP_E_BADREPLY || e == NTP_E_UNSYNC;
+        }
+        free(p);
+    }
+    CHECK(ok, "300000 mangled SNTP replies: no crash, nothing believed that should not be");
+    CHECK(parsed > 10000, "and plenty of them still parsed");
+    int any = 0;
+    for (int i = 0; i < 100000; i++) {
+        uint8_t m[NTP_SIZE];
+        for (int k = 0; k < NTP_SIZE; k++) m[k] = (uint8_t)rnd();
+        ntp_reply_t r;
+        any |= ntp_parse(m, NTP_SIZE, NONCE, &r) != NTP_E_NOTOURS;
+    }
+    CHECK(!any, "100000 random messages: none taken for ours");
+}
+
+// Every day from 1970 to 2105, against a calendar counted a day at a time.
+static void test_civil(void) {
+    static const int mdays[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    unsigned y = 1970, mo = 1, d = 1;
+    int ok = 1;
+    uint32_t day = 0;
+    for (; y <= CIVIL_MAX_YEAR; day++) {
+        rtc_time_t t = { y, mo, d, rnd() % 24, rnd() % 60, rnd() % 60 }, u;
+        uint32_t s = day * 86400u + t.hour * 3600 + t.min * 60 + t.sec;
+        ok &= civil_valid(&t) && civil_to_unix(&t) == s;
+        unix_to_civil(s, &u);
+        ok &= !memcmp(&t, &u, sizeof t);
+        if (!ok) { printf("  at %u-%u-%u\n", y, mo, d); break; }
+        int leap = y % 4 == 0 && (y % 100 || y % 400 == 0);
+        if (++d > (unsigned)(mdays[mo - 1] + (mo == 2 && leap))) {
+            d = 1;
+            if (++mo > 12) { mo = 1; y++; }
+        }
+    }
+    CHECK(ok && day == 49673, "every day from 1970 to 2105, both ways");
+    rtc_time_t last;
+    unix_to_civil(0xFFFFFFFFu, &last);
+    CHECK(last.year == 2106 && last.month == 2 && last.day == 7 && last.hour == 6 && last.min == 28 && last.sec == 15,
+          "the last second 32 bits hold");
+    rtc_time_t good[] = { { 2000, 2, 29, 0, 0, 0 }, { 2024, 2, 29, 23, 59, 59 }, { 1970, 1, 1, 0, 0, 0 },
+                          { 2105, 12, 31, 23, 59, 59 }, { 2026, 4, 30, 12, 0, 0 } };
+    rtc_time_t bad[] = { { 2100, 2, 29, 0, 0, 0 }, { 2026, 2, 29, 0, 0, 0 }, { 2026, 4, 31, 0, 0, 0 }, { 2026, 0, 1, 0, 0, 0 },
+                         { 2026, 13, 1, 0, 0, 0 }, { 2026, 1, 0, 0, 0, 0 }, { 2026, 1, 32, 0, 0, 0 }, { 2026, 1, 1, 24, 0, 0 },
+                         { 2026, 1, 1, 0, 60, 0 }, { 2026, 1, 1, 0, 0, 60 }, { 1969, 12, 31, 23, 59, 59 },
+                         { 2106, 1, 1, 0, 0, 0 }, { 0xFFFFFFFFu, 1, 1, 0, 0, 0 }, { 2026, 0xFFFFFFFFu, 1, 0, 0, 0 } };
+    for (unsigned i = 0; i < sizeof good / sizeof *good; i++) CHECK(civil_valid(&good[i]), "a real moment");
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) CHECK(!civil_valid(&bad[i]), "not a real moment (or out of range)");
+}
+
 int main(void) {
     test_dhcp_build();
     test_dhcp_parse();
@@ -447,6 +666,11 @@ int main(void) {
     test_dns_names();
     test_dns_parse();
     fuzz_dns();
+    test_ntp_request();
+    test_ntp_parse();
+    test_ntp_time();
+    fuzz_ntp();
+    test_civil();
     printf("test_netmsg: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
