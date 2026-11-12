@@ -1025,6 +1025,11 @@ def ntp_tests(m, t):
 
 
 def _ntp_tests(m, t, srv):
+    # Earlier tests leave connections in TIME-WAIT (30 s), and these tests
+    # outlast it: let them go first, or their freeing looks like a change.
+    end = time.time() + 40
+    while "TCP:      0 connections" not in m.run("net") and time.time() < end:
+        time.sleep(1)
     mem_before = m.run("mem")
     epoch = lambda *a: datetime.datetime(*a, tzinfo=datetime.timezone.utc).timestamp()
 
