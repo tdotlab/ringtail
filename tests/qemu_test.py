@@ -232,6 +232,12 @@ def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
     t.check("boots to the shell", "RingTail OS v0.28.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
+    # The release's name is in the README's "Current version" line; the
+    # banner must say the same (it said an old one for four releases).
+    readme = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "README.md")).read()
+    cur = re.search(r'Current version: \*\*(v[\d.]+) "([^"]+)"\*\*', readme)
+    t.check("the banner names the release the README says is current",
+            cur and f'RingTail OS {cur.group(1)} "{cur.group(2)}"' in boot, f"{cur and cur.groups()}: {boot}")
 
     out = m.run("help")
     t.check("help lists commands", "run <prog>" in out and "poweroff" in out, out)
