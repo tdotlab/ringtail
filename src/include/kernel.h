@@ -7,7 +7,7 @@
 #include "lib.h"
 
 #define RINGTAIL_VERSION "0.28.0"
-#define RINGTAIL_CODENAME "Handshake"
+#define RINGTAIL_CODENAME "Time Will Tell"
 
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08
