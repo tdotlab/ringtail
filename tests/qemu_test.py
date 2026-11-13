@@ -2636,6 +2636,42 @@ def gnu_text_tests(m, t):
     out, rc = st("cal -y 2026 | wc -l")
     t.check("cal into a pipe", out.strip() == "36" and rc == 0, out)
 
+    # ---- v0.33.0: base64: usage errors and statuses, which the generated cases (GNU's own wording and status 1) cannot show ----
+    usage = "usage: base64 [-d] [-i] [-w COLS] [FILE]"
+    for c, msg in (("base64 -x", "base64: invalid option -- 'x'"),
+                   ("base64 -dx", "base64: invalid option -- 'x'"),
+                   ("base64 --foo", "base64: unrecognized option '--foo'"),
+                   ("base64 --decodex", "base64: unrecognized option '--decodex'"),
+                   ("base64 --", None),
+                   ("base64 a b", "base64: extra operand 'b'"),
+                   ("base64 - -", "base64: extra operand '-'"),
+                   ("base64 -w", "base64: option requires an argument -- 'w'"),
+                   ("base64 -dw", "base64: option requires an argument -- 'w'"),
+                   ("base64 --wrap", "base64: option '--wrap' requires an argument"),
+                   ("base64 --decode=1", "base64: option '--decode=1' doesn't allow an argument"),
+                   ("base64 --ignore-garbage=1", "base64: option '--ignore-garbage=1' doesn't allow an argument")):
+        if msg is None:
+            continue
+        out, rc = st(c)
+        t.check(f"{c}: the message, the usage and status 2", out == msg + "\n" + usage and rc == 2, out)
+    for w in ("5x", "-1", "-5", "+", "-", "0x10", "3 ", "1e3", "abc", "--5", "+-5", "''", "' '"):
+        arg = w if w.startswith("'") else f"'{w}'"
+        shown = w.strip("'")
+        out, rc = st(f"echo hello | base64 -w {arg}")
+        t.check(f"-w {w} is an invalid wrap size, status 2", out == f"base64: invalid wrap size: '{shown}'" and rc == 2, out)
+    out, rc = st("echo hello | base64 --wrap=5x")
+    t.check("--wrap=5x too", out == "base64: invalid wrap size: '5x'" and rc == 2, out)
+    out, rc = st("echo hello | base64")
+    t.check("a good encoding ends with status 0", out == "aGVsbG8K" and rc == 0, (out, rc))
+    out, rc = st("echo aGVsbG8K | base64 -d")
+    t.check("and a good decoding", out == "hello" and rc == 0, (out, rc))
+    out, rc = st("echo aGVsbG8 | base64 -d")
+    t.check("an invalid input is status 1, after what came before it", out == "hellobase64: invalid input" and rc == 1, (out, rc))
+    out, rc = st("base64 nosuchfile")
+    t.check("a file that is not there is status 1", out == "base64: nosuchfile: no such file or directory" and rc == 1, (out, rc))
+    out, rc = st("yes | base64 | head -n 2")
+    t.check("a reader that goes away ends it (an endless input, two lines)", out == "eQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5\nCnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkK" and rc == 0, (out, rc))
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is

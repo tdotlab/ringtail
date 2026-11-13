@@ -61,14 +61,6 @@ README says which, under "Programs on the disk"), found by the Makefile on
 its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
-**base64** (`text/`). Lets any file, binary or not, travel as plain
-letters and come back unchanged. `base64 [-d] [-i] [-w COLS] [FILE]`:
-encodes, wrapping at 76 columns (`-w 0` for none); `-d` decodes,
-skipping newlines, and with `-i` anything not in the alphabet. On bad
-input, match GNU's message, status and what it writes before it stops.
-Decoding is a parser: host tests (every length from 0 to 64, every
-padding case, junk at every position), mutation-checked, then GNU cases.
-
 **sha256** (`text/`). Fingerprints a file, so you can tell whether a
 download or a copy came through intact. GNU calls it `sha256sum`, which
 does not fit 8.3, so it is `sha256` here; the output is GNU's, `HASH

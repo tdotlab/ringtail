@@ -10,3 +10,4 @@ tests/test_crypto
 tests/test_tls
 tests/test_sig
 tests/test_x509
+tests/test_b64

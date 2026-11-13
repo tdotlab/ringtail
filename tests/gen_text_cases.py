@@ -970,6 +970,52 @@ case("seq 1 20 | xargs -n5 echo | tail -n 2", "seq 1 20 | xargs -n5 echo | wc -l
 # in -h for files whose size is a multiple of 512 (64 lines of 8 bytes). A
 # directory's own space is not counted by RingTail, so the cases that
 # list directories keep to the lines about files.
+# ---------------------------------------------------------------- base64
+# (the parts that decide what is written, byte for byte, are checked against
+# GNU base64 in tests/test_b64.c; these are the program: options, files,
+# pipes, messages)
+for n in range(0, 8):
+    case(("echo -e '%s\\c' | base64" % "abcdefg"[:n]) if n else "echo -n | base64")
+case("echo hello | base64", "echo hello | base64 -", "echo hello | base64 | base64 -d", "echo hello | base64 | base64 --decode", "echo hello | base64 | base64 --dec",
+     "echo hello | base64 | base64 -d -")
+case("echo -e '\\xff\\xfe\\x00\\x01' | base64", "echo -e '\\x00' | base64", "echo -e '\\x00\\x00\\x00\\x00\\x00' | base64", "echo -e '\\xff\\xff\\xff' | base64",
+     "echo -e '\\xfb\\xef\\xbe' | base64", "echo -e '\\xfb\\xef\\xbe\\xff' | base64")
+ALLB = ["\\x%02x" % i for i in range(256)]
+# every byte value, in files (the shell takes lines of up to 255 characters)
+mkall = ["echo -e '%s\\c' > ba%d" % ("".join(ALLB[k:k + 40]), k // 40) for k in range(0, 256, 40)]
+CATALL = "cat ba0 ba1 ba2 ba3 ba4 ba5 ba6"
+case(*mkall, CATALL + " | base64", CATALL + " | base64 | base64 -d | od -An -tx1", CATALL + " | base64 -w 0 | base64 -d | od -An -tx1",
+     CATALL + " | base64 -w 7 | base64 -d | od -An -tx1", CATALL + " | base64 -w 7 | base64 -di | od -An -tx1", "base64 ba0 | base64 -d | cmp - ba0")
+# line length
+LONG = "yes abcdefg | head -n 12 | "
+case(LONG + "base64", LONG + "base64 -w 0", LONG + "base64 -w 20", LONG + "base64 -w20", LONG + "base64 --wrap=20", LONG + "base64 --wrap 20",
+     LONG + "base64 --wra=20", LONG + "base64 --w 20", LONG + "base64 -w 76", LONG + "base64 -w 77", LONG + "base64 -w 1000")
+case("echo hello | base64 -w 1", "echo hello | base64 -w 2", "echo hello | base64 -w 3", "echo hello | base64 -w 4", "echo hello | base64 -w 8", "echo hello | base64 -w 9",
+     "echo hello | base64 -w 11", "echo hello | base64 -w 12", "echo hello | base64 -w 0", "echo hello | base64 -w -0", "echo hello | base64 -w +3",
+     "echo hello | base64 -w ' 3'", "echo hello | base64 -w 007", "echo hello | base64 -w 4294967295", "echo hello | base64 -w 4294967296",
+     "echo hello | base64 -w 9223372036854775807", "echo hello | base64 -w 9223372036854775808", "echo hello | base64 -w 99999999999999999999")
+case("echo hello | base64 -iw4", "echo hello | base64 -w4 -i", "echo hello | base64 -w 4 -w 8", "echo hello | base64 -w 4 -w 0", "echo hello | base64 -w 0 -w 4",
+     "echo -n | base64 -w 4", "echo -n | base64 -w 0", "echo -e 'abc\\c' | base64 -w 4", "echo -e 'abcd\\c' | base64 -w 4", "echo -e 'abc\\c' | base64 -w 2",
+     "echo -e 'abcdef\\c' | base64 -w 8", "echo -e 'abcdef\\c' | base64 -w 4")
+# decoding
+case("echo aGVsbG8K | base64 -d", "echo aGVsbG8K | base64 -di", "echo aGVsbG8K | base64 -id", "echo aGVsbG8K | base64 -d -i", "echo aGVsbG8K | base64 --decode --ignore-garbage",
+     "echo aGVsbG8K | base64 --d --i", "echo YQ== | base64 -d", "echo YWI= | base64 -d", "echo YQ==YQ== | base64 -d", "echo -e 'YQ==\\nYQ==' | base64 -d",
+     "echo -e 'YW\\nJj\\nZG\\nVm' | base64 -d", "echo -e 'YWJj\\n\\n\\nZGVm\\n\\n' | base64 -d", "echo | base64 -d", "echo -n | base64 -d", "echo -e '\\n\\n' | base64 -d")
+case("?echo aGVsbG8 | base64 -d", "?echo aGVsbG8= | base64 -d", "?echo aGVsbG8== | base64 -d", "?echo -n aGVsbG8 | base64 -d", "?echo -n YQ | base64 -d", "?echo -n YQ= | base64 -d",
+     "?echo -n Y | base64 -d", "?echo -n YQ=A | base64 -d", "?echo -n YWJ= | base64 -d", "?echo -n 'ab=' | base64 -d", "?echo -n '!!!!' | base64 -d", "?echo -n 'YW!j' | base64 -d",
+     "?echo -n 'YWJj!!!!ZGVm' | base64 -d", "?echo -n 'ZGVmYQ==YQ=' | base64 -d", "?echo 'aGVs bG8K' | base64 -d", "?echo -e 'aGVs\\tbG8K' | base64 -d")
+case("echo 'aG!Vs@bG8K' | base64 -di", "echo 'aGVs bG8K' | base64 -di", "echo -e 'a G V s\\tb\\xffG 8 K' | base64 -di", "echo 'a=GVsbG8K' | base64 -di | od -c",
+     "?echo '!!!' | base64 -di", "?echo 'aGVsbG8' | base64 -di", "echo 'YQ==!!YQ==' | base64 -di", "?echo 'YQ==!!YQ=' | base64 -di", "?echo '=a' | base64 -di")
+# files
+case("echo hello > bf1", "base64 bf1", "base64 -w 4 bf1", "base64 bf1 -w 4", "base64 -- bf1", "base64 - < bf1", "base64 -w 4 - < bf1", "base64 bf1 > bf2", "base64 -d bf2",
+     "base64 -d < bf2", "base64 -d bf2 > bf3", "cmp bf1 bf3", "base64 -d -- bf2", "base64 --decode bf2", "base64 -di bf2")
+case("?base64 nosuchfile", "?base64 -d nosuchfile", "?base64 -w 4 nosuchfile")
+case("yes abcdefg | head -n 2000 > bf1", "base64 bf1 | wc -l", "base64 -w 0 bf1 | wc -c", "base64 bf1 | base64 -d | cmp - bf1", "base64 -w 5 bf1 | base64 -d | cmp - bf1",
+     "base64 bf1 | base64 -di | cmp - bf1", "base64 bf1 | head -n 3", "base64 bf1 | tail -n 2", "base64 bf1 | base64 -d | wc -c")
+# through the other tools
+case("echo hello | base64 | tr a-z A-Z", "echo hello | base64 | rev", "echo hello world | base64 -w 6 | sort", "echo hello world | base64 | cut -c 1-4",
+     "echo hello world | base64 -w 0 | fold -w 6", "echo hello world | base64 -w 6 | tr -d '\\n' | base64 -d")
+
 def mk(name, lines):
     return "yes abcdefg | head -n %d > %s" % (lines, name) if lines else "echo -n > " + name
 SIZES = [0, 1, 63, 64, 65, 127, 128, 129, 200, 1000, 1280, 1281, 5000, 16384]
@@ -1071,7 +1117,7 @@ def run_all():
             pre = 'du() { command du --apparent-size "$@"; }; ' if re.search(r"(^|[ |;])du ", c) else ""
             p = subprocess.run(["bash", "-c", pre + c.lstrip("?")], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, env=dict(os.environ, LC_ALL="C"))
             if p.returncode and not may_fail:
-                bad.append(f"{c!r}: {p.stdout.decode().strip()}")
+                bad.append(f"{c!r}: {p.stdout.decode('latin-1').strip()!r}")
                 break
             # a program that fails makes RingTail's shell print its status
             # older diffutils say "char" where newer ones say "byte"
