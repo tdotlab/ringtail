@@ -37,12 +37,6 @@ Every task ends the same way, or it is not done:
 Good warm-ups. Each is a new file in `src/programs/`, added to the Makefile
 the way the others are, with GNU-checked cases.
 
-**cal.** `cal [[MONTH] YEAR]` in GNU's layout, using the calendar code in
-`src/lib` (`civil.c`, which turns dates into Unix time and back; the day of the week falls out of that); today is
-highlighted only on a terminal. Check the 1752 switch: GNU does Julian
-before September 1752, so either do the same or refuse years before 1753
-and say so.
-
 ## Features in programs that exist
 
 **tail -f.** Keep reading after the end of the file, checking its size

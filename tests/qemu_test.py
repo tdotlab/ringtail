@@ -2551,6 +2551,91 @@ def gnu_text_tests(m, t):
     t.check("du of a 200K file is 200 and df lost about as much", rr("du -s dg") == "200\tdg" and 200 <= after - before <= 204, (before, after))
     run("rm -r dg dt")
 
+    # ---- v0.32.0: cal: today, the clock and the exit statuses the generated cases cannot show ----
+    mm = re.match(r"(\d+)-(\d+)-(\d+) (\d+):(\d+):(\d+)", rr("date"))
+    clock_t0, clock_start = time.time(), (datetime.datetime(*(int(g) for g in mm.groups())) if mm else None)
+    ty, tm, td = (int(g) for g in mm.groups()[:3]) if mm else (0, 0, 0)
+    plain = rr("cal")
+    mm2 = re.match(r"(\d+)-(\d+)-(\d+) ", rr("date"))
+    if mm2 and (int(mm2.group(1)), int(mm2.group(2)), int(mm2.group(3))) == (ty, tm, td):  # not across midnight
+        t.check("cal with no arguments is this month", plain == rr(f"cal {tm} {ty}"), plain)
+        t.check("cal -y with no arguments is this year", rr("cal -y") == rr(f"cal {ty}"))
+        t.check("cal -3 with no arguments is this month and its neighbours", rr("cal -3") == rr(f"cal -3 {tm} {ty}"))
+        mark = f"\x1b[7m{td:2d}\x1b[27m"
+        for c in ("cal", f"cal {tm} {ty}", "cal -y", f"cal {ty}", "cal -3", f"cal -3 {tm} {ty}", f"cal -1 {tm} {ty}"):
+            raw = m.run(c)
+            t.check(f"on the terminal, {c} shows today in reverse", raw.count("\x1b[7m") == 1 and mark in raw, raw)
+        t.check("piped, nothing is highlighted", "\x1b[7m" not in m.run("cal | cat") and "\x1b[7m" not in m.run("cal -y | cat"))
+        run("cal > cf")
+        t.check("nor in a file", "\x1b[7m" not in m.run("cat cf") and run("cat cf").rstrip("\n") == plain)
+        run("rm cf")
+        t.check("another year has no today to show", "\x1b[7m" not in m.run(f"cal {tm} {ty - 1}") and "\x1b[7m" not in m.run(f"cal {ty + 1}"))
+    else:
+        t.check("cal: the clock gave a date", False, (plain, mm2))
+    t.check("a month of another year, on the terminal, is plain", "\x1b[7m" not in m.run("cal 3 2000"))
+
+    # with the clock set, so that the no-argument forms and the highlight have known answers: a one-digit day,
+    # the last day of a year, the first, a leap day, and the middle months that make -3 a row of the year
+    def at(y, mo, d):
+        out = run(f"rtcset {y} {mo} {d} 12 0 0")
+        t.check(f"the clock set to {y}-{mo}-{d}", "set=0" in out, out)
+
+    def lit(c, day):  # on the terminal, c shows exactly one day in reverse, and it is this one
+        raw = m.run(c)
+        return raw.count("\x1b[7m") == 1 and f"\x1b[7m{day:2d}\x1b[27m" in raw
+    at(2031, 5, 6)
+    t.check("cal with the clock at 6 May 2031 is May 2031", rr("cal") == rr("cal 5 2031") and "May 2031" in rr("cal"), rr("cal"))
+    t.check("and shows the 6th, with its space, in reverse", lit("cal", 6) and lit("cal 5 2031", 6) and lit("cal -1", 6), m.run("cal"))
+    t.check("in a year", lit("cal -y", 6) and lit("cal 2031", 6) and rr("cal -y") == rr("cal 2031"))
+    t.check("and with -3, where May is the middle of a row of the year", rr("cal -3") == rr("cal -3 5 2031") and "April" in rr("cal -3") and lit("cal -3", 6))
+    t.check("not in April, nor May of another year", "\x1b[7m" not in m.run("cal 4 2031") and "\x1b[7m" not in m.run("cal 5 2030") and "\x1b[7m" not in m.run("cal 5 2032"))
+    t.check("and -3 on the terminal for a month beside it shows it too", lit("cal -3 4 2031", 6) and lit("cal -3 6 2031", 6) and "\x1b[7m" not in m.run("cal -3 7 2031"))
+    at(2031, 12, 31)
+    t.check("on the last day of the year, -3 reaches into the next", rr("cal -3") == rr("cal -3 12 2031") and "January 2032" in rr("cal -3") and "November 2031" in rr("cal -3"))
+    t.check("and shows the 31st once", lit("cal", 31) and lit("cal -3", 31) and lit("cal -y", 31))
+    at(2031, 1, 1)
+    t.check("on the first, it reaches back", rr("cal -3") == rr("cal -3 1 2031") and "December 2030" in rr("cal -3"))
+    t.check("and shows the 1st once, in January", lit("cal", 1) and lit("cal -3", 1) and lit("cal -y", 1))
+    at(2032, 2, 29)
+    t.check("a leap day is this month's last", rr("cal") == rr("cal 2 2032") and lit("cal", 29) and lit("cal -3", 29) and lit("cal -y", 29))
+    t.check("and -3 is a row of the year again", rr("cal -3") == rr("cal -3 2 2032") and rr("cal -3").startswith(" " * 28 + "2032"))
+    at(2031, 7, 15)
+    t.check("July is the start of a row of the year, so -3 has the neighbours", rr("cal -3") == rr("cal -3 7 2031") and "June 2031" in rr("cal -3") and "August 2031" in rr("cal -3"))
+    # put the clock back where it was, plus the time that has passed
+    if clock_start:
+        n = clock_start + datetime.timedelta(seconds=int(time.time() - clock_t0) + 1)
+        out = run(f"rtcset {n.year} {n.month} {n.day} {n.hour} {n.minute} {n.second}")
+        t.check("the clock put back", "set=0" in out, out)
+
+    def st(c):  # (output, exit status): the shell prints [exit status N] for a failure
+        out = run(c).rstrip("\n")
+        mm = re.search(r"\n?\[exit status (\d+)\]$", out)
+        return (out[:mm.start()] if mm else out), (int(mm.group(1)) if mm else 0)
+
+    usage = "usage: cal [-1 | -3 | -y] [[MONTH] YEAR]"
+    for c in ("cal 1 2 3", "cal -q", "cal -j 2026", "cal -m 3", "cal -y 1 2 3", "cal 3 2026 2026", "cal -a", "cal -1y3q"):
+        out, rc = st(c)
+        t.check(f"{c}: the usage and status 2", out == usage and rc == 2, out)
+    for c, msg in (("cal 13 2026", "cal: 13 is neither a month number (1..12) nor a name"),
+                   ("cal 3 0", "cal: year `0' not in range 1..9999"),
+                   ("cal 10000", "cal: year `10000' not in range 1..9999"),
+                   ("cal abc", "cal: not a valid year abc"),
+                   ("cal -3 2026", "cal: -3 together with a given year but no given month is not supported."),
+                   ("cal -1 2026", "cal: -1 together with a given year but no given month is not supported."),
+                   ("cal 2026 3", "cal: 2026 is neither a month number (1..12) nor a name"),
+                   # numbers that would wrap around into range if they were allowed to (BSD cal lets 4294967297 be 1)
+                   ("cal 3 4294967297", "cal: year `4294967297' not in range 1..9999"),
+                   ("cal 4294967299 2026", "cal: 4294967299 is neither a month number (1..12) nor a name"),
+                   ("cal 3 18446744073709551617", "cal: year `18446744073709551617' not in range 1..9999"),
+                   ("cal 18446744073709551619 2026", "cal: 18446744073709551619 is neither a month number (1..12) nor a name"),
+                   ("cal 4294967297", "cal: year `4294967297' not in range 1..9999")):
+        out, rc = st(c)
+        t.check(f"{c}: the message and status 2", out == msg and rc == 2, out)
+    out, rc = st("cal 3 2026")
+    t.check("a good month ends with status 0", rc == 0 and out.startswith("     March 2026"), (out, rc))
+    out, rc = st("cal -y 2026 | wc -l")
+    t.check("cal into a pipe", out.strip() == "36" and rc == 0, out)
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is

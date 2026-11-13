@@ -982,6 +982,81 @@ case("mkdir dir", "mkdir dir/sub", mk("dir/f1", 192), mk("dir/sub/f2", 1344), mk
      "du -a dir | grep /f | sort", "du -ah dir | grep /f | sort", "du -a dir/ | grep /f | sort", "du -a dir/sub | grep /f | sort",
      "du dir/sub/f2 dir/f1", "du -a | grep /f | sort", "du -a . | grep /f | sort", "du -ah ./dir | grep /f | sort")
 
+# -------------------------------------------------------------- cal
+# The oracle is BSD's cal (Debian's ncal package), not util-linux's: the
+# layout, the Julian calendar up to September 1752 and the argument rules
+# are RingTail's, and util-linux prints differently. Only fixed months and
+# years go here, since "now" cannot be compared; the no-argument forms and
+# the highlight are in qemu_test.py. Errors are piped through cat so that
+# the message is compared and the exit status (64 there, 2 here) is not.
+_c = subprocess.run(["cal", "9", "1752"], capture_output=True, text=True, env=dict(os.environ, LC_ALL="C")).stdout.splitlines()
+if _c[:2] != ["   September 1752     ", "Su Mo Tu We Th Fr Sa  "]:
+    sys.exit("tests/gen_text_cases.py needs BSD cal (the ncal package) as cal, not util-linux's")
+MON = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+# every month of a year, by number and by name
+case(*["cal %d 2026" % m for m in range(1, 13)])
+case(*["cal %s 2026" % n for n in MON])
+case(*["cal %d 1752" % m for m in range(1, 13)])
+case(*["cal %d 1582" % m for m in (9, 10, 11)], "cal 2 1700", "cal 2 1900", "cal 2 2000", "cal 2 2100", "cal 2 2024", "cal 2 2023", "cal 2 1600", "cal 2 1500",
+     "cal 2 1751", "cal 2 1752", "cal 2 1753", "cal 2 4", "cal 2 100", "cal 2 400", "cal 2 8", "cal 2 9996")
+# the edges of the range
+case("cal 1 1", "cal 12 1", "cal 3 1", "cal 1 2", "cal 12 9999", "cal 1 9999", "cal 2 9999", "cal 9 9998", "cal 2 9996", "cal 12 100", "cal 1 101", "cal 10 1000")
+# a week or two either side of the missing days, and their neighbours
+case("cal 8 1752", "cal 9 1752", "cal 10 1752", "cal 9 1751", "cal 9 1753", "cal 9 1752 | grep -c 14", "cal 9 1752 | wc -l",
+     "cal 9 1752 | sed -n 3p", "cal 9 1752 | cut -c1-20 | tail -n 3")
+# one weekday for each of a spread of dates
+case(*["cal 1 %d | sed -n 3p" % y for y in (1, 100, 1000, 1500, 1582, 1700, 1751, 1752, 1753, 1800, 1900, 1970, 2000, 2024, 2038, 2100, 2400, 5000, 9999)])
+# whole years
+case("cal 2026", "cal 2024", "cal 2023", "cal 2000", "cal 1900", "cal 1752", "cal 1751", "cal 1753")
+case("cal 1", "cal 4", "cal 100", "cal 1582", "cal 1700", "cal 9999", "cal 9996", "cal 1000", "cal 12", "cal 12345 | cat")
+case("cal 2026 | wc -l", "cal 2026 | wc -c", "cal 3 2026 | wc -l", "cal 3 2026 | wc -c", "cal 2026 | head -n 3", "cal 2026 | tail -n 3", "cal 1752 | sed -n 20,27p",
+     "cal 3 2026 | cut -c1-20", "cal 3 2026 | grep -c ' 1 '", "cal 3 2026 | od -c | head -n 6")
+# -y, with the month ignored
+case("cal -y 2026", "cal -y 3 2026", "cal -y mar 1752", "cal -y 9999", "cal -y 1", "cal -y 2000 | wc -l")
+case("cal -y 3 2026 > ya", "cal 2026 > yb", "cmp ya yb", "cal -y 2026 | wc -c", "cal -y 1 | wc -l", "cal -y -y 2026 | wc -l")
+# when more than one of -1, -3 and -y is given, the last one counts
+case("cal -1 -3 3 2026", "cal -3 -1 3 2026", "cal -y -3 3 2026", "cal -3 -y 3 2026", "cal -1 -y 3 2026 | head -n 2", "cal -y -1 3 2026", "cal -31y 3 2026 | head -n 2",
+     "cal -y31 3 2026 | head -n 2", "cal -3 -1 3 2026 | wc -l", "cal -1 -3 -1 3 2026 | wc -l", "cal -1 3 -3 2026 | wc -l", "cal -3 -y 2026 | head -n 1", "cal -y -3 2026 | cat",
+     "cal -1 -y 2026 | head -n 1", "cal -y -1 2026 | cat")
+# leap years by the Gregorian rule: every 4th, except centuries not divisible by 400 (the 200s are the ones a wrong rule would take for leap years)
+case(*["cal 2 %d | tail -n 3" % y for y in (1800, 2200, 2600, 3000, 3400, 1804, 2004, 2096, 2400, 2800, 4000, 9200)])
+# a word that is not a month, however much of it matches
+case("cal xar 2026 | cat", "cal Xay 2026 | cat", "cal zan 2026 | cat", "cal ar 2026 | cat", "cal ep 2026 | cat", "cal e 2026 | cat", "cal x 2026 | cat", "cal xmar 2026 | cat", "cal mxr 2026 | cat",
+     "cal mar 2026 | cat", "cal maR 2026 | cat", "cal mAr 2026 | cat", "cal Mar 2026 | cat", "cal ocT 2026 | cat", "cal Aug 2026 | cat", "cal aUG 2026 | cat", "cal DEC 2026 | cat")
+# what counts as a number: spaces before it, a sign, nothing after it
+case("cal 3 ' ' | cat", "cal 3 '   ' | cat", "cal ' ' 2026 | cat", "cal 3 '-' | cat", "cal 3 ' -5' | cat", "cal 3 '+ 5' | cat", "cal -- 3 -5 | cat", "cal -- 3 -0 | cat",
+     "cal -- 3 +-5 | cat", "cal -- -5 2026 | cat", "cal ' -3' 2026 | cat", "cal 3 '+0' | cat", "cal '  3' 2026", "cal 3 '   2026'", "cal '  +3' ' +2026'", "cal -- -1 2026 | cat",
+     "cal -- 3 -2026 | cat", "cal -- -0 2026 | cat", "cal -- 03 -2026 | cat")
+# any white space in front of a number is skipped: space, tab, newline, vertical tab, form feed, carriage return
+case(*["echo -n -e '%s2026\\0' | xargs -0 cal | head -n 1" % c for c in ("\\t", "\\n", "\\x0b", "\\x0c", "\\r", " ", "  ", "+", "\\t+")],
+     *["echo -n -e '3\\0%s2026\\0' | xargs -0 cal | head -n 1" % c for c in ("\\t", "\\n", "\\x0b", "\\x0c", "\\r", " ")])
+# after -- everything is an argument, whatever it looks like
+case("cal -- 3 -y | cat", "cal -- -y | cat", "cal -- -3 2026 | cat", "cal -3 -- 3 2026", "cal -y -- 2026", "cal -- -y 2026 | cat", "cal -- -1 | cat", "cal -- 1 -3 | cat", "cal -- 3 2026 | cat")
+# -1 and -3: three months in the middle of the one asked for
+case(*["cal -3 %d 2026" % m for m in range(1, 13)])
+case(*["cal -3 %d 1752" % m for m in range(1, 13)])
+case("cal -3 1 1", "cal -3 2 1", "cal -3 12 9999", "cal -3 11 9999", "cal -3 1 9999", "cal -3 12 1751", "cal -3 1 1753", "cal -3 9 1582", "cal -3 10 1582",
+     "cal -3 12 1699", "cal -3 1 1700", "cal -3 2 1700", "cal -3 3 1700", "cal -3 2 1900", "cal -3 2 2024", "cal -3 3 2024")
+case("cal -1 3 2026", "cal -1 mar 2026", "cal -1 9 1752", "cal -3 mar 2026", "cal -3 Sep 1752", "cal -31 3 2026", "cal -13 3 2026 | wc -l", "cal -3 3 2026 | wc -l",
+     "cal -3 2 2026 | wc -l", "cal -3 3 2026 | tail -n 2", "cal -3 2 2026 | head -n 2", "cal -3 5 2026 | head -n 2", "cal -3 8 2026 | head -n 2", "cal -3 11 2026 | head -n 2",
+     "cal -3 12 2026 | head -n 1", "cal -3 1 2026 | head -n 1")
+# the ways of writing a month and a year
+case("cal mar 2026", "cal MAR 2026", "cal Mar 2026", "cal march 2026", "cal MARCH 2026", "cal marc 2026", "cal marchh 2026", "cal marxyz 2026", "cal sep 1752", "cal sept 1752",
+     "cal Sept 1752", "cal Sepxx 1752", "cal dec 2026", "cal Dec 2026", "cal decem 2026", "cal jan 2026", "cal feb 2024", "cal apr 2026", "cal may 2026", "cal maybe 2026",
+     "cal jun 2026", "cal jul 2026", "cal aug 2026", "cal oct 2026", "cal nov 2026", "cal janu 2026", "cal junx 2026", "cal julx 2026")
+case("cal 03 2026", "cal 003 2026", "cal +3 2026", "cal ' 3' 2026", "cal 3 02026", "cal 3 +2026", "cal 3 ' 2026'", "cal 03 0002", "cal 3 0000002", "cal 3 0001", "cal 12 09999",
+     "cal 3 -- 2026 | cat", "cal -- 3 2026", "cal -- 2026 | head -n 2", "cal 1 +1", "cal ' 1' ' 1'", "cal 007 2026", "cal 0003 +0002026")
+# errors: the message, not the status (cat takes its place)
+case("cal 13 2026 | cat", "cal 0 2026 | cat", "cal 00 2026 | cat", "cal 14 2026 | cat", "cal 99 2026 | cat", "cal abc 2026 | cat", "cal ma 2026 | cat", "cal ju 2026 | cat", "cal m 2026 | cat",
+     "cal 3rd 2026 | cat", "cal '3 ' 2026 | cat", "cal '' 2026 | cat", "cal '+' 2026 | cat", "cal ++3 2026 | cat", "cal 99999999999 3 | cat", "cal marx- 2026 | cat", "cal xmar 2026 | cat")
+case("cal 3 0 | cat", "cal 3 10000 | cat", "cal 3 99999 | cat", "cal 3 99999999999 | cat", "cal 3 abc | cat", "cal 3 2026x | cat", "cal 3 '2026 ' | cat", "cal 3 '' | cat", "cal 3 + | cat",
+     "cal 3 ++5 | cat", "cal 3 0000 | cat", "cal 3 00 | cat", "cal 3 10001 | cat", "cal 3 1e3 | cat", "cal 3 0x10 | cat", "cal 3 12.5 | cat", "cal 3 1,000 | cat")
+case("cal 0 | cat", "cal 10000 | cat", "cal 00 | cat", "cal abc | cat", "cal mar | cat", "cal '' | cat", "cal + | cat", "cal 2026x | cat", "cal 99999999999 | cat", "cal 1e3 | cat", "cal 20 26 | cat")
+case("cal 13 abc | cat", "cal abc abc | cat", "cal 13 0 | cat", "cal abc 0 | cat", "cal 13 99999 | cat", "cal abc 99999 | cat", "cal 0 abc | cat", "cal xx 10000 | cat")
+case("cal -3 2026 | cat", "cal -1 2026 | cat", "cal -3 abc | cat", "cal -1 abc | cat", "cal -y abc | cat", "cal -3 13 2026 | cat", "cal -3 0 | cat", "cal -1 10000 | cat",
+     "cal -3 mar 0 | cat", "cal -3 13 0 | cat", "cal -y 13 2026 | cat", "cal -y 3 0 | cat", "cal -y 0 | cat", "cal -y mar | cat", "cal -1 0 | cat", "cal -y 3 abc | cat")
+
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:
