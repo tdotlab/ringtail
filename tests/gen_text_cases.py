@@ -596,6 +596,93 @@ case(raw(r"x\n\\:\\:\\:\ny") + "nl -ba -ha -v 3")
 # a page marker starts the numbers again, so it also forgives a number that ran out
 case(raw(r"a\n\\:\\:\nb\n") + "nl -v 9223372036854775807", raw(r"a\nb\n") + "nl -v 9223372036854775807 -i -1", raw(r"a\nb\nc\n") + "nl -v 9223372036854775806 -i 0")
 
+# ---------------------------------------------------------------- paste
+def mkf(name, text):
+    return "echo -e '" + text.replace("\n", "\\n") + "\\c' > " + name
+
+PF = {"p1": "a\nb\nc\n", "p2": "1\n2\n", "p3": "x\ny", "pe": "", "pb": "a\n\nb\n", "pl": "one\ntwo\nthree\nfour\nfive\n"}
+def pmk(*names):
+    return [mkf(n, PF[n]) for n in names]
+
+SETS = [["p1"], ["p1", "p2"], ["p2", "p1"], ["p1", "p2", "p3"], ["p3", "p1"], ["pe", "p1"], ["p1", "pe"], ["pe", "pe"],
+        ["p1", "p1"], ["pb", "p1"], ["p3"], ["pe"], ["p2", "p3", "p1", "pb"]]
+POPTS = ["", "-s", "-d,", "-d ,", "-d ',;'", "-d '\\0'", "-d ''", "-d '\\0,'", "-d '\\t\\n'", "-d '\\\\'", "-d 'ab'", "-d '\\q'",
+         "-s -d,:", "-sd ,:", "-d ,: -s", "-d '\\n'", "-s -d '\\0'", "-s -d ''", "--", "-s --"]
+for names in SETS:
+    for o in POPTS:
+        case(*pmk(*names), "paste " + o + " " + " ".join(names))
+case("echo -e '1\\n2\\n3\\n4\\n5\\c' | paste - -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste - - -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste - - - -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste -d: - -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste -d ':,' - - -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste -s -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste -s - -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste -s -d '+' -")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste -s")
+case("echo -e '1\\n2\\n3\\n4\\n5\\n6\\c' | paste -d '|' -s")
+case(mkf("p1", PF["p1"]), "echo -e 'q\\nr\\c' | paste p1 -")
+case(mkf("p1", PF["p1"]), "echo -e 'q\\nr\\c' | paste - p1")
+case(mkf("p1", PF["p1"]), "echo -e 'q\\nr\\nz\\nw\\c' | paste - p1 -")
+case(mkf("p1", PF["p1"]), "echo -e 'q\\nr\\nz\\nw\\c' | paste -s p1 - p1")
+case(mkf("p1", PF["p1"]), "?paste p1 nosuch p1")
+case(mkf("p1", PF["p1"]), "?paste nosuch p1")
+case(mkf("p1", PF["p1"]), "?paste -d 'x\\' p1")
+case("seq 1 3000 | paste - - - -")
+case("seq 1 3000 | paste -s -d ',' | wc -c")
+case("seq 1 5000 > pa", "seq 5001 9000 > pb", "paste pa pb | tail -n 3")
+case("seq 1 5000 > pa", "seq 5001 9000 > pb", "paste pb pa | tail -n 3")
+case("seq 1 3 > pa", "echo -e 'a\\n\\nb\\c' > pb", "paste -d '\\0' pa pb pa")
+
+# ---------------------------------------------------------------- comm
+CF = {"A": "a\nb\nc\nd\n", "B": "b\nc\nx\ny\n", "E": "", "N": "a\nb", "D1": "a\na\nb\n", "D2": "a\nb\nb\n",
+      "U": "b\na\nc\n", "U2": "a\nc\nb\nd\n", "S": "a\nb\nc\nd\n", "X": "b\na\n", "Y": "c\n", "L": "line 1\nline 10\nline 2\n", "M": "line 1\nline 2\n", "Z": "a\nb\nb\n"}
+CPAIRS = [("A", "B"), ("B", "A"), ("A", "A"), ("A", "E"), ("E", "B"), ("E", "E"), ("D1", "D2"), ("N", "B"), ("A", "N"),
+          ("U", "A"), ("A", "U"), ("U2", "S"), ("S", "U2"), ("U2", "U2"), ("X", "Y"), ("Y", "X"), ("L", "M"), ("Z", "D2")]
+COPTS = ["", "-1", "-2", "-3", "-12", "-13", "-23", "-123", "-1 -3", "-3 -2", "--total", "--total -12", "--total -123",
+         "--output-delimiter=:", "--output-delimiter=ab -3", "--output-delimiter= -1", "--output-delimiter=: -2 --total",
+         "--check-order", "--nocheck-order", "--check-order --nocheck-order", "--nocheck-order --check-order",
+         "--out=: --tot", "--no", "--check", "--", "--check-order -1", "--check-order --total"]
+for a, b in CPAIRS:
+    for o in COPTS:
+        case(mkf("ca", CF[a]), mkf("cb", CF[b]), "?comm " + o + " ca cb")
+case(mkf("ca", CF["A"]), "?echo -e 'c\\nz\\c' | comm ca -")
+case(mkf("ca", CF["A"]), "?echo -e 'c\\nz\\c' | comm - ca")
+case(mkf("ca", CF["A"]), "?echo -e 'c\\nz\\c' | comm -12 - ca")
+case(mkf("ca", CF["A"]), "?comm ca nosuch")
+case(mkf("ca", CF["A"]), "?comm nosuch ca")
+case(mkf("ca", CF["A"]), mkf("cb", CF["B"]), "?comm ca cb --total -3")
+case(mkf("ca", CF["A"]), mkf("cb", CF["B"]), "?comm -12 -- ca cb")
+case(mkf("ca", CF["A"]), mkf("cb", CF["B"]), "?comm -- ca cb")
+case("seq 1 3000 > ca", "seq 1 2 3000 > cb", "comm -23 ca cb | tail -n 2", "comm -12 ca cb | wc -l")
+case("seq 1 3000 > ca", "seq 1 2 3000 > cb", "?comm ca cb | wc -l")
+case("echo -e 'a\\nb\\nc' > ca", "echo -e 'b' > cb", "echo -e 'b\\nb' > cc", "?comm ca cb", "?comm ca cc", "?comm cc ca")
+
+# high bytes sort after ASCII, which only an unsigned comparison gives (the
+# screen cannot show them, so tr turns them into '+' on the way)
+HB = "| tr '\\200-\\377' '+'"
+def hb(name, text):
+    return "echo -e '" + text + "\\c' > " + name
+case(hb("ca", "a\\n\\0300\\n"), hb("cb", "b\\n\\0200\\n"), "comm ca cb " + HB)
+case(hb("ca", "a\\n\\0300\\n"), hb("cb", "b\\n\\0200\\n"), "?comm --check-order ca cb " + HB)
+case(hb("ca", "a\\n\\0377\\n"), hb("cb", "a\\n\\0200\\n\\0377\\n"), "comm --check-order ca cb " + HB, "comm -12 ca cb " + HB)
+case(hb("ca", "a\\n\\0300\\n\\0377\\n"), hb("cb", "\\0300\\n\\0301\\n"), "comm -3 ca cb " + HB, "comm -12 ca cb " + HB)
+case(mkf("ca", CF["A"]), mkf("cb", CF["B"]), "?comm --output-delimiter=a --output-delimiter=b ca cb")
+case(mkf("ca", CF["A"]), mkf("cb", CF["B"]), "?comm --output-delimiter=ab --output-delimiter=ab ca cb")
+case(mkf("ca", CF["A"]), mkf("cb", CF["B"]), "?comm --output-delimiter=ab --output-delimiter=ac ca cb")
+case(mkf("ca", "ab\n\n"), mkf("cb", "ab\n"), "?comm ca cb")
+case(mkf("ca", "\n"), mkf("cb", "\n\n"), "?comm ca cb")
+case(mkf("ca", "a b\na\n"), mkf("cb", "a\na b\n"), "?comm ca cb")
+case(hb("pa", "a\\0200b\\n"), hb("pb", "\\0200\\n"), "paste -d '\\0200' pa pb " + HB)
+
+# where GNU checks the order: as a line is read, and again at the end of a file
+for a, b in [("b\na\nd\n", "b\ne\n"), ("b\na\n", "b\nc\nd\n"), ("b\na\nc\n", "b\nc\n"), ("b\n", "b\na\n"), ("b\n", "b\na\nc\n"),
+             ("b\na\n", "b\nb\n"), ("b\na\n", "b\n0\n"), ("x\nb\na\n", "x\n"), ("x\nb\na\n", "x\nz\n"), ("x\nb\na\n", "x\nc\n"),
+             ("a\nb\nb\na\n", "a\nb\nb\na\n"), ("a\nb\na\nz\n", "a\nb\nz\n"), ("b\na\n", "b\nc\n"), ("b\na", "b\nc")]:
+    for o in ["", "-12", "--check-order", "--nocheck-order", "--total"]:
+        case(mkf("ca", a), mkf("cb", b), "?comm " + o + " ca cb")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:
@@ -603,13 +690,15 @@ def run_all():
         parts = []
         for c in cmds:
             may_fail = c.startswith("?")
-            p = subprocess.run(["bash", "-c", c.lstrip("?")], cwd=d, capture_output=True, timeout=10)
+            # stderr is merged in order: RingTail's console shows both, and a
+            # tool flushes what it wrote before it complains
+            p = subprocess.run(["bash", "-c", c.lstrip("?")], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
             if p.returncode and not may_fail:
-                bad.append(f"{c!r}: {p.stderr.decode().strip()}")
+                bad.append(f"{c!r}: {p.stdout.decode().strip()}")
                 break
             # a program that fails makes RingTail's shell print its status
             # older diffutils say "char" where newer ones say "byte"
-            parts.append(p.stdout.decode("latin-1").replace(" differ: char ", " differ: byte ") + (f"[exit status {p.returncode}]" if p.returncode else ""))
+            parts.append(p.stdout.decode("latin-1").replace(" differ: char ", " differ: byte ").replace(": No such file or directory", ": no such file or directory") + (f"[exit status {p.returncode}]" if p.returncode else ""))
         out.append((cmds, tuple(parts)))
     if bad:
         sys.exit("GNU refused:\n  " + "\n  ".join(bad))

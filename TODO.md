@@ -37,10 +37,9 @@ Every task ends the same way, or it is not done:
 Good warm-ups. Each is a new file in `src/programs/`, added to the Makefile
 the way the others are, with GNU-checked cases.
 
-**paste, comm, fold, expand.** `paste [-d LIST] [-s] FILE...` (with `-` for
-standard input); `comm [-123] A B` on sorted input; `fold [-w N] [-s]`;
-`expand [-t N]` and `unexpand [-a]`. The ones that read two files at once
-(`paste`, `comm`) are the interesting part.
+**fold, expand.** `fold [-w N] [-s]`; `expand [-t N]` and `unexpand [-a]`.
+Tabs and backspaces change the column count; keep it byte-wise like `rev`
+and say so in the README. (`paste` and `comm` are done.)
 
 **strings, od.** `strings [-n N]` prints runs of printable bytes. `od` in
 its common forms (`-c`, `-x`, `-o`, `-A x|d|o|n`, `-t x1`); look at

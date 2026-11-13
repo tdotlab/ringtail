@@ -2229,6 +2229,39 @@ def gnu_text_tests(m, t):
     t.check("a wide number field is as wide as asked", out.strip() == "203" and rc == 0, out)
     run("rm nf1")
 
+    # ---- v0.29.0: paste and comm: the usage errors, and what the generated cases cannot show ----
+    run("echo -e 'a\\nb\\n\\c' > pf1")
+    run("echo -e 'b\\nc\\n\\c' > pf2")
+    for c, what in [("paste -q pf1", "usage: paste"), ("paste -d", "usage: paste"), ("paste -s -d", "usage: paste"), ("paste", "usage: paste")]:
+        out, rc = st(c)
+        t.check(f"{c} shows the usage", what in out and rc == 2, out)
+    out, rc = st("paste pf1 nosuch pf2")
+    t.check("paste with a missing file prints nothing and says so", out == "paste: nosuch: no such file or directory" and rc == 1, out)
+    run("mkdir pdir")
+    out, rc = st("paste pdir")
+    t.check("paste of a directory is an error", out.startswith("paste: pdir: ") and rc == 1, out)
+    for c in ["comm", "comm pf1", "comm pf1 pf2 pf1", "comm -x pf1 pf2", "comm -4 pf1 pf2", "comm --foo pf1 pf2",
+              "comm --output-delimiter pf1 pf2", "comm --total=1 pf1 pf2", "comm --check-order=1 pf1 pf2", "comm --chex pf1 pf2", "comm --tx pf1 pf2",
+              "comm --checkorder pf1 pf2"]:
+        out, rc = st(c)
+        t.check(f"{c} shows the usage", "usage: comm" in out and rc == 2, out)
+    out, rc = st("echo x | comm - -")
+    t.check("comm will not read standard input twice", out.startswith("comm: only one of the files") and rc == 1, out)
+    out, rc = st("comm pdir pf1")
+    t.check("comm of a directory is an error", out.startswith("comm: pdir: ") and rc == 1, out)
+    out, rc = st("comm pf1 nosuch")
+    t.check("comm with a missing file prints nothing and says so", out == "comm: nosuch: no such file or directory" and rc == 1, out)
+    run("rmdir pdir")
+    # lines longer than the read buffer
+    run("seq 1 1000 | tr '\\n' ' ' > plong")
+    n = int(run("wc -c plong").split()[0])
+    t.check("paste of a line longer than its buffer", run("paste plong plong | wc -c").strip() == str(2 * n + 2), run("paste plong plong | wc -c"))
+    t.check("paste -s of long lines", run("paste -s plong plong | wc -c").strip() == str(2 * n + 2), run("paste -s plong plong | wc -c"))
+    t.check("comm of a line longer than its buffer", run("comm plong plong | wc -c").strip() == str(n + 3), run("comm plong plong | wc -c"))
+    out, rc = st("comm -23 plong pf1 | wc -c")
+    t.check("and when it is the only one", out.strip() == str(n + 1) and rc == 0, out)
+    run("rm plong pf1 pf2")
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is
