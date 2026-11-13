@@ -1,9 +1,10 @@
 # To do
 
-Work for the next sessions, as of v0.28.0. Each task stands on its own: do
-them in any order, one commit (or a few) each. The first sections are meant
-for Sonnet on high; the last one is work to keep for Opus on high, because
-the hard part there is the design, not the typing.
+Work for the next sessions, as of v0.28.0 and the programs added after it
+(up to `cal`). Each task stands on its own: do them in any order, one
+commit (or a few) each, except that the folders come first. The first
+sections are meant for Sonnet on high; the last one is work to keep for
+Opus on high, because the hard part there is the design, not the typing.
 
 Checked against the code when this was written. Do not add things that
 already exist: `fetch` already reads chunked bodies (fetch.c, the
@@ -28,16 +29,185 @@ Every task ends the same way, or it is not done:
 - Update the README: the row in the programs table, the shell paragraph for
   built-ins, and the Limits section when a limit goes away or a new one
   appears. Keep its voice: plain sentences, no marketing.
+- When a program is done, the report opens with one plain sentence on what
+  it lets you do (what it is for, not its options), before the details.
 - No PROGRESS.md entry or version bump unless a release is asked for.
 - Commit on the session branch. Never push to main, and never force-push,
   without being asked.
 
+## Things that bit before
+
+- The disk takes DOS 8.3 names only (`tools/mkdisk.py` refuses the rest),
+  so a program's name is at most 8 characters.
+- The shell has no `2>&1` yet (an item below). Error cases in
+  `gen_text_cases.py` end in `| cat`; see the `du` and `cal` cases.
+- `echo -e` has no `\f` or `\v` yet (an item below): use `\x0c` and `\x0b`.
+- A spawned program gets its own copy of each file offset, not a shared
+  one (see "find -exec" below). Anything that runs programs into a file
+  it is also writing has to allow for that.
+- Not every reference is GNU: `cal` is checked against BSD `ncal`, because
+  that is the layout people know. Check the reference's `--version`, say
+  which one it is in the commit, and make the generator refuse to run
+  against the wrong one (the `cal` section does).
+- `rtcset` in `tests/programs` sets the clock for a test that needs a
+  given date. Put the clock back afterwards (the `cal` block shows how).
+- `make test` takes about ten minutes. Run it in the background and wait
+  on its log.
+
+## First: put src/programs in folders
+
+56 programs in one folder is past the point where you find one by
+looking. Do this before any new program, as one commit that only moves
+files and changes the build. Use `git mv`, so `git log --follow` keeps
+each file's history.
+
+```
+src/programs/apps/    saklas kenoma octavo gauge
+src/programs/files/   ls cp mv rm mkdir rmdir touch find du df basename dirname
+src/programs/text/    cat more head tail tee sort uniq cut paste tr sed grep wc nl
+                      tac rev fold expand unexpand comm cmp diff od hexdump strings
+src/programs/net/     ping host nc fetch httpd sntp
+src/programs/util/    echo true false yes seq sleep xargs cal hello
+src/programs/lib/     unchanged: the C library every program links
+src/programs/user.ld  unchanged
+```
+
+Where a program goes, now and later:
+
+- `apps`: the big interactive programs, each with a screen or a loop of
+  its own: the shell, the desktop, the editor, the monitor.
+- `files`: works on files and directories as things (names, places,
+  sizes, dates), not on what is in them.
+- `text`: reads what is in files and pipes, and writes it changed,
+  picked, compared or dumped. Bytes count as text here (`od`, `cmp`).
+- `net`: talks to the network.
+- `util`: small tools for building command lines that are none of the
+  above: they print, count, wait or run other commands. `cal` and `hello`
+  are the loosest fits there, which is fine.
+
+A program that could go in two folders goes where its main job is
+(`more` is a pager, so `text`; `xargs` runs commands, so `util`). Do not
+make a folder for one program.
+
+The build:
+
+- The programs are `$(filter-out src/programs/lib/%,$(wildcard
+  src/programs/*/*.c))`, so a new folder needs no Makefile change and
+  `lib/` is never taken for programs. A plain `*/*.c` would try to link
+  `malloc.c` as one.
+- Objects mirror the sources (`build/u/src/programs/text/cat.o`); the
+  binaries stay flat in `build/programs/`, so the `mkdisk.py` line does
+  not change. The link rule has to find a program's object from its bare
+  name: `.SECONDEXPANSION` with `$$(filter %/$$*.c,...)`, or one rule per
+  program made with `$(foreach ...)` and `$(eval ...)`. Either is fine.
+  Leave the test-program rule as it is.
+- Two programs with the same name in different folders would land on the
+  disk under one name. `mkdisk.py` already stops with "duplicate name",
+  so nothing more is needed, but see it happen once: copy a program into
+  a second folder, build, watch it fail, remove the copy.
+
+Proof that nothing changed: before moving anything, `make` and keep
+`sha256sum build/programs/*`. After, `make clean && make` and compare.
+Every binary must be the same byte for byte: there is no `-g` and nothing
+uses `__FILE__`, so where a source lives cannot change its binary. If one
+differs, find out why before going on. Then the full `make test`.
+
+Docs: the README "Source layout" gets a line per folder. "To write your
+own, copy `src/programs/hello.c`" becomes `util/hello.c`, with the rule
+for where a new program goes, in two lines. `src/programs/sntp.c` in the
+README becomes `net/sntp.c`. Fix the paths in this file. Leave
+PROGRESS.md alone: it is history.
+
 ## Small programs
 
-Good warm-ups. Each is a new file in `src/programs/`, added to the Makefile
-the way the others are, with GNU-checked cases.
+Good warm-ups. Each is a new file in the folder its job puts it in (see
+above), found by the Makefile on its own, with GNU-checked cases. The
+first sentence of each says what it is for.
+
+**base64** (`text/`). Lets any file, binary or not, travel as plain
+letters and come back unchanged. `base64 [-d] [-i] [-w COLS] [FILE]`:
+encodes, wrapping at 76 columns (`-w 0` for none); `-d` decodes,
+skipping newlines, and with `-i` anything not in the alphabet. On bad
+input, match GNU's message, status and what it writes before it stops.
+Decoding is a parser: host tests (every length from 0 to 64, every
+padding case, junk at every position), mutation-checked, then GNU cases.
+
+**sha256** (`text/`). Fingerprints a file, so you can tell whether a
+download or a copy came through intact. GNU calls it `sha256sum`, which
+does not fit 8.3, so it is `sha256` here; the output is GNU's, `HASH
+NAME` with two spaces (`-` for standard input, and GNU's backslash form
+for a name with a newline or backslash in it). `-c FILE` checks a list in
+that format: `NAME: OK` or `FAILED`, GNU's closing warnings, `--quiet`,
+`--status`, and `-w` for badly formatted lines. The hashing is
+`src/lib/sha256.c`, already in the library and tested; the new code is
+the `-c` parser, so host tests and mutation for that. The case generator
+runs each command on Linux too, so put a `sha256` link to `sha256sum` on
+its PATH.
+
+**printf** (`util/`). Prints exactly what you ask for, with no newline
+unless you put one, and lines up columns. `printf FORMAT [ARG...]`: `%s
+%b %c %d %i %u %o %x %X %%`, the flags `- + space # 0`, width and
+precision (`*` too), the escapes `echo -e` takes, and the format used
+again while arguments are left, as GNU does. Numbers are 64-bit, as
+GNU's; an argument that is not a number gives GNU's message and status 1,
+and the printing goes on. `'c` as a number is the character's code. For
+`%f %e %g`, check whether the library printf has floating point; if not,
+refuse them with a message and say so in the Limits, rather than write a
+float formatter here. It matters more once the shell has scripts.
+
+**split** (`text/`). Cuts a big file into numbered pieces that `cat`
+puts back together. `split [-l N | -b SIZE] [-a LEN] [-d]
+[--additional-suffix=S] [FILE [PREFIX]]`: pieces `xaa`, `xab` and on
+(`x00` with `-d`), 1000 lines each by default; `-b` takes GNU's `K M`
+suffixes. Running out of suffixes is GNU's error. In the cases, check
+the pieces with `ls` and `cat x*`.
+
+**join** (`text/`). Puts together the lines of two sorted files that
+share a key, like looking things up in a table. `join [-i] [-t C] [-1 F]
+[-2 F] [-j F] [-a 1|2] [-v 1|2] [-e STR] [-o LIST|auto] [--check-order |
+--nocheck-order] [--header] FILE1 FILE2`. Fields are split at runs of
+blanks unless `-t`. The order warnings follow the same GNU rules as in
+`comm`: share that code if it can be shared.
+
+**factor** (`util/`). Breaks numbers into their primes. Small, and fun
+to watch. `factor [NUMBER...]`, or numbers from standard input, up to
+2^64-1, printed as GNU does (`12: 2 2 3`). Trial division is far too slow
+near 2^64: use Miller-Rabin (the deterministic bases for 64 bits) and
+Pollard's rho. gcc for i386 has no `__int128`, so the 64-by-64 multiply
+modulo n is done by hand; host-test it against Python on random and edge
+values (primes near 2^64, squares of big primes, 2^64-1). A bigger
+number is a clear error and a Limits line.
 
 ## Features in programs that exist
+
+**find -exec into a file.** A spawned program gets its own copy of each
+file descriptor with its own offset (`src/fs/file.c` says so), so when
+`xargs` ran with `> out`, each run wrote over the one before from the
+start of the file; `xargs` now seeks to the end after each run. `find
+-exec` spawns the same way with no such seek, so `find . -name '*.txt'
+-exec cat {} ; > out` very likely keeps only the last file. Write that
+test first and watch it fail, then fix it as `xargs` did: flush before
+each run, seek to the end after it, and check `-print` mixed with
+`-exec`. If it does not fail, find out why before changing anything. The
+real fix is in the Opus section.
+
+**echo -e with \f and \v.** GNU's `echo -e` turns `\f` into a form feed
+and `\v` into a vertical tab; ours prints them as they are. Add both,
+with cases. (The `cal` cases use `\x0c` and `\x0b`; leave them.)
+
+**sort with several keys.** `sort` takes one `-k`. GNU takes any number,
+tried in order, each with its own letters (`-k2,2n -k1,1r`); a key with
+no letters takes the global ones. The whole-line tie-break stays last.
+GNU cases for mixed keys with `-t`, `-s`, and `-u` (which compares only
+the keys).
+
+**Standard error redirection in the shell.** `2> FILE`, `2>> FILE` and
+`2>&1`, including `a 2>&1 | b`, which sends both into the pipe.
+`spawn_opts_t` already carries all three descriptors, so this is the
+shell's parser and the place it fills them in (`saklas.c`).
+Redirections apply left to right, as in sh: `> f 2>&1` sends both to
+`f`, and `2>&1 > f` sends errors to the screen. Test both orders. Update
+the README shell paragraph. Leave the old `| cat` cases as they are.
 
 **tail -f.** Keep reading after the end of the file, checking its size
 every so often (sleep between checks, do not spin), until Ctrl+C. If the
@@ -65,7 +235,8 @@ because there is no system call for it (the README says so). Add one
 the directory entry, then `touch -d "YYYY-MM-DD HH:MM:SS"` and `touch -r
 FILE`. FAT keeps time to two seconds: say that in the README rather than
 pretend. This touches the file system code, so add a host test in
-`tests/test_heap_diskfs.c` for the entry it writes.
+`tests/test_heap_diskfs.c` for the entry it writes. Once the call exists,
+`cp -p` (keep the date) is a few lines: add it, with cases.
 
 ## Network
 
@@ -128,6 +299,23 @@ cleanly and never read or write out of bounds. Then the QEMU test with
 
 These need a design decision first; Sonnet would build the wrong thing
 confidently.
+
+**Shared file offsets.** A copy of a file descriptor keeps its own
+offset (`src/fs/file.c`), where in POSIX a parent and the programs it
+starts share one open file and one offset. That is why `xargs` seeks
+after each run and `find -exec` needs to. The fix is a shared,
+reference-counted open file that `spawn` (and `dup2`: check what it does
+now) hands on, after which those seeks can go. It changes when a file is
+really closed and who frees it, across tasks: a mistake there is a
+use-after-free that shows up a week later.
+
+**Back-references in grep and sed.** `\1` inside a pattern (the README
+says "No back-references"). An automaton cannot match them; GNU switches
+to a backtracking matcher only for patterns that have one. The trap is
+that POSIX wants the leftmost-longest match, which a plain backtracker
+(leftmost-first, as in Perl) does not give, and `sed s///` shows the
+difference in what it replaces. How to keep POSIX semantics, and how to
+bound the time, is the design.
 
 **Shell scripting.** The shell has no `;`, `&&`, `||`, `$?`, variables or
 scripts, which is why `test`/`[` is not on the list above: without them it
