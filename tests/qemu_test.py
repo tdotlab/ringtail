@@ -2262,6 +2262,37 @@ def gnu_text_tests(m, t):
     t.check("and when it is the only one", out.strip() == str(n + 1) and rc == 0, out)
     run("rm plong pf1 pf2")
 
+    # ---- v0.30.0: expand, unexpand and fold: the usage errors, the screen, and what the generated cases cannot show ----
+    run("echo -e 'a\\tb\\n\\c' > xf")
+    for prog, usage, bad in [
+            ("expand", "usage: expand", ["-x", "--nosuch", "--tabs", "-t", "--init=3", "-z", "-ix", "-t 4 -z", "--tab"]),
+            ("unexpand", "usage: unexpand", ["-x", "--nosuch", "--tabs", "-t", "--all=3", "-z", "-ax", "--first-only=1", "--f=1"]),
+            ("fold", "usage: fold", ["-x", "--nosuch", "--width", "-w", "--bytes=3", "-z", "-bw", "-bx", "--spaces=1"])]:
+        for b in bad:
+            out, rc = st(f"echo x | {prog} {b}")
+            t.check(f"{prog} {b} shows the usage", usage in out and rc == 2, out)
+        out, rc = st(prog)
+        t.check(f"{prog} with only the keyboard to read says how to use it", usage in out and rc == 2, out)
+    # a bad -t list is refused before anything is read
+    out, rc = st("expand -t 3,2")
+    t.check("expand checks the list before the keyboard", out == "expand: tab sizes must be ascending" and rc == 1, out)
+    out, rc = st("unexpand -t 0")
+    t.check("unexpand checks the list before the keyboard", out == "unexpand: tab size cannot be 0" and rc == 1, out)
+    out, rc = st("fold -w 0")
+    t.check("fold checks the width before the keyboard", out.startswith("fold: invalid number of columns: '0'") and rc == 1, out)
+    # the prompt starts on a fresh line even when the last line has no newline
+    for c, want in [("echo -e 'a\\tb\\c' | expand", "a       b\nringtail:/> "), ("echo -e '        x\\c' | unexpand", "\tx\nringtail:/> "),
+                    ("echo -e 'abcdef\\c' | fold -w 4", "abcd\nef\nringtail:/> ")]:
+        m.send(c + "\r")
+        raw = re.sub(r"\x1b\[[0-9;]*m", "", m.expect(PROMPT, 15)).replace("\r\n", "\n")
+        t.check(f"{c.split('|')[1].split()[0]} ends the screen output with a newline", raw.endswith(want), repr(raw))
+    # a file bigger than the read buffer, and a line that is
+    run("seq 1 20000 | paste - - - - > xbig")
+    t.check("expand then unexpand gives the file back", run("expand xbig | unexpand -a | cmp - xbig").strip() == "" and run("expand xbig | wc -l").strip() == "5000")
+    nbytes = int(run("wc -c xbig").split()[0])
+    t.check("fold -w 1 makes a line of each byte", run("fold -w 1 xbig | wc -l").strip() == str(nbytes - 5000), run("fold -w 1 xbig | wc -l"))
+    run("rm xbig xf")
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is

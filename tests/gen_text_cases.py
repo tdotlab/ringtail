@@ -683,6 +683,91 @@ for a, b in [("b\na\nd\n", "b\ne\n"), ("b\na\n", "b\nc\nd\n"), ("b\na\nc\n", "b\
     for o in ["", "-12", "--check-order", "--nocheck-order", "--total"]:
         case(mkf("ca", a), mkf("cb", b), "?comm " + o + " ca cb")
 
+# ---------------------------------------------------------------- expand, unexpand, fold
+# Tabs, backspaces and carriage returns would move the cursor on the screen
+# (and the blanks are hard to count), so they are shown as T, B, R and '.'.
+VIS = "| tr '\\011\\010\\015 ' 'TBR.'"
+def tf(name, text):
+    for ch, esc in (("\\", "\\\\"), ("\n", "\\n"), ("\t", "\\t"), ("\b", "\\b"), ("\r", "\\r")):
+        text = text.replace(ch, esc)
+    return "echo -e '" + text + "\\c' > " + name
+
+XT = ["a\tb\tc\n", "\t\tx\n", "ab\bc\td\n", "\b\bx\ty\n", "abc\rd\te\n", "      \tx\n", "x\t", "\n\n\t\n", "a\t\nb\n", "",
+      "abcdefgh\tx\n", "abcdefghi\tx\n", "\t \t x \t\n", "ab\t\bc\n"]
+XO = ["", "-t 4", "-t4", "-t 3,10", "-t 3 10", "-t 2,/5", "-t 2,+5", "-i", "-i -t 4", "--tabs=5", "--tabs 5", "--initial",
+      "-it 3", "-t 1", "--ini -t 2", "-t 4,8,12", "-t 5 -t 7", "-t /4", "-t +4", "-t 2,5,/3", "-t '3, 6'", "-- -i"]
+for i, t in enumerate(XT):
+    for j, o in enumerate(XO):
+        if (i + j) % 3 == 0 or o in ("", "-t 4", "-i"):
+            case(tf("xf", t), "expand " + o + " xf " + VIS)
+for t in XT[:6]:
+    case(tf("xf", t), "cat xf | expand " + VIS, "cat xf | expand -t 3 - " + VIS, "expand - < xf " + VIS)
+XBAD = ["-t 0", "-t 3,2", "-t 3,3", "-t ,", "-t x", "-t 4,/8,12", "-t '/4,+8'", "-t 4/", "-t 4+", "-t 3,x", "-t -3",
+        "-t 1/2,4", "-t '/2,3/4'", "-t 1/2,4,5", "-t +0,3+4,5", "-t '4+ 5'", "-t 11/,8", "-t +3,+3", "-t /4,/4", "-t 3,+3,3",
+        "-t +99999999999999999999,3,4", "-t '/99999999999999999999 3 4'", "-t 5,99999999999999999999,3,4", "-t 18446744073709551616",
+        "-t 0,3", "-t '4 ,8 x'", "-t 2,+0,3", "-t 2,/4/", "-t +3,+4", "-t /3 -t 2", "-t 5 -t 3", "-t 7,/", "-t 7,+", "-t 1,2,+"]
+for o in XBAD:
+    case("echo a > xf", "?expand " + o + " xf")
+case(tf("xa", "a\t"), tf("xb", "b\tc\n"), "expand xa xb " + VIS, "expand -t 4 xa xb xa xb " + VIS, "expand xa - xb < xb " + VIS)
+case(tf("xa", "a\tb\n"), "?expand xa nosuch xa > xo", "cat xo " + VIS, "?expand nosuch", "?expand -t 3 xa nosuch > xo", "cat xo " + VIS)
+case("mkdir xd", "?expand xd", "?expand . ")
+case("seq 1 3000 | paste - - - > xl", "expand xl | wc -c", "expand xl | tail -n 2 " + VIS, "expand -t 3,10 xl | tail -n 2 " + VIS,
+     "expand -t 5 xl | wc -c", "expand -i xl | wc -c")
+case("seq 1 20000 | paste -s -d '\\t' > xl", "expand xl | wc -c", "expand -t 3 xl | wc -c", "expand -t 1000 xl | wc -c")
+
+UT = ["        x\n", "    x\n", "a       b\n", "a b\n", "  \t x\n", "x        y\n", "a         b\n", "\t\t x\n", "        \n", "         \n",
+      "a  b   c    d     e      f       g        h\n", "       x\n", "a       \tb\n", " \n", "        ", "x\t       y\n", "ab\b       c\n",
+      "  a   b\n", "                x\n", "a\n        b\n", "\ta    b\n", "ab  cd  ef\n", "x       \n", "x            y\n", "\b        x\n", "\b\bx   y\n", "a\n x\n  y\n", "\n x\n"]
+UO = ["", "-a", "--first-only", "-a --first-only", "-t 4", "-t 4,8", "-t 2,/4", "-a -t 3", "--all", "-t 3,+6", "-t 3 -a", "-t 5", "--first-only -t 3",
+      "-t 1", "-t 2,4,6", "--first -a", "-- -a"]
+for i, t in enumerate(UT):
+    for j, o in enumerate(UO):
+        if (i + j) % 3 == 0 or o in ("", "-a", "-t 4"):
+            case(tf("uf", t), "unexpand " + o + " uf " + VIS)
+for t in UT[-4:]:
+    for o in ["-t 1", "-t 1,3", "-a", "-t 2 -a", ""]:
+        case(tf("uf", t), "unexpand " + o + " uf " + VIS)
+for t in UT[:8]:
+    case(tf("uf", t), "cat uf | unexpand -a " + VIS, "unexpand - < uf " + VIS)
+UBAD = ["-t 0", "-t 3,2", "-t x", "-t 4,/8,12", "-t '/4,+8'", "-t 4/"]
+for o in UBAD:
+    case("echo a > uf", "?unexpand " + o + " uf")
+case(tf("ua", "a      "), tf("ub", " b\n"), "unexpand -a ua ub " + VIS, "unexpand ua ub " + VIS, "unexpand -a ua - ub < ub " + VIS)
+case(tf("ua", "a        b\n"), "?unexpand -a ua nosuch ua > uo", "cat uo " + VIS, "?unexpand nosuch")
+case("seq 1 3000 | paste - - - | expand > ul", "unexpand -a ul | wc -c", "unexpand -a ul | tail -n 2 " + VIS, "unexpand ul | wc -c",
+     "unexpand -t 3,10 ul | tail -n 2 " + VIS)
+case("seq 1 4000 | sed 's/^/        /' > ul", "unexpand ul | wc -c", "unexpand ul | tail -n 2 " + VIS, "unexpand -t 4 ul | wc -c")
+case("seq 1 20000 | paste -s -d ' ' | sed 's/ /       /g' > ul", "unexpand -a ul | wc -c", "unexpand -a -t 5 ul | wc -c")
+
+FT = ["abcdefghijklmnopqrstuvwxyz\n", "the quick brown fox jumps over the lazy dog\n", "the quick brown fox jumps over the lazy dog", "\n\n",
+      "a\tb\tc\td\te\n", "a\tb c\td\n", "ab\bcd\bef\bgh\n", "abc\rdefghijklmnop\n", "0123456789012345678901234567890123456789\n",
+      "aaaaaaaaaa bbbbbbbbbb cccccccccc\n", "   leading and trailing   \n", "x y z w v u t s r q p o n m l k\n", "a  b  c  d  e  f  g  h\n",
+      "\t\t\t\tdeep\n", "aaaa\n\nbbbbbbbbbbbb\n", "", "word\t\tword\tword\n", "abcdefghij klmnopqrst uvwxyz0123 456789\n", "a\bb\bc\bd\be\bf\bg\bh\bi\bj\bk\n", "a\b\bb\n", "\b\bab\n", "x\b\b\bab\n"]
+FO = ["", "-w 10", "-w10", "-10", "-s -w 10", "-b -w 8", "-bs -w 5", "--width=7", "--width 7 -s", "--spaces -w 6", "--bytes -w 4", "-w 1", "-w 3 -s",
+      "-sw5", "-w 20", "-s -w 20", "-b", "-s", "-1", "-w 8 -w 4", "-b -w 12 -s", "-w +6", "-s -w 2", "--wid=9", "-- -w5"]
+for i, t in enumerate(FT):
+    for j, o in enumerate(FO):
+        if (i + j) % 3 == 0 or o in ("", "-w 10", "-s -w 10"):
+            case(tf("ff", t), "fold " + o + " ff " + VIS)
+for t in FT[-3:]:
+    for o in ["-w 2", "-b -w 2", "-s -w 3", "-w 80"]:
+        case(tf("ff", t), "fold " + o + " ff " + VIS)
+for t in FT[:6]:
+    case(tf("ff", t), "cat ff | fold -w 7 " + VIS, "fold -s -w 7 - < ff " + VIS)
+FBAD = ["-w 0", "-w x", "-w ''", "-w 5x", "-5s", "-w -5", "-w 18446744073709551615", "-w 18446744073709551616", "-w 99999999999999999999999", "-w ' 5'", "-0"]
+for o in FBAD:
+    case("echo abcdefghij > ff", "?fold " + o + " ff")
+case("echo abc > ff", "?fold -w 18446744073709551606 ff", "?fold -w 18446744073709551607 ff")
+case("echo abcdefghij > ff", "?fold -w 18446744073709551610 ff", "?fold -w 000000000000000000000000000004 ff", "fold -w +4 ff")
+case(tf("fa", "abcdef"), tf("fb", "ghijkl\n"), "fold -w 4 fa fb " + VIS, "fold -w 4 fb fa fb " + VIS, "fold -w 4 fa - fb < fb " + VIS)
+case(tf("fa", "abcdef\n"), "?fold -w 4 fa nosuch fa > fo", "cat fo " + VIS, "?fold -w 4 nosuch")
+case("mkdir fd", "?fold fd", "?fold . ")
+case("seq 1 5000 | paste -s -d ' ' > fl", "fold -s -w 70 fl | tail -n 3", "fold -s -w 70 fl | wc -l", "fold -w 1000 fl | wc -l", "fold -w 1 fl | wc -l",
+     "fold -b -w 33 fl | tail -n 2")
+case("seq 1 20000 | paste -s -d x > fl", "fold -w 50 fl | wc -l", "fold -s -w 50 fl | wc -l", "fold -w 100000 fl | wc -l", "fold -w 3 fl | tail -n 2")
+case("seq 1 20000 | paste -s -d ' ' > fl", "fold -s -w 100 fl | wc -l", "fold -s -w 100 fl | tail -n 2", "fold -w 100 fl | tail -n 1")
+case("seq 1 3000 | paste - - - - > fl", "fold -w 8 fl | wc -l", "fold -w 8 -s fl | tail -n 2 " + VIS, "fold -b -w 8 fl | wc -l")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:
@@ -698,7 +783,7 @@ def run_all():
                 break
             # a program that fails makes RingTail's shell print its status
             # older diffutils say "char" where newer ones say "byte"
-            parts.append(p.stdout.decode("latin-1").replace(" differ: char ", " differ: byte ").replace(": No such file or directory", ": no such file or directory") + (f"[exit status {p.returncode}]" if p.returncode else ""))
+            parts.append(p.stdout.decode("latin-1").replace(" differ: char ", " differ: byte ").replace(": No such file or directory", ": no such file or directory").replace(": Is a directory", ": is a directory").replace("\u00e2\u0080\u0098", "'").replace("\u00e2\u0080\u0099", "'") + (f"[exit status {p.returncode}]" if p.returncode else ""))
         out.append((cmds, tuple(parts)))
     if bad:
         sys.exit("GNU refused:\n  " + "\n  ".join(bad))
