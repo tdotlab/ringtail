@@ -299,7 +299,7 @@ half second. The kernel refuses a time before the last commit it was
 built from (`RINGTAIL_TIME_FLOOR`, which the Makefile writes to
 `build/gen/timefloor.h`), since a clock set before the code existed is
 wrong, and since an expired certificate looks good again to a clock
-wound back to when it was. `sntp` (`src/programs/sntp.c` over
+wound back to when it was. `sntp` (`src/programs/net/sntp.c` over
 `lib/ntpmsg.c`) is the client, RFC 4330 SNTP: it sends a version 4
 request whose only content is a random transmit timestamp, believes
 a reply only from the address and port it asked, in server mode,
@@ -363,7 +363,12 @@ src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (t
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
 src/lib        string and printf subset, SHA-256, ChaCha20 and calendar dates, shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
-src/programs   user programs (the shell among them), their C library (lib/: runtime, malloc, DNS, SNTP, TLS) and linker script
+src/programs   user programs in folders, their C library (lib/: runtime, malloc, DNS, SNTP, TLS) and linker script
+  apps         the big interactive programs: saklas (the shell), kenoma, octavo, gauge
+  files        files and directories as things: ls, cp, mv, rm, mkdir, rmdir, touch, find, du, df, basename, dirname
+  text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
+  net          talks to the network: ping, host, nc, fetch, httpd, sntp
+  util         small tools for building command lines: echo, seq, sleep, xargs, cal, hello and the like
 tools          mkdisk.py, the FAT16 image builder
 tests          host unit tests, the QEMU integration suite, test programs
 ```
@@ -460,9 +465,14 @@ Programs on the disk:
 | more | `more [FILE...]`: one screenful at a time, with a percentage for plain files. Space or PgDn for a screen, Enter or Down for a line, q or Ctrl+C to quit. Reads keys from `/dev/tty`, so it works on a pipe; when output is not the screen it behaves like cat. |
 | hello | Hello world, and the starting point for your own |
 
-To write your own, copy `src/programs/hello.c`. Every `.c` file in
-`src/programs` is built and put on the disk automatically, under its name
-in uppercase. Test programs go in `tests/programs` and land only on the
+To write your own, copy `src/programs/util/hello.c`. Every `.c` file in a
+folder of `src/programs` (not `lib`) is built and put on the disk
+automatically, under its name in uppercase, so the name must fit DOS 8.3 and
+be different from every other program's, whatever its folder. A new program
+goes in the folder for its main job: `apps` for a big interactive program,
+`files` for one about files and directories as things, `text` for one that
+reads and rewrites what is in them, `net` for the network, `util` for the
+rest. Test programs go in `tests/programs` and land only on the
 test disk.
 
 ### Octavo

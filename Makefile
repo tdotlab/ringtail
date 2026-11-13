@@ -39,7 +39,15 @@ ULIB_C := $(wildcard src/programs/lib/*.c) src/lib/string.c src/lib/printf.c src
 ULIB_OBJS := $(ULIB_C:%.c=$(BUILD)/u/%.o)
 CRT0 := $(BUILD)/u/src/programs/lib/crt0.o
 ULIB := $(BUILD)/u/libu.a
-PROGRAMS := $(notdir $(basename $(wildcard src/programs/*.c)))
+# Programs live one folder down (apps, files, text, net, util); lib/ is
+# the library, not programs. The binaries all go flat in build/programs,
+# since the disk has one directory and names must fit 8.3.
+PROGRAM_SRCS := $(filter-out src/programs/lib/%,$(wildcard src/programs/*/*.c))
+PROGRAMS := $(notdir $(basename $(PROGRAM_SRCS)))
+ifneq ($(words $(PROGRAMS)),$(words $(sort $(PROGRAMS))))
+DUPLICATES := $(strip $(foreach n,$(sort $(PROGRAMS)),$(if $(filter-out 1,$(words $(filter $(n),$(PROGRAMS)))),$(n))))
+$(error more than one program is called $(DUPLICATES) (they would share one name on the disk): $(filter %/$(firstword $(DUPLICATES)).c,$(PROGRAM_SRCS)))
+endif
 PROGRAM_BINS := $(PROGRAMS:%=$(BUILD)/programs/%)
 # Programs that exist to test the kernel. They go on a separate test
 # disk with everything else, not on the disk you boot.
@@ -89,9 +97,14 @@ $(ULIB): $(filter-out $(CRT0),$(ULIB_OBJS))
 	rm -f $@
 	ar rcs $@ $^
 
-$(BUILD)/programs/%: $(BUILD)/u/src/programs/%.o $(CRT0) $(ULIB) src/programs/user.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(CRT0) $(ULIB) -lgcc
+# One link rule for each program: its object is under its folder's mirror in
+# build/u, but the binary goes flat in build/programs.
+define PROGRAM_RULE
+$(BUILD)/programs/$(notdir $(basename $(1))): $(BUILD)/u/$(1:.c=.o) $(CRT0) $(ULIB) src/programs/user.ld
+	@mkdir -p $$(dir $$@)
+	$$(CC) $$(LDFLAGS) -T src/programs/user.ld -o $$@ $$< $$(CRT0) $$(ULIB) -lgcc
+endef
+$(foreach s,$(PROGRAM_SRCS),$(eval $(call PROGRAM_RULE,$(s))))
 
 $(BUILD)/test-programs/%: $(BUILD)/u/tests/programs/%.o $(CRT0) $(ULIB) src/programs/user.ld
 	@mkdir -p $(dir $@)

@@ -2,9 +2,9 @@
 
 Work for the next sessions, as of v0.28.0 and the programs added after it
 (up to `cal`). Each task stands on its own: do them in any order, one
-commit (or a few) each, except that the folders come first. The first
-sections are meant for Sonnet on high; the last one is work to keep for
-Opus on high, because the hard part there is the design, not the typing.
+commit (or a few) each. The first sections are meant for Sonnet on high;
+the last one is work to keep for Opus on high, because the hard part there
+is the design, not the typing.
 
 Checked against the code when this was written. Do not add things that
 already exist: `fetch` already reads chunked bodies (fetch.c, the
@@ -54,75 +54,12 @@ Every task ends the same way, or it is not done:
 - `make test` takes about ten minutes. Run it in the background and wait
   on its log.
 
-## First: put src/programs in folders
-
-56 programs in one folder is past the point where you find one by
-looking. Do this before any new program, as one commit that only moves
-files and changes the build. Use `git mv`, so `git log --follow` keeps
-each file's history.
-
-```
-src/programs/apps/    saklas kenoma octavo gauge
-src/programs/files/   ls cp mv rm mkdir rmdir touch find du df basename dirname
-src/programs/text/    cat more head tail tee sort uniq cut paste tr sed grep wc nl
-                      tac rev fold expand unexpand comm cmp diff od hexdump strings
-src/programs/net/     ping host nc fetch httpd sntp
-src/programs/util/    echo true false yes seq sleep xargs cal hello
-src/programs/lib/     unchanged: the C library every program links
-src/programs/user.ld  unchanged
-```
-
-Where a program goes, now and later:
-
-- `apps`: the big interactive programs, each with a screen or a loop of
-  its own: the shell, the desktop, the editor, the monitor.
-- `files`: works on files and directories as things (names, places,
-  sizes, dates), not on what is in them.
-- `text`: reads what is in files and pipes, and writes it changed,
-  picked, compared or dumped. Bytes count as text here (`od`, `cmp`).
-- `net`: talks to the network.
-- `util`: small tools for building command lines that are none of the
-  above: they print, count, wait or run other commands. `cal` and `hello`
-  are the loosest fits there, which is fine.
-
-A program that could go in two folders goes where its main job is
-(`more` is a pager, so `text`; `xargs` runs commands, so `util`). Do not
-make a folder for one program.
-
-The build:
-
-- The programs are `$(filter-out src/programs/lib/%,$(wildcard
-  src/programs/*/*.c))`, so a new folder needs no Makefile change and
-  `lib/` is never taken for programs. A plain `*/*.c` would try to link
-  `malloc.c` as one.
-- Objects mirror the sources (`build/u/src/programs/text/cat.o`); the
-  binaries stay flat in `build/programs/`, so the `mkdisk.py` line does
-  not change. The link rule has to find a program's object from its bare
-  name: `.SECONDEXPANSION` with `$$(filter %/$$*.c,...)`, or one rule per
-  program made with `$(foreach ...)` and `$(eval ...)`. Either is fine.
-  Leave the test-program rule as it is.
-- Two programs with the same name in different folders would land on the
-  disk under one name. `mkdisk.py` already stops with "duplicate name",
-  so nothing more is needed, but see it happen once: copy a program into
-  a second folder, build, watch it fail, remove the copy.
-
-Proof that nothing changed: before moving anything, `make` and keep
-`sha256sum build/programs/*`. After, `make clean && make` and compare.
-Every binary must be the same byte for byte: there is no `-g` and nothing
-uses `__FILE__`, so where a source lives cannot change its binary. If one
-differs, find out why before going on. Then the full `make test`.
-
-Docs: the README "Source layout" gets a line per folder. "To write your
-own, copy `src/programs/hello.c`" becomes `util/hello.c`, with the rule
-for where a new program goes, in two lines. `src/programs/sntp.c` in the
-README becomes `net/sntp.c`. Fix the paths in this file. Leave
-PROGRESS.md alone: it is history.
-
 ## Small programs
 
-Good warm-ups. Each is a new file in the folder its job puts it in (see
-above), found by the Makefile on its own, with GNU-checked cases. The
-first sentence of each says what it is for.
+Good warm-ups. Each is a new file in the folder its job puts it in (the
+README says which, under "Programs on the disk"), found by the Makefile on
+its own, with GNU-checked cases. The first sentence of each says what it
+is for.
 
 **base64** (`text/`). Lets any file, binary or not, travel as plain
 letters and come back unchanged. `base64 [-d] [-i] [-w COLS] [FILE]`:
