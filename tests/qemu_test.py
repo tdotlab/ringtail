@@ -2499,6 +2499,58 @@ def gnu_text_tests(m, t):
     t.check("xargs rm", "c.dat" in rr("ls xd") and ".txt" not in rr("ls xd"), rr("ls xd"))
     run("rm -r xd")
 
+    # ---- v0.32.0: du: the directories, the errors, and the cluster rounding the generated cases leave out ----
+    def sized(path, n):
+        run(f"yes | head -c {n} > {path}")
+    def lines(c):
+        return sorted(rr(c).split("\n"))
+    run("mkdir dt")
+    run("mkdir dt/s")
+    run("mkdir dt/s/u")
+    run("mkdir dt/e")
+    sized("dt/a", 1536)
+    sized("dt/s/b", 2048)
+    sized("dt/s/u/c", 512)
+    t.check("du lists each directory with all that is under it", lines("du dt") == ["0\tdt/e", "1\tdt/s/u", "3\tdt/s", "4\tdt"], lines("du dt"))
+    t.check("du -a lists each file once", lines("du -a dt") == sorted(["0\tdt/e", "2\tdt/a", "1\tdt/s/u", "1\tdt/s/u/c", "2\tdt/s/b", "3\tdt/s", "4\tdt"]), lines("du -a dt"))
+    t.check("du -s gives the one line", rr("du -s dt") == "4\tdt", rr("du -s dt"))
+    t.check("du -sh", rr("du -sh dt") == "4.0K\tdt", rr("du -sh dt"))
+    t.check("du -s with several paths keeps their order", rr("du -s dt/s dt/a dt/e") == "3\tdt/s\n2\tdt/a\n0\tdt/e", rr("du -s dt/s dt/a dt/e"))
+    t.check("an empty directory is 0", rr("du dt/e") == "0\tdt/e", rr("du dt/e"))
+    t.check("a trailing slash stays as typed", lines("du -a dt/s/") == sorted(["1\tdt/s/u", "1\tdt/s/u/c", "2\tdt/s/b", "3\tdt/s/"]), lines("du -a dt/s/"))
+    t.check("du -c adds the grand total, rounded once at the end", rr("du -sc dt/s dt/a") == "3\tdt/s\n2\tdt/a\n4\ttotal", rr("du -sc dt/s dt/a"))
+    run("cd dt/s")
+    t.check("du with no path walks .", lines("du") == ["1\t./u", "3\t."], lines("du"))
+    run("cd ..")
+    run("cd ..")
+    # a file takes whole clusters (512 bytes on the test disk)
+    sized("dt/one", 1)
+    sized("dt/c513", 513)
+    sized("dt/c700", 700)
+    t.check("1 byte takes a cluster", rr("du -h dt/one") == "512\tdt/one", rr("du -h dt/one"))
+    t.check("513 bytes take two", rr("du -h dt/c513") == "1.0K\tdt/c513", rr("du -h dt/c513"))
+    t.check("so do 700", rr("du -h dt/c700") == "1.0K\tdt/c700", rr("du -h dt/c700"))
+    t.check("and a total counts clusters, not bytes", rr("du -s dt/one dt/one dt/one") == "1\tdt/one\n1\tdt/one\n1\tdt/one" and rr("du -sc dt/one dt/one dt/one").endswith("2\ttotal"), rr("du -sc dt/one dt/one dt/one"))
+    out, rc = st("du nosuch dt/a")
+    t.check("a missing path is reported and the rest still done", out == "du: nosuch: no such file or directory\n2\tdt/a" and rc == 1, out)
+    out, rc = st("du -sa dt")
+    t.check("-a with -s is refused", out.startswith("du: cannot both summarize and show all entries") and "usage: du" in out and rc == 2, out)
+    out, rc = st("du -z dt")
+    t.check("an unknown option is refused", out == "usage: du [-achks] [PATH...]" and rc == 2, out)
+    out, rc = st("du -s dt | wc -l")
+    t.check("du into a pipe", out.strip() == "1" and rc == 0, out)
+    t.check("du -k is the default", rr("du -sk dt") == rr("du -s dt"))
+    # what du says against what the disk says: the files' clusters, a little under what df lost
+    def used_kb():
+        mm = re.search(r"\s(\d+)\s+\d+\s+\d+%", rr("df"))
+        return int(mm.group(1)) if mm else -1
+    before = used_kb()
+    run("mkdir dg")
+    sized("dg/big", 200 * 1024)
+    after = used_kb()
+    t.check("du of a 200K file is 200 and df lost about as much", rr("du -s dg") == "200\tdg" and 200 <= after - before <= 204, (before, after))
+    run("rm -r dg dt")
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is

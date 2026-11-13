@@ -12,7 +12,7 @@ printed on standard output (the test ignores trailing newlines).
 
 Run from the repository root:  python3 tests/gen_text_cases.py
 """
-import os, subprocess, sys, tempfile
+import os, re, subprocess, sys, tempfile
 
 CASES = []
 ERRS = []  # sed scripts: the test checks the exit status and that a message came out
@@ -964,6 +964,24 @@ case("seq 1 300 | xargs -I{} wc -c | sort | uniq -c")
 case("seq 1 20 | xargs -n5 echo | tail -n 2", "seq 1 20 | xargs -n5 echo | wc -l", "seq 1 20 | xargs -n5 | wc -l", "seq 1 20 | xargs -n5 echo | wc -w",
      "seq 1 6 | xargs -n3 echo | xargs -n1 echo")
 
+# -------------------------------------------------------------- du
+# GNU is run with --apparent-size. RingTail counts whole clusters (512 bytes
+# on the test disk), which comes out the same in 1K blocks for any file, and
+# in -h for files whose size is a multiple of 512 (64 lines of 8 bytes). A
+# directory's own space is not counted by RingTail, so the cases that
+# list directories keep to the lines about files.
+def mk(name, lines):
+    return "yes abcdefg | head -n %d > %s" % (lines, name) if lines else "echo -n > " + name
+SIZES = [0, 1, 63, 64, 65, 127, 128, 129, 200, 1000, 1280, 1281, 5000, 16384]
+files = [mk("f%d" % n, n) for n in SIZES]
+names = " ".join("f%d" % n for n in SIZES)
+case(*files, "du " + names, "du -k " + names, "du -h f64 f128 f1280 f16384", "du -s f128 f1000", "du -c f64 f128 f1280", "du -kc f1280 f16384")
+H = [64, 128, 192, 640, 1280, 1344, 2560, 16384, 20000, 65536, 131072]
+case(*[mk("g%d" % n, n) for n in H], "du -h " + " ".join("g%d" % n for n in H), "du -hc g64 g128", "du -ch g1280 g16384")
+case("mkdir dir", "mkdir dir/sub", mk("dir/f1", 192), mk("dir/sub/f2", 1344), mk("dir/sub/f3", 64), mk("dir/f4", 0),
+     "du -a dir | grep /f | sort", "du -ah dir | grep /f | sort", "du -a dir/ | grep /f | sort", "du -a dir/sub | grep /f | sort",
+     "du dir/sub/f2 dir/f1", "du -a | grep /f | sort", "du -a . | grep /f | sort", "du -ah ./dir | grep /f | sort")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:
@@ -973,7 +991,10 @@ def run_all():
             may_fail = c.startswith("?")
             # stderr is merged in order: RingTail's console shows both, and a
             # tool flushes what it wrote before it complains
-            p = subprocess.run(["bash", "-c", c.lstrip("?")], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, env=dict(os.environ, LC_ALL="C"))
+            # du: GNU's numbers are for what a file holds, not for clusters; the
+            # cases use files whose sizes come out the same (see the du section)
+            pre = 'du() { command du --apparent-size "$@"; }; ' if re.search(r"(^|[ |;])du ", c) else ""
+            p = subprocess.run(["bash", "-c", pre + c.lstrip("?")], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, env=dict(os.environ, LC_ALL="C"))
             if p.returncode and not may_fail:
                 bad.append(f"{c!r}: {p.stdout.decode().strip()}")
                 break

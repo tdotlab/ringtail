@@ -103,6 +103,7 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 #define KINFO_DISK    6  // "N KB free of M KB"
 #define KINFO_NET     7  // the network card, the address and the packet counts
 #define KINFO_PCI     8  // every PCI device: bus:dev.fn vendor:device class irq
+#define KINFO_CLUSTER 9  // the bytes in a cluster of the disk, as one number
 
 #define POWER_REBOOT 0
 #define POWER_OFF    1

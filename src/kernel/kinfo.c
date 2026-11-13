@@ -49,6 +49,13 @@ int kinfo_format(int what, sbuf_t* sb) {
         sbprintf(sb, "%u KB free of %u KB\n", free * (cb / 512) / 2, clusters * (cb / 512) / 2);
         return 0;
     }
+    case KINFO_CLUSTER: {
+        if (!diskfs_ready()) return -EIO;
+        uint32_t cb;
+        diskfs_stats(0, 0, &cb);
+        sbprintf(sb, "%u\n", cb);
+        return 0;
+    }
     case KINFO_NET:
         net_format(sb);
         return 0;

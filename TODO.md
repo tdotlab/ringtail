@@ -37,11 +37,6 @@ Every task ends the same way, or it is not done:
 Good warm-ups. Each is a new file in `src/programs/`, added to the Makefile
 the way the others are, with GNU-checked cases.
 
-**du.** `du [-s] [-h] [-a] [PATH...]`, walking directories the way `find`
-does. Decide whether sizes are in clusters (what the disk really uses, as
-`df` counts) or bytes, and say which in the README. GNU's numbers will not
-match a FAT disk, so test it against known files on the test disk instead.
-
 **cal.** `cal [[MONTH] YEAR]` in GNU's layout, using the calendar code in
 `src/lib` (`civil.c`, which turns dates into Unix time and back; the day of the week falls out of that); today is
 highlighted only on a terminal. Check the 1752 switch: GNU does Julian
