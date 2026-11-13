@@ -61,18 +61,6 @@ README says which, under "Programs on the disk"), found by the Makefile on
 its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
-**sha256** (`text/`). Fingerprints a file, so you can tell whether a
-download or a copy came through intact. GNU calls it `sha256sum`, which
-does not fit 8.3, so it is `sha256` here; the output is GNU's, `HASH
-NAME` with two spaces (`-` for standard input, and GNU's backslash form
-for a name with a newline or backslash in it). `-c FILE` checks a list in
-that format: `NAME: OK` or `FAILED`, GNU's closing warnings, `--quiet`,
-`--status`, and `-w` for badly formatted lines. The hashing is
-`src/lib/sha256.c`, already in the library and tested; the new code is
-the `-c` parser, so host tests and mutation for that. The case generator
-runs each command on Linux too, so put a `sha256` link to `sha256sum` on
-its PATH.
-
 **printf** (`util/`). Prints exactly what you ask for, with no newline
 unless you put one, and lines up columns. `printf FORMAT [ARG...]`: `%s
 %b %c %d %i %u %o %x %X %%`, the flags `- + space # 0`, width and

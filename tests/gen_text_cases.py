@@ -1016,6 +1016,96 @@ case("yes abcdefg | head -n 2000 > bf1", "base64 bf1 | wc -l", "base64 -w 0 bf1 
 case("echo hello | base64 | tr a-z A-Z", "echo hello | base64 | rev", "echo hello world | base64 -w 6 | sort", "echo hello world | base64 | cut -c 1-4",
      "echo hello world | base64 -w 0 | fold -w 6", "echo hello world | base64 -w 6 | tr -d '\\n' | base64 -d")
 
+# ---------------------------------------------------------------- sha256
+# (the parts that read a list line, byte for byte, are checked against GNU in
+# tests/test_shasum.c; these are the program: hashing, options, lists,
+# messages and statuses. The program is GNU's sha256sum, run as sha256.)
+import hashlib
+def sha(b): return hashlib.sha256(b).hexdigest()
+HX1, HX2 = sha(b"hello\n"), sha(b"world\n")
+def lst(name, *lines):
+    """Commands that write a file of these lines (an empty line is ' ' trimmed by echo, so it is written by a bare echo)."""
+    cmds = []
+    for i, l in enumerate(lines):
+        r = ">" if i == 0 else ">>"
+        cmds.append("echo %s %s" % (r, name) if l == "" else "echo -e '%s' %s %s" % (l, r, name))
+        assert len(cmds[-1]) < 250, cmds[-1]
+    return cmds
+SETUP = ["echo hello > x1", "echo world > x2"]
+# hashing: what is known, and the lengths around the blocks of 64 bytes (and the 4096 it reads by)
+case("echo hello | sha256", "echo -n | sha256", "echo -n abc | sha256", "echo -n 'The quick brown fox jumps over the lazy dog' | sha256", "echo | sha256", "echo -n abc | sha256 -",
+     "echo -n abc | sha256 - -")
+case(*["yes abcdefg | head -c %d | sha256" % n for n in (1, 2, 54, 55, 56, 57, 63, 64, 65, 119, 120, 121, 127, 128, 129, 1000, 4095, 4096, 4097, 8191, 8192, 8193, 10000)])
+case("yes abcdefg | head -c 100000 | sha256", "yes | head -c 65536 | sha256")
+case("yes abcdefg | head -c 4097 > xf", "sha256 xf", "sha256 < xf", "sha256 - < xf", "cat xf xf | sha256", "sha256 xf xf", "sha256 xf - < xf", "sha256 xf xf xf | wc -l")
+ALLB = ["\\x%02x" % i for i in range(256)]
+case(*["echo -e '%s\\c' > bs%d" % ("".join(ALLB[i * 40:(i + 1) * 40]), i) for i in range(7)],
+     *["sha256 bs%d" % i for i in range(7)], "cat bs0 bs1 bs2 bs3 bs4 bs5 bs6 | sha256", "sha256 bs0 bs1 bs2 bs3 bs4 bs5 bs6")
+# options for what is written
+case(*SETUP, "sha256 x1", "sha256 x1 x2", "sha256 -b x1", "sha256 -t x1", "sha256 -bt x1", "sha256 -tb x1", "sha256 -b -t x1", "sha256 -t -b x1", "sha256 --binary x1",
+     "sha256 --text x1", "sha256 --bin x1", "sha256 --binary --text x1", "sha256 --text --binary x1", "sha256 -b x1 x2", "echo hello | sha256 -b", "echo hello | sha256 -b -")
+case(*SETUP, "sha256 --tag x1", "sha256 --tag x1 x2", "sha256 --ta x1", "sha256 --tag -b x1", "sha256 -b --tag x1", "sha256 -t --tag x1", "sha256 --tag -t -b x1", "sha256 --tag -- x1",
+     "echo hello | sha256 --tag", "echo hello | sha256 --tag -", "sha256 --tag --tag x1")
+case(*SETUP, "sha256 -z x1 | od -c", "sha256 --zero x1 x2 | od -c", "sha256 --ze x1 | od -c", "sha256 -z --tag x1 | od -c", "sha256 -zb x1 | od -c", "sha256 -bz x1 | od -c",
+     "echo hello | sha256 -z | od -c", "sha256 -z x1 | tr '\\0' '\\n'")
+case(*SETUP, "sha256 -- x1", "sha256 x1 -- x2", "sha256 x1 --", "sha256 -b -- x1")
+# files that are not there, or not files
+case(*SETUP, "?sha256 nosuch", "?sha256 nosuch x1", "?sha256 x1 nosuch x2", "?sha256 -b nosuch", "?sha256 --tag nosuch x1", "?sha256 nosuch nosuch2", "?sha256 -z nosuch x1 | od -c",
+     "mkdir sd", "?sha256 sd", "?sha256 sd x1", "?sha256 x1 sd x2", "?sha256 nosuch/x1")
+# a list of what was written
+case(*SETUP, "sha256 x1 x2 > l1", "cat l1", "sha256 -c l1", "sha256 -c --quiet l1", "sha256 -c --status l1", "sha256 -c -w l1", "sha256 -c --strict l1", "sha256 -c --warn l1", "sha256 --check l1",
+     "sha256 --ch l1", "sha256 -cw l1", "sha256 -c < l1", "sha256 -c - < l1", "cat l1 | sha256 -c", "cat l1 | sha256 -c -", "sha256 -c l1 l1", "sha256 -c --quiet --quiet l1", "sha256 -c --status l1 | wc -c")
+case(*SETUP, "sha256 --tag x1 x2 > l1", "cat l1", "sha256 -c l1", "sha256 -c --quiet l1", "sha256 -c -w l1", "sha256 -b x1 x2 > l2", "sha256 -c l2", "sha256 -t x1 x2 > l3", "sha256 -c l3",
+     "cat l1 l2 l3 > l4", "sha256 -c l4", "sha256 -c l1 l2 l3", "sha256 -c --status l4")
+# a file that changed, or went
+case(*SETUP, "sha256 x1 x2 > l1", "echo changed > x1", "?sha256 -c l1", "?sha256 -c --quiet l1", "?sha256 -c --status l1", "?sha256 -c -w l1", "?sha256 -c --strict l1", "sha256 x1 > l2", "sha256 -c l2",
+     "?sha256 -c --ignore-missing l1", "rm x2", "?sha256 -c l1", "?sha256 -c --quiet l1", "?sha256 -c --status l1", "?sha256 -c --ignore-missing l1", "?sha256 -c --ignore-missing --quiet l1",
+     "?sha256 -c --ignore-missing --status l1", "?sha256 -c --ignore-m l1", "sha256 -c l2 | wc -l")
+case(*SETUP, "sha256 x2 > l2", "rm x2", "?sha256 -c l2", "?sha256 -c --ignore-missing l2", "?sha256 -c --ignore-missing --status l2", "?sha256 -c --ignore-missing --quiet l2",
+     "?sha256 -c --ignore-missing --strict l2", "echo world > x2", "sha256 -c --ignore-missing l2")
+case(*SETUP, "mkdir sd", *lst("l1", HX1 + "  x1", HX1 + "  sd", HX2 + "  x2"), "?sha256 -c l1", "?sha256 -c --status l1", "?sha256 -c --quiet l1", "?sha256 -c --ignore-missing l1",
+     *lst("l2", HX1 + "  sd"), "?sha256 -c --ignore-missing l2", "?sha256 -c --ignore-missing --status l2")
+# lists written by hand: the ways of writing a line, and the lines that are not
+case(*SETUP, *lst("l1", HX1 + "  x1", HX1 + " x1", HX1 + "\\tx1", HX1 + " *x1", HX1.upper() + "  x1", HX1 + "  x1\\x0d"), "sha256 -c l1", "sha256 -c --quiet l1", "sha256 -c -w l1")
+case(*SETUP, *lst("l1", "# a comment", "", HX1 + "  x1", "#" + HX1 + "  x2", HX2 + "  x2"), "sha256 -c l1", "sha256 -c -w l1", "sha256 -c --strict l1", "sha256 -c --status l1")
+case(*SETUP, *lst("l1", " " + HX1 + "  x1", "\\t" + HX1 + "  x1"), "sha256 -c l1", *lst("l2", "SHA256 (x1) = " + HX1, "SHA256 (x2) = " + HX2, "SHA256(x1)= " + HX1), "sha256 -c l2", "sha256 -c -w l2",
+     *lst("l3", "  SHA256 (x1) = " + HX1, "SHA256 (x1) =  " + HX1, "SHA256 (x1)\\t=\\t" + HX1, "SHA256 (x1) = " + HX1.upper()), "sha256 -c l3", "sha256 -c -w l3")
+case(*SETUP, *lst("l1", "junk", HX1 + "  x1", HX1[:63] + "  x1"), "sha256 -c l1", "sha256 -c -w l1", "?sha256 -c --strict l1", "sha256 -c --status l1", "?sha256 -c --status --strict l1", "sha256 -c --quiet -w l1",
+     "?sha256 -c --strict l1", "?sha256 -c --strict -w l1", "?sha256 -c --strict --status l1")
+case(*SETUP, *lst("l1", "junk"), "?sha256 -c l1", "?sha256 -c -w l1", "?sha256 -c --status l1", "?sha256 -c --strict l1", "?sha256 -c --ignore-missing l1",
+     *lst("l2", HX1 + "x1", HX1, HX1[:62] + "zz  x1", "sha256 (x1) = " + HX1, "SHA1 (x1) = " + HX1, "SHA256 (x1) = " + HX1[:63]), "?sha256 -c l2", "?sha256 -c -w l2")
+case(*SETUP, "echo -n > le", "?sha256 -c le", "?sha256 -c -w le", "?sha256 -c --status le", "echo '# nothing' > l1", "?sha256 -c l1", "echo > l2", "?sha256 -c l2",
+     "?sha256 -c < le", "?sha256 -c - < le", "?sha256 -c -w - < le", "?echo junk | sha256 -c", "?echo junk | sha256 -c -w", "?echo junk | sha256 -c -w -")
+case(*SETUP, "echo -n -e '%s  x1' > l1" % HX1, "sha256 -c l1", "echo -n -e '%s  x2\\n%s  x1' > l2" % (HX2, HX1), "sha256 -c l2", "echo -n -e '%s  x1\\x0d' > l3" % HX1, "sha256 -c l3",
+     "echo -n -e '%s\\x0d' > l4" % HX1, "?sha256 -c l4", "?sha256 -c -w l4", "echo -n -e '%s  x1\\x0d\\n' > l5" % HX1, "sha256 -c l5")
+case(*SETUP, *lst("l1", HX1 + "  x1", HX2 + "  x1", HX1[:63] + "0  x1", HX1 + "  x2"), "?sha256 -c l1", "?sha256 -c --quiet l1", "?sha256 -c --status l1", "?sha256 -c --quiet --status l1", "?sha256 -c --status --quiet l1",
+     "?sha256 -c -w --quiet l1", "?sha256 -c --quiet -w l1", "?sha256 -c -w --status l1", "?sha256 -c --status -w l1")
+case(*SETUP, *lst("l1", "junk", HX1 + "  x1", HX2 + "  x1", HX1 + "  nosuch", "more junk"), "?sha256 -c l1", "?sha256 -c --quiet l1", "?sha256 -c --status l1", "?sha256 -c --strict l1",
+     "?sha256 -c -w l1", "?sha256 -c --ignore-missing l1", "?sha256 -c --quiet -w l1", "?sha256 -c --warn --quiet l1", "?sha256 -c --quiet --warn l1", "?sha256 -c --status --warn l1",
+     "?sha256 -c --warn --status l1")
+# GNU settles from the first line that shows it whether the lines have a mode character after the blank, and holds the rest to it, across lists too
+# (names with a space or a "*" in them would be written in shell quotes by GNU, so the lines that read as such a name are not run)
+case(*SETUP, *lst("m1", HX1 + "  x1", HX1 + " x1", HX1 + "\\tx1", HX1 + "  x1"), "?sha256 -c m1", "?sha256 -c -w m1", "?sha256 -c --strict m1", "?sha256 -c --status m1",
+     *lst("m2", HX1 + " x1", HX1 + "\\tx1", HX1 + "\\tx1"), "sha256 -c m2", "sha256 -c -w m2",
+     *lst("m3", HX1 + " *x1", HX1 + "  x1", HX1 + " x1"), "?sha256 -c m3", "?sha256 -c -w m3",
+     "?sha256 -c m1 m2", "?sha256 -c -w m3 m2", "?sha256 -c --quiet m1 m3", "sha256 x1 > m4", "sha256 -c m4 m1 m4", "?sha256 -c m4 m2 m4")
+case(*SETUP, *lst("m1", "SHA256 (x1) = " + HX1, HX1 + " x1", HX1 + "\\tx1"), "sha256 -c m1", "sha256 -c -w m1",
+     *lst("m2", "SHA256 (x1) = " + HX1, HX1 + "  x1", HX1 + " x1"), "?sha256 -c m2", "?sha256 -c -w m2",
+     *lst("m3", "junk", HX1, "# " + HX1 + "  x1", "", HX1 + " x1", HX1 + "\\tx1"), "sha256 -c -w m3",
+     *lst("m4", "junk", HX1, "# " + HX1 + "  x1", "", HX1 + "  x1", HX1 + " x1"), "?sha256 -c -w m4")
+case(*SETUP, *lst("m1", HX1 + "  x1"), *lst("m2", HX1 + " x1"), "sha256 x1 > m6", "echo hello | sha256 > m3", "sha256 -c m1 - < m6", "sha256 -c - m1 < m6", "?sha256 -c m1 - < m2", "?sha256 -c -w m1 - < m2",
+     "?sha256 -c m1 - < m3", "?sha256 -c -w - < m3", "?cat m3 | sha256 -c -w", "echo hello | sha256 -c m3", "sha256 -c m6 m6 m6", "sha256 -c m1 m1", "?sha256 -c m1 m2 m1", "?sha256 -c -w m1 m2 m1",
+     "?cat m2 | sha256 -c -w m1 -")
+
+# the lists named: none, several, missing, a directory, standard input
+case(*SETUP, "sha256 x1 > l1", "sha256 x2 > l2", "sha256 -c l1 l2", "?sha256 -c l1 nosuch l2", "?sha256 -c nosuch", "?sha256 -c nosuch l1", "mkdir sd", "?sha256 -c sd", "?sha256 -c sd l1", "?sha256 -c l1 sd",
+     "sha256 -c l1 - < l2", "sha256 -c - l1 < l2", "?sha256 -c x1", "?sha256 -c x1 l1", "?sha256 -c l1 x1", "?sha256 -c -w x1 l1")
+case(*SETUP, "sha256 x1 > l1", "echo hello | sha256 > l2", "cat l2", "echo hello | sha256 -c l2", "?sha256 -c l2 < x1", "sha256 - < x1 > l3", "sha256 -c l3 < x1", "echo hello | sha256 -c l3", "echo other | sha256 -c l3 | wc -l")
+# all the options that go with each other (and a long one for each)
+case(*SETUP, "sha256 x1 > l1", "sha256 -c --check l1", "sha256 --check --quiet l1", "sha256 --check --stat l1", "sha256 --check --status l1", "sha256 --check --str l1", "sha256 --check --strict l1",
+     "sha256 --check --ig l1", "sha256 --check --ignore-missing l1", "sha256 --check --wa l1", "sha256 --check --warn l1", "sha256 --check --qu l1", "sha256 -cw --quiet --strict --ignore-missing l1",
+     "sha256 -c -- l1", "sha256 --c -- l1", "sha256 -c l1 -w", "sha256 -c --strict l1 --quiet", "sha256 l1 -c")
+
 def mk(name, lines):
     return "yes abcdefg | head -n %d > %s" % (lines, name) if lines else "echo -n > " + name
 SIZES = [0, 1, 63, 64, 65, 127, 128, 129, 200, 1000, 1280, 1281, 5000, 16384]

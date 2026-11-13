@@ -2673,6 +2673,89 @@ def gnu_text_tests(m, t):
     t.check("a reader that goes away ends it (an endless input, two lines)", out == "eQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5\nCnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkK" and rc == 0, (out, rc))
 
 
+    # ---- v0.33.0: sha256: usage errors and statuses, which the generated cases (GNU's own wording and status 1) cannot show ----
+    run("echo hello > x1")
+    H1 = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    usage = ("usage: sha256 [-b | -t] [--tag] [-z] [FILE...]\n"
+             "       sha256 -c [-w] [--quiet] [--status] [--strict] [--ignore-missing] [FILE...]")
+    for c, msg in (("sha256 -x", "sha256: invalid option -- 'x'"),
+                   ("sha256 -bx", "sha256: invalid option -- 'x'"),
+                   ("sha256 --foo", "sha256: unrecognized option '--foo'"),
+                   ("sha256 --checkx", "sha256: unrecognized option '--checkx'"),
+                   ("sha256 --=x", "sha256: unrecognized option '--=x'"),
+                   ("sha256 --s", "sha256: option '--s' is ambiguous; possibilities: '--status' '--strict'"),
+                   ("sha256 --t", "sha256: option '--t' is ambiguous; possibilities: '--tag' '--text'"),
+                   ("sha256 --check=1", "sha256: option '--check' doesn't allow an argument"),
+                   ("sha256 --tag=1", "sha256: option '--tag' doesn't allow an argument"),
+                   ("sha256 --tag -t x1", "sha256: --tag does not support --text mode"),
+                   ("sha256 -c -z x1", "sha256: the --zero option is not supported when verifying checksums"),
+                   ("sha256 -c --tag x1", "sha256: the --tag option is meaningless when verifying checksums"),
+                   ("sha256 -c -b x1", "sha256: the --binary and --text options are meaningless when verifying checksums"),
+                   ("sha256 -c -t x1", "sha256: the --binary and --text options are meaningless when verifying checksums"),
+                   ("sha256 --quiet x1", "sha256: the --quiet option is meaningful only when verifying checksums"),
+                   ("sha256 --status x1", "sha256: the --status option is meaningful only when verifying checksums"),
+                   ("sha256 -w x1", "sha256: the --warn option is meaningful only when verifying checksums"),
+                   ("sha256 --strict x1", "sha256: the --strict option is meaningful only when verifying checksums"),
+                   ("sha256 --ignore-missing x1", "sha256: the --ignore-missing option is meaningful only when verifying checksums"),
+                   ("sha256 --strict --quiet x1", "sha256: the --quiet option is meaningful only when verifying checksums"),
+                   ("sha256 --quiet --status x1", "sha256: the --status option is meaningful only when verifying checksums"),
+                   ("sha256 --status --ignore-missing x1", "sha256: the --ignore-missing option is meaningful only when verifying checksums")):
+        out, rc = st(c)
+        t.check(f"{c}: the message, the usage and status 2", out == msg + "\n" + usage and rc == 2, out)
+    out, rc = st("sha256 -- -x")
+    t.check("after -- a name that starts with a dash is a name", out == "sha256: -x: no such file or directory" and rc == 1, (out, rc))
+    out, rc = st("sha256 x1")
+    t.check("a good hash is status 0", out == H1 + "  x1" and rc == 0, (out, rc))
+    out, rc = st("sha256 nosuch x1")
+    t.check("a file that is not there: said first, the rest goes on, status 1", out == "sha256: nosuch: no such file or directory\n" + H1 + "  x1" and rc == 1, (out, rc))
+    run("mkdir shd")
+    out, rc = st("sha256 shd")
+    t.check("a directory is an error, status 1", out == "sha256: shd: is a directory" and rc == 1, (out, rc))
+    run("echo " + H1 + "  x1 > shl")
+    out, rc = st("sha256 -c shl")
+    t.check("a list that checks out is status 0", out == "x1: OK" and rc == 0, (out, rc))
+    run("echo changed > x1")
+    out, rc = st("sha256 -c shl")
+    t.check("a mismatch is status 1", out == "x1: FAILED\nsha256: WARNING: 1 computed checksum did NOT match" and rc == 1, (out, rc))
+    out, rc = st("sha256 -c --status shl")
+    t.check("--status says nothing, status 1", out == "" and rc == 1, (out, rc))
+    run("echo hello > x1")
+    run("echo -e 'junk\\n" + H1 + "  x1' > shj")
+    out, rc = st("sha256 -c shj")
+    t.check("a badly formatted line is told at the end; status stays 0", out == "x1: OK\nsha256: WARNING: 1 line is improperly formatted" and rc == 0, (out, rc))
+    out, rc = st("sha256 -c --strict shj")
+    t.check("--strict makes it status 1", out == "x1: OK\nsha256: WARNING: 1 line is improperly formatted" and rc == 1, (out, rc))
+    out, rc = st("sha256 -c -w shj")
+    t.check("-w says which line", out == "sha256: shj: 1: improperly formatted SHA256 checksum line\nx1: OK\nsha256: WARNING: 1 line is improperly formatted" and rc == 0, (out, rc))
+    out, rc = st("sha256 -c nosuch")
+    t.check("a list that is not there is status 1", out == "sha256: nosuch: no such file or directory" and rc == 1, (out, rc))
+    out, rc = st("sha256 -c shd")
+    t.check("a list that is a directory is a read error, status 1", out == "sha256: shd: read error" and rc == 1, (out, rc))
+    out, rc = st("sha256 -c shl nosuch shl")
+    t.check("the lists after a bad one are still read", out == "x1: OK\nsha256: nosuch: no such file or directory\nx1: OK" and rc == 1, (out, rc))
+    out, rc = st("echo hello | sha256 -c")
+    t.check("a list on standard input with nothing in it that fits", out == "sha256: 'standard input': no properly formatted checksum lines found" and rc == 1, (out, rc))
+    out, rc = st("echo " + H1 + "  - | sha256 -c")
+    t.check("a line that names - in a list read from standard input is badly formatted", out == "sha256: 'standard input': no properly formatted checksum lines found" and rc == 1, (out, rc))
+    run("echo " + H1 + "  nosuch > shm")
+    out, rc = st("sha256 -c --ignore-missing shm")
+    t.check("--ignore-missing with nothing left to check is status 1", out == "sha256: shm: no file was verified" and rc == 1, (out, rc))
+    out, rc = st("sha256 -c --ignore-missing --status shm")
+    t.check("and --status keeps quiet about it, still status 1", out == "" and rc == 1, (out, rc))
+    # a name in backslash form: a \ in front of the line, \\ for a backslash and \n for a newline; the message on stderr gets the name as it is
+    run("echo -e '\\x5c" + H1 + "  a\\x5c\\x5cb' > shb")
+    out, rc = st("sha256 -c shb")
+    t.check("a name with a backslash is shown in backslash form", "\n\\a\\\\b: FAILED open or read\nsha256: WARNING: 1 listed file could not be read" in "\n" + out and rc == 1, (out, rc))
+    run("echo -e '\\x5c" + H1 + "  a\\x5cnb' > shn")
+    out, rc = st("sha256 -c shn")
+    t.check("and one with a newline", "\n\\a\\nb: FAILED open or read\nsha256: WARNING: 1 listed file could not be read" in "\n" + out and rc == 1, (out, rc))
+    run("echo -e '\\x5c" + H1 + "  a\\x5cqb' > shq")
+    out, rc = st("sha256 -c -w shq")
+    t.check("a backslash with anything else after it is a badly formatted line", out == "sha256: shq: 1: improperly formatted SHA256 checksum line\nsha256: shq: no properly formatted checksum lines found" and rc == 1, (out, rc))
+    run("rm x1 shl shj shm shb shn shq")      # the tests after this one count the files and directories of the root
+    run("rmdir shd")
+
+
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is
     checked against GNU grep by tests/test_regex.c) with its output and
