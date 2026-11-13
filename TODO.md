@@ -48,12 +48,6 @@ highlighted only on a terminal. Check the 1752 switch: GNU does Julian
 before September 1752, so either do the same or refuse years before 1753
 and say so.
 
-**xargs.** `xargs [-n N] [-I STR] [-0] [-t] COMMAND [ARGS...]`, starting
-the command with `spawn` (there is no `fork`/`exec`) and waiting for it.
-`spawn` takes at most `ARGV_MAX` arguments and 3072 bytes of them (`SPAWN_ARGS_BYTES` in `syscall.c`), so split into several runs when
-the input is longer. Exit status as GNU: 123 if any run failed. Test with
-`find ... | xargs ...`.
-
 ## Features in programs that exist
 
 **tail -f.** Keep reading after the end of the file, checking its size

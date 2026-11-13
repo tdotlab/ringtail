@@ -875,6 +875,95 @@ case("seq 1 3000 | paste -s -d x > bl", "strings bl | wc -c", "strings -n 13892 
 case("yes | head -n 3000 | tr 'y\\n' 'a\\000' > ba", "strings ba | wc -l", "strings -n 1 ba | wc -l", "strings -n 1 -t d ba | tail -n 2",
      "yes | head -n 600 | tr 'y\\n' 'a\\011' > bt", "strings -n 1 bt | wc -c", "strings -n 5 -t d bt | wc -c")
 
+# -------------------------------------------------------------- xargs
+# Inputs are raw: \\ is a backslash for xargs to see, \n a newline.
+XI = [r"a b c", r"a\nb\nc", r"  a   b  \n\n c ", r"a\tb", r"'a b' c", r'"a b" c', r"a\\ b c", r"a\\\nb c", r"''", r'"" a',
+      r'ab"c d"e f', r"""'a"b' "c'd" """, r"-n -x", r"a\\", r"a\\\\b", r"'a\\b'", r'"a\\b"', r"'' '' x", r"x '' y", r"a\\'b c",
+      r'a\\"b', r"\\a\\b", r"one\n\ntwo\n  \nthree", r"a\r\nb", r"\xc3\xa9 \xc3\xbc"]
+def od(i):  # bytes the terminal would change (or drop) come out through od
+    return " | od -c" if "\\xc3" in i or "\\r" in i else ""
+for i in XI:
+    for x in ["xargs echo", "xargs -n1 echo '[x]'", "xargs -n 2 echo '[x]'", "xargs -I{} echo '<{}>'", "xargs -t echo", "xargs"]:
+        case("echo -e '" + i.replace("'", r"\x27") + "' | " + x + od(i))
+for i in [r"a 'b", r'a "b', r"'ab", r'"ab', r"a 'b\nc'", r'a "b\nc" d', r"a b\n'c", r"a b\nc 'd e\nf'", r"x\\'y 'z", r"'a' b 'c", r"a\n'b"]:
+    for x in ["xargs echo", "xargs -n1 echo '[x]'", "xargs -n 2 echo '[x]'", "xargs -I{} echo '<{}>'", "xargs -t echo"]:
+        # GNU forks and reads on, so a bad quote on a later line is reported before the output of an -I run
+        if "-I" in x and "\\n" in i and "'" not in i.split("\\n")[0] and '"' not in i.split("\\n")[0]:
+            continue
+        case("?echo -e '" + i.replace("'", r"\x27") + "' | " + x)
+# no trailing newline, and empty input
+for i in ["a b", "a b c d e", "a", "a\\\\", "'a b'"]:
+    for x in ["xargs echo", "xargs -n2 echo", "xargs -I{} echo '<{}>'"]:
+        case("echo -n -e '" + i.replace("'", r"\x27") + "' | " + x)
+# empty items at the very end are dropped, and so is a quote opened there
+for i in [r"''", r'""', r"a ''", r'a ""', r"a '' b", r"a '' ", r"'' ", r"'' a", r'"', r"'", r"a '", r' "', r"a\n'", r"a\n''", r'a\n"', r"''\n", r"a ''\n", r"\n\n'"]:
+    for x in ["xargs -n1 echo '[x]'", "xargs echo", "xargs -I{} echo '<{}>'"]:
+        case("?echo -n -e '" + i.replace("'", r"\x27") + "' | " + x)
+# an unclosed quote at the very end of the input, with no newline after it
+for i in [r"a 'b", r'a "b', r"'ab", r'"', r"a b 'c d"]:
+    for x in ["xargs echo", "xargs -n1 echo '[x]'", "xargs -I{} echo '<{}>'", "xargs -t echo"]:
+        case("?echo -n -e '" + i.replace("'", r"\x27") + "' | " + x)
+for x in ["xargs echo hi", "xargs -r echo hi", "xargs -I{} echo hi", "xargs -n2 echo hi", "xargs -0 echo hi", "xargs -0 -r echo hi", "xargs -t echo hi",
+          "xargs --no-run-if-empty echo hi", "xargs -rt echo hi", "xargs -r", "xargs", "xargs -0"]:
+    case("echo -n | " + x, "echo | " + x, "echo -e '  \\n\\t\\n' | " + x)
+# the item count
+for n in ["1", "2", "3", "5", "7", "40", "100", "01"]:
+    case("seq 1 20 | xargs -n " + n + " echo", "seq 1 20 | xargs -n" + n + " echo '[x]'", "seq 1 20 | xargs --max-args=" + n + " echo")
+case("seq 1 20 | xargs --max-args 6 echo", "seq 1 20 | xargs -n 4 -n 3 echo", "seq 1 20 | xargs -n3 -t echo > so")
+case("seq 1 40 | xargs echo", "seq 1 40 | xargs echo a b c", "seq 1 40 | xargs -n 9 echo a b c", "seq 1 40 | xargs -n 1 echo | wc -l", "seq 1 40 | xargs | wc -c")
+case("echo a | xargs -n 2 -I{} -I{} echo '<{}>'", "echo a | xargs -I{} -I{} echo '<{}>'", "echo a | xargs -n 2 -n 3 -I{} -I{} echo '<{}>'", "echo a | xargs -I{} -n 2 -n 3 echo '<{}>'")
+case("seq 1 5 | xargs -n 4294967297 echo", "seq 1 5 | xargs -n 4294967296 echo", "seq 1 5 | xargs -n 99999999999 echo")
+case("seq 1 14 | xargs -n 2 -I{} echo [{}]", "seq 1 14 | xargs -I{} -n 2 echo [{}]", "seq 1 6 | xargs -n 2 -I{} echo [{}]", "seq 1 6 | xargs -I{} -n 2 echo [{}] {}",
+     "seq 1 6 | xargs -n2 --replace echo [{}]", "seq 1 6 | xargs -n2 -i echo [{}]")
+# -I
+for t in ["-I{}", "-I {}", "-I @", "-I XX", "-I'{}'", "-i", "-i@", "--replace", "--replace=%", "-I{} -r", "-rI{}", "-tI{}", "-I {} -t"]:
+    case("echo -e 'a b\\n  c  d \\n\\n\\t e\\nf' | xargs " + t + " echo '<{}>' '<@>' '<XX>' '<%>' x{}y{}z")
+case("echo -e 'a\\nb' | xargs -I{} echo {}{} {} x{}y", "?echo -e 'a\\nb' | xargs -I{} {} hi")
+case("echo -e 'a\\nb' | xargs -I{} echo x", "echo -e 'a\\nb' | xargs -I{} echo", "echo -e 'a\\nb' | xargs -I{} echo -n {}")
+case("echo -e '{}\\n{{}}' | xargs -I{} echo {} x{}", "echo -e 'X\\nXX' | xargs -I X echo X-X", "echo -e 'aaa' | xargs -I aa echo [aa]", "echo -e 'b' | xargs -I ab echo aab abab")
+case("echo -e '\"q q\" \\x27r r\\x27\\ns\\\\ t\\n  \"\"\\n\\\\\\n' | xargs -I{} echo '<{}>'")
+case("echo -e 'a b\\x00 c d \\x00e' | xargs -0 -I{} echo '<{}>'", "echo -e 'a b\\x00 c d \\x00e\\x00' | xargs -0 -I{} echo '<{}>'",
+     "echo -e '\\x00a\\x00\\x00b' | xargs -0 -I{} echo '<{}>'", "echo -e 'a\\nb\\x00c' | xargs -0 -I{} echo '<{}>'", "echo -e 'a\\x00' | xargs -0 -I{} echo '<{}>'")
+# -0
+for i in [r"a b\x00c\nd\x00", r"a\x00\x00b", r"a\x00", r"\x00", r"\x00\x00", r"a", r"a b\x00", r"'a b'\x00\"c\"\x00\\\\d", r"\x00a", r" a \x00 b ", r"a\nb\nc\n", r"\xc3\xa9\x00\xc3\xbc\x00"]:
+    for x in ["xargs -0 echo '[x]'", "xargs -0 -n1 echo '[x]'", "xargs -0 -n2 echo '[x]'", "xargs --null -n1 echo", "xargs -0t -n1 echo"]:
+        case("echo -n -e '" + i + "' | " + x + od(i))
+# -t
+Q = [r"a b", r"c$d", r"e;f", r"*", r"~x", r"x~", r"#x", r"x#", r"a=b", r"=a", r"x\x27y", r"x\x22y", r"x\x60y", r"x\\\\y", r"a!b", r"a|b", r"a&b", r"a(b", r"a)b",
+     r"a<b", r"a>b", r"a?b", r"a[b", r"a]b", r"a^b", r"a{b", r"a}b", r"a%b", r"a@b", r"a:b", r"a,b", r"a+b", r"-a", r"a-b", r"a.b", r"a/b", r"a_b", r"A9",
+     r"a\tb", r"a\x01b", r"\x01", r"\xc3\xa9", r"a\xc3\xa9b", r"x\x27y\x22z", r"a  b", r"\x27", r"\x22", r"\x27\x27", r"a\x27b c", r"a\nb", r"a\x7fb", r"\x07", r"\x08", r"\x0b", r"\x0c", r"a\x27$b", r"a\x27\x60b", r"a\x27\x22b",
+     r"a\x27\\\\b", r"\x1b[0m", r"x\x27\x27y", r"\x80", r"\xff",
+     r"a\x27\tb", r"a\x27\x01b", r"a\x1fb", r"a\x1eb", r"\x27\tb", r"a\tb\x27", r"a\x27\x27\tb", r"\tb\x27c"]
+for q in Q:
+    case("echo -n -e '" + q + "\\x00' | xargs -0 -t echo > so")
+case("echo -n -e 'a b\\x00\\x00c' | xargs -0 -n1 -t echo > so", "echo -n -e 'a b\\x00c' | xargs -0 -t echo 'x y' '' z > so",
+     "echo a | xargs -t echo '$x' 'a b' > so", "echo 'a b' | xargs -t -I% echo 'x y' % > so")
+# the command
+case("echo 'a b' | xargs -- echo x", "echo 'a b' | xargs -n1 -- echo x", "echo 'a b' | xargs -t -- echo x", "echo '-n -e' | xargs echo", "echo '-x' | xargs echo -n")
+case("echo 'a b' | xargs -0 -n1 echo -n", "echo 'a b' | xargs echo -- x", "echo 'a b' | xargs echo --null")
+case("echo 'a b' | xargs -rtn1 echo", "echo 'a b' | xargs -n 1 -r -t echo", "echo a | xargs -rtn1 echo")
+case("echo a | xargs --verbose echo", "echo 'a b' | xargs --verbose --max-args=1 echo", "echo 'a' | xargs --no-run-if-empty --null echo | od -c")
+# exit statuses
+case("?echo 'a b c' | xargs -n1 false", "?echo 'a b c' | xargs false", "?echo -n | xargs false", "echo -n | xargs -r false", "?echo | xargs -I{} false", "echo a | xargs true",
+     "?echo a | xargs -n1 cat nosuch > so", "cat so")
+case("?echo 'a b' | xargs -n1 cat > so", "cat so", "echo hello > xf", "?echo 'xf nosuch xf' | xargs -n1 cat > so", "cat so", "?echo 'xf nosuch xf' | xargs cat > so", "cat so")
+case("?echo a | xargs nosuchcmd > so", "cat so", "?echo a | xargs -n1 nosuchcmd x > so", "cat so", "?echo -n | xargs nosuchcmd > so", "cat so", "?echo -n | xargs -r nosuchcmd > so", "cat so")
+case("?echo a | xargs -I{} nosuchcmd {} > so", "cat so")
+# children read an empty standard input
+case("echo -n | xargs cat", "echo -n | xargs wc -c", "echo -n | xargs -0 wc -l", "echo a | xargs -I{} wc -c", "echo a | xargs -I{} cat", "echo -n | xargs head -n 1")
+# find | xargs
+case("mkdir fd", "echo one > fd/f1", "echo two > fd/f2", "find fd -type f -name f1 | xargs cat", "find fd -type f -name f1 -print0 | xargs -0 cat",
+     "find fd -type f | sort | xargs cat", "find fd -type f | sort | xargs -n1 cat", "find fd -type f -print0 | xargs -0 -n1 echo | sort",
+     "find fd -type f | sort | xargs -I{} echo got {}", "find fd -type f | sort | xargs -t -n1 cat > so", "cat so", "find fd -name nomatch | xargs -r echo none",
+     "find fd -type f | xargs grep -c o | sort", "find fd -name f1 | xargs wc -c")
+case("echo hello > sp1", "echo 'a b' > 'sp 2'", "find . -name 'sp*' -print0 | xargs -0 -n1 echo | sort", "find . -name 'sp*' | sort | xargs -n1 echo | wc -l",
+     "find . -name 'sp 2' -print0 | xargs -0 cat", "?find . -name 'sp 2' | xargs cat")
+# standard input is not shared with the children: more input than one read takes, and a child that would read it
+case("seq 1 300 | xargs -I{} wc -c | sort | uniq -c")
+# the same wrapped in pipes
+case("seq 1 20 | xargs -n5 echo | tail -n 2", "seq 1 20 | xargs -n5 echo | wc -l", "seq 1 20 | xargs -n5 | wc -l", "seq 1 20 | xargs -n5 echo | wc -w",
+     "seq 1 6 | xargs -n3 echo | xargs -n1 echo")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:
