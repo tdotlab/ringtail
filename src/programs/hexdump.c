@@ -16,6 +16,7 @@
 // format, and a final line with just the offset reached closes the
 // listing.
 #include "ulib.h"
+#include "bstream.h"
 
 static int usage(void) {
     dprintf(STDERR_FILENO, "usage: hexdump [-C | -x] [-v] [-n LENGTH] [-s OFFSET] [FILE...]\n");
@@ -42,80 +43,6 @@ static void emit(const char* s, uint32_t n) {
     if (on + n > sizeof ob) flush();
     memcpy(ob + on, s, n);
     on += n;
-}
-
-// ---- the input: the files as one stream, with the first `skip` bytes dropped ----
-
-static char** files;
-static int nfiles, fi, fd = -1, status;
-static uint32_t skip;
-static unsigned char ib[1024];
-static int ilen, ipos;
-
-static void bad(const char* name, int e) {
-    flush();
-    dprintf(STDERR_FILENO, "hexdump: %s: %s\n", name, strerror(e));
-    status = 1;
-}
-
-// Opens the next file; a plain file that lies wholly inside the part
-// to skip is stepped over without being read.
-static int open_next(void) {
-    while (fi < nfiles || (fi == 0 && nfiles == 0)) {
-        const char* name = nfiles ? files[fi] : "-";
-        fi++;
-        int f = !strcmp(name, "-") ? STDIN_FILENO : sys_open(name, O_RDONLY);
-        if (f < 0) { bad(name, f); continue; }
-        if (skip && sys_fdtype(f) == FDTYPE_FILE) {
-            int end = sys_seek(f, 0, SEEK_END);
-            if (end >= 0 && (uint32_t)end <= skip) {
-                skip -= (uint32_t)end;
-                if (f != STDIN_FILENO) sys_close(f);
-                continue;
-            }
-            if (end >= 0 && sys_seek(f, (int)skip, SEEK_SET) == (int)skip) skip = 0;
-            else sys_seek(f, 0, SEEK_SET);
-        }
-        fd = f;
-        return 1;
-    }
-    return 0;
-}
-
-static int refill(void) {
-    flush();  // lines show up as the bytes arrive
-    for (;;) {
-        if (fd < 0 && !open_next()) return 0;
-        int n = sys_read(fd, ib, sizeof ib);
-        if (n <= 0) {
-            if (n < 0) bad(fi > 0 && nfiles ? files[fi - 1] : "standard input", n);
-            if (fd != STDIN_FILENO) sys_close(fd);
-            fd = -1;
-            continue;
-        }
-        ilen = n;
-        ipos = 0;
-        if (skip) {
-            uint32_t d = skip < (uint32_t)n ? skip : (uint32_t)n;
-            ipos = (int)d;
-            skip -= d;
-            if (ipos == ilen) continue;
-        }
-        return 1;
-    }
-}
-
-static uint32_t get(unsigned char* dst, uint32_t want) {
-    uint32_t got = 0;
-    while (got < want) {
-        if (ipos == ilen && !refill()) break;
-        uint32_t take = (uint32_t)(ilen - ipos);
-        if (take > want - got) take = want - got;
-        memcpy(dst + got, ib + ipos, take);
-        ipos += (int)take;
-        got += take;
-    }
-    return got;
 }
 
 // ---- the lines ----
@@ -174,16 +101,15 @@ int main(int argc, char** argv) {
             }
         }
     }
-    files = argv + a;
-    nfiles = argc - a;
-    if (!nfiles && sys_fdtype(STDIN_FILENO) == FDTYPE_TTY) return usage();
-    skip = start;
+    if (a == argc && sys_fdtype(STDIN_FILENO) == FDTYPE_TTY) return usage();
+    bstream_t in;
+    bs_init(&in, "hexdump", argv + a, argc - a, start, flush);
 
     unsigned char line[16], prev[16];
     uint32_t off = start;
     int have_prev = 0, starred = 0, any = 0;
     while (limit) {
-        uint32_t n = get(line, limit < 16 ? limit : 16);
+        uint32_t n = bs_get(&in, line, limit < 16 ? limit : 16);
         if (!n) break;
         limit -= n;
         any = 1;
@@ -206,5 +132,5 @@ int main(int argc, char** argv) {
         emit(s, (uint32_t)len);
     }
     flush();
-    return status;
+    return in.status;
 }

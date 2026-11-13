@@ -37,10 +37,6 @@ Every task ends the same way, or it is not done:
 Good warm-ups. Each is a new file in `src/programs/`, added to the Makefile
 the way the others are, with GNU-checked cases.
 
-**strings, od.** `strings [-n N]` prints runs of printable bytes. `od` in
-its common forms (`-c`, `-x`, `-o`, `-A x|d|o|n`, `-t x1`); look at
-`hexdump.c` first and share what can be shared rather than writing it twice.
-
 **du.** `du [-s] [-h] [-a] [PATH...]`, walking directories the way `find`
 does. Decide whether sizes are in clusters (what the disk really uses, as
 `df` counts) or bytes, and say which in the README. GNU's numbers will not

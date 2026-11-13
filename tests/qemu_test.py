@@ -2293,6 +2293,72 @@ def gnu_text_tests(m, t):
     t.check("fold -w 1 makes a line of each byte", run("fold -w 1 xbig | wc -l").strip() == str(nbytes - 5000), run("fold -w 1 xbig | wc -l"))
     run("rm xbig xf")
 
+    # ---- v0.31.0: od and strings: the usage errors, the screen, and what the generated cases cannot show ----
+    run("echo -e 'hello\\n\\x00\\x01world' > of")
+    for prog, usage, bad in [
+            ("od", "usage: od", ["-z", "--nosuch", "-A", "-t", "-j", "-N", "-A q", "-t q", "-t a1", "--format", "-x -z", "--width=-1", "-w0"]),
+            ("strings", "usage: strings", ["-z", "--nosuch", "-n", "-t", "-e", "--bytes", "-t q", "-e x", "--radix=q", "--encoding=x", "-ax", "-fz"])]:
+        for b in bad:
+            out, rc = st(f"echo x | {prog} {b}")
+            t.check(f"{prog} {b} complains", rc != 0 and out != "", out)
+            if prog == "strings" or b in ("-z", "--nosuch", "-A", "-t", "-j", "-N", "-x -z", "--format"):
+                t.check(f"{prog} {b} shows the usage", usage in out and rc == 2, out)
+        out, rc = st(prog)
+        t.check(f"{prog} with only the keyboard to read says how to use it", usage in out and rc == 2, out)
+    out, rc = st("strings -")
+    t.check("strings - alone is no way to name the input", "usage: strings" in out and rc == 2, out)
+    out, rc = st("echo x | strings -")
+    t.check("strings - from a pipe is no way to name the input either", "usage: strings" in out and rc == 2, out)
+    out, rc = st("od --nosuch of")
+    t.check("od does not take the file for the value of an option it does not know", "usage: od" in out and rc == 2, out)
+    out, rc = st("echo x | od --output-duplicates=1")
+    t.check("od --output-duplicates takes no value", "usage: od" in out and rc == 2, out)
+    for w in ["-w0", "--width=0", "-w00"]:
+        out, rc = st(f"od {w} of")
+        t.check(f"od {w} is refused", out.startswith("od: invalid") and "argument '0" in out and rc == 1, out)
+    out, rc = st("od -w65538 of")
+    t.check("od -w65538 is more than it will do", out == "od: -w argument too large (at most 65536)" and rc == 1, out)
+    out, rc = st("od -w65536 -t x1 of")
+    t.check("od -w65536 is the most it will do", out.startswith("0000000 68 65 6c 6c 6f") and out.endswith("0000016") and rc == 0, out)
+    out, rc = st("echo x | od -t f4")
+    t.check("od says it has no floating-point types", "floating" in out and rc == 2, out)
+    out, rc = st("echo x | od -t fF")
+    t.check("od -t fF is refused too", "floating" in out and rc == 2, out)
+    # a read that fails: a directory
+    run("mkdir odd")
+    out, rc = st("od odd")
+    t.check("od of a directory fails", rc == 1 and out.startswith("od: odd:") and "directory" in out, out)
+    out, rc = st("od of odd of")
+    t.check("od of a directory in the middle says so and goes on", rc == 1 and out.startswith("od: odd: is a directory\n0000000 062550 066154 005157 000400 067567 066162 005144 062550\n") and out.endswith("0000034"), out)
+    out, rc = st("od -j 1 odd of")
+    t.check("a directory is no use to skip over", rc == 1 and out == "od: odd: is a directory\n0000001 066145 067554 000012 073401 071157 062154 000012\n0000016", out)
+    run("rmdir odd")
+    # the prompt starts on a fresh line, and the listing ends on its own line
+    for c, want in [("echo -e 'abcd\\c' | strings", "abcd\nringtail:/> "), ("echo -e 'abcd\\c' | od -c", "0000004\nringtail:/> ")]:
+        m.send(c + "\r")
+        raw = re.sub(r"\x1b\[[0-9;]*m", "", m.expect(PROMPT, 15)).replace("\r\n", "\n")
+        t.check(f"{c.split('|')[1].split()[0]} ends the screen output with a newline", raw.endswith(want), repr(raw))
+    # files bigger than the read buffers, and the same bytes from a pipe
+    run("seq 1 20000 > ob")
+    nbytes = int(run("wc -c ob").split()[0])
+    t.check("od -w1 gives one line to a byte", run("od -v -An -t u1 -w1 ob | wc -l").strip() == str(nbytes), run("od -v -An -t u1 -w1 ob | wc -l"))
+    t.check("od counts the whole file", run("od -A d ob | tail -n 1").strip() == f"{nbytes:07d}", run("od -A d ob | tail -n 1"))
+    t.check("strings finds every number", run("strings -n 1 ob | wc -l").strip() == "20000", run("strings -n 1 ob | wc -l"))
+    t.check("strings -n 5 finds the five-digit ones", run("strings -n 5 ob | wc -l").strip() == "10001", run("strings -n 5 ob | wc -l"))
+    t.check("strings -t d gives the place of the first one", run("strings -n 5 -t d ob | head -n 1").strip() == "48888 10000", run("strings -n 5 -t d ob | head -n 1"))
+    t.check("strings -t d with a file name", run("strings -f -t d -n 5 ob | head -n 1").strip() == "ob:   48888 10000", run("strings -f -t d -n 5 ob | head -n 1"))
+    for off in ["0", "1", "1023", "1024", "4095", "4096", "65535", "65536", "100000"]:
+        a = run(f"od -j {off} -N 40 -c ob")
+        b = run(f"seq 1 20000 | od -j {off} -N 40 -c")
+        t.check(f"od -j {off} reads a pipe the way it reads a file", a == b and a.strip() != "", f"{a!r} {b!r}")
+    t.check("a line longer than the buffer", run("seq 1 20000 | paste -s -d x | strings | wc -c").strip() == str(nbytes), run("seq 1 20000 | paste -s -d x | strings | wc -c"))
+    t.check("the same through a pipe", run("cat ob ob | od -A d -j 100000 | tail -n 1").strip() == f"{2 * nbytes:07d}", run("cat ob ob | od -A d -j 100000 | tail -n 1"))
+    t.check("od agrees with hexdump on what is in the file", run("od -An -tx2 -v ob | tr -d ' \\n' | head -c 200").strip() == run("hexdump -v ob | cut -c 9- | tr -d ' \\n' | head -c 200").strip())
+    # hexdump still reads the same way now it shares the reader with od
+    t.check("hexdump -s and -n still skip and stop", run("hexdump -s 1000 -n 16 ob") == "00003e8 3732 0a38 3732 0a39 3832 0a30 3832 0a31\n00003f8\n", run("hexdump -s 1000 -n 16 ob"))
+    t.check("od agrees with hexdump on the words", run("od -A x -j 1000 -N 16 -t x2 ob").replace("0003e8", "00003e8").replace("0003f8", "00003f8") == run("hexdump -s 1000 -n 16 ob"))
+    run("rm ob of")
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is

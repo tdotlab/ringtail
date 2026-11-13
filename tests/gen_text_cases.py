@@ -768,6 +768,113 @@ case("seq 1 20000 | paste -s -d x > fl", "fold -w 50 fl | wc -l", "fold -s -w 50
 case("seq 1 20000 | paste -s -d ' ' > fl", "fold -s -w 100 fl | wc -l", "fold -s -w 100 fl | tail -n 2", "fold -w 100 fl | tail -n 1")
 case("seq 1 3000 | paste - - - - > fl", "fold -w 8 fl | wc -l", "fold -w 8 -s fl | tail -n 2 " + VIS, "fold -b -w 8 fl | wc -l")
 
+# ---------------------------------------------------------------- od, strings
+# Files with every kind of byte, written with echo -e (\xHH always has two
+# digits, so the text after it is never taken for part of the escape).
+def binf(name, data):
+    out = ""
+    for b in data:
+        c = chr(b)
+        if c == "\n": out += "\\n"
+        elif c == "\\": out += "\\\\"
+        elif 32 <= b < 127 and c != "'": out += c
+        else: out += "\\x%02x" % b
+    return "echo -e '" + out + "\\c' > " + name
+
+BF = binf("bf", b"hello\n\x00\x01\xff\x80\x7f\x1bABCDEFGHIJKLMNOPQRSTUVWXYZ")
+RF = "yes ABCDEFGHIJKLMNO | head -n 5 > rg"      # five equal lines of 16 bytes
+ZF = "yes | head -n 40 | tr 'y\\n' '\\000\\000' > zf"   # 80 zero bytes
+OD_BF = [
+    "", "-c", "-a", "-b", "-d", "-h", "-i", "-l", "-o", "-s", "-x", "-A x", "-A d", "-A n", "-An -c", "-A o -t x1", "-A xx",
+    "-t x1", "-t x1z", "-t x2", "-t x4", "-t x8", "-t xz", "-t x2z", "-t o1", "-t o2", "-t o4", "-t o8", "-t u1", "-t u2",
+    "-t u4", "-t u8", "-t d1", "-t d2", "-t d4", "-t d8", "-t a", "-t c", "-t cz", "-t az", "-t d", "-t o", "-t u", "-t xC",
+    "-t xS", "-t xI", "-t xL", "-t dC -t dS", "-t uI", "-t oL", "-t x1x1", "-t c -t a", "-t d1 -t u1", "-t x1 -t x8",
+    "-t x2z -t c", "-t x4z", "-t o8 -t u8 -t d8", "-t xC -t dS -t uI -t oL", "-t x1z -t d2", "-t x1z -t d2z", "-t cz -t x2z",
+    "-t x1 -t x2 -t x4 -t x8", "-t d1 -t d2 -t d4 -t d8", "-t a -t c -t o1 -t u1", "-t a -t d2 -t x4", "-t d8 -t c",
+    "--format=x1", "--format x1", "--format=x1z", "--format=c", "-c -a -b", "-x -o", "-vc", "-v", "--output-duplicates", "--out -c",
+    "-t ''", "-t x1 -t ''", "-t x1x1x1x1", "-t o1d2u4x8",
+    "-w -t x1", "-w8 -t x4", "-w3 -t x4", "-w5 -t x1", "-w7 -t x1", "-w1 -t x1", "-w2 -t x1", "-w4 -t x1 -t d2 -t c",
+    "-w12 -t x1 -t d4 -t c", "-w24 -t x1 -t d8 -t c", "-w6 -t x1 -t d2 -t c", "-w -c", "-w32 -t x1z", "-w8 -c", "-w9 -c",
+    "--width=4 -t x1", "--width -t x1", "--width=12 -t c", "-w+8 -t x1", "-cw8", "-w1 -w2 -t x1", "-w3 -t d8",
+    "-j 3", "-j 3 -N 2", "-j 37", "-j 38", "-j 0x10 -N 0x4", "-j 010 -N 010", "-j 1 -t x1", "-N 3", "-N 3 -t x4", "-N 0",
+    "-N 1 -t x2", "-N 5 -t x8", "-N 20 -A d", "-N 0x10", "-N 1kB", "-N 2b", "-N ' 3'", "-N +3", "-N2 -N3", "-j 5 -A x -t c",
+    "--skip-bytes=3 --read-bytes=2", "--skip-bytes 3 --read-bytes 2", "--address-radix=d -N2", "--a=x -N 20", "--read=2",
+    "-- ", "-c -- ", "-N 1m", "-N 1M -c", "-N 1G -c", "-N 15E -c", "-N 1 -N 4k", "-An -t x1 -t c", "-An -c -a", "-An -t x1z -t d2", "-j 1 -- ", "-N 18446744073709551615 -c", "-N 18446744073709551KB -c", "-w65536 -t x1", "-j 1 -N 1 -t x1", "-j 36 -t c", "-j 2 -N 3 -t c -A d", "-N 1 -t d8", "-N 7 -t x2z", "-N 9 -t x4 -t c", "-N 21 -t d2 -t x8",
+]
+for o in OD_BF:
+    case(BF, "od " + o + " bf")
+EF = binf("ef", bytes(range(0, 48)) + bytes([0x7e, 0x7f, 0x80, 0xff, 0xfe, 0x81, 0x80, 0x00, 0x01, 0x82]))
+for o in ["-c", "-a", "-t x1", "-t d1", "-t o1", "-t u1", "-t x1z", "-t cz", "-t az", "-t d2", "-t d4", "-t d8", "-t u2", "-t u4", "-t u8", "-t o2", "-t x8",
+          "-t o4", "-t o8", "-t x4", "-t x2z", "-t d1 -t d2 -t d4", "-t c -t d1", "-j 33 -N 3 -c", "-j 7 -N 7 -c", "-w8 -t d1", "-w32 -a", "-w32 -c"]:
+    case(EF, "od " + o + " ef")
+OD_ERR = [
+    "-t q", "-t a1", "-t c2", "-t x1,c", "-t x3", "-t x16", "-t x1x3", "-t x0", "-t xzz", "-t zx", "-t x1z1", "-A q", "-N x",
+    "-j x", "-N 3x", "-N -1", "-N 0x", "-N 08", "-N 99999999999999999999999", "-j 99999999999999999999999", "-wabc", "-w8c", "-vw8c",
+    "--width=8c", "--width=", "--width=x", "--width=99999999999999999999999", "-w99999999999999999999999", "-N ''", "-j 100",
+    "-j 100 -N 0", "-j 1b", "-j 1k", "-t d1 -t q", "--format=q", "--read-bytes=x", "--read-bytes=3x", "--skip-bytes=3x",
+    "--skip-bytes=", "-j 39", "-j 39 -t x1", "-w1k -t x1", "-w2b -t x1", "-w1m", "-N 17179869184G", "-N 16777216T", "-N 16384P", "-N 16E", "-N 1Z", "-N 1Y", "-N 18446744073709551616", "-N 18446744073709552KB", "-j 17179869184G", "-N 4P2", "-N 2xB", "-N 1KiB2", "-N 4294967296", "-j 1Gx", "-t d1 -t x1q",
+]
+for o in OD_ERR:
+    case(BF, "?od " + o + " bf")
+case(BF, "?od -t xz -N 7 -w2 -j 39 bf", "?od -w3 -j 39 bf", "?od -w3 -t x4 -N 4 bf")
+for o in ["-N 2b", "-j 2b -N 16", "-N 1k", "-N 1K -A d", "-N 1KB -A d", "-N 1KiB -A d", "-N 1m", "-N 1M", "-N 1MB", "-N 1MiB", "-N 1G", "-j 1b -N 8 -c", "-N 3b", "-j 1KB -N 16", "-j 1KiB -N 16"]:
+    case("seq 1 3000 > bg", "od " + o + " bg | wc -l", "od " + o + " bg | tail -n 2")
+case(BF, "od -j 1000 -c" + " bf" * 40, "od -j 1519 -c" + " bf" * 40, "od -N 20 -j 1000 -t x1" + " bf" * 40)
+case(BF, "od -c - - < bf", "od -c - bf - < bf", "cat bf | od -c - -", "od -j 38 -c - - < bf", "?od -j 40 -c - - < bf")
+OD_RF = ["", "-v", "-c", "-t x1", "-t x1z", "-t d2 -t x1", "-w8", "-w8 -v", "-A d", "-A x -v", "-An", "-j 16", "-j 17", "-j 70 -c",
+         "-N 70", "-N 80", "-N 79 -c", "-N 33 -t x1", "-t x8", "-t c -w4", "-t d4 -w24", "-vt x2 -w4 -N 12", "-j 3 -N 40 -w32 -t x1"]
+for o in OD_RF:
+    case(RF, "echo -e 'tail\\c' >> rg", "od " + o + " rg")
+    case(RF, "od " + o + " rg")
+case(RF, "echo -e 'ABC\\c' >> rg", "od rg", "od -c rg", "od -t x1 -j 70 rg")
+case("yes ABCDEFGHIJKLMNO | head -n 3 > rh", "echo abcdefghijklmno >> rh", "yes ABCDEFGHIJKLMNO | head -n 3 >> rh", "od rh", "od -c rh", "od -w8 -t x1 rh", "od -v rh | wc -l")
+case(ZF, "echo -e 'xyz\\c' >> zf", "od zf", "od -v zf | wc -l", "od -t x1 -N 70 zf", "od -c zf", "od -A d zf", "od -t d8 zf", "od -w4 -t x4 zf | head -n 5")
+case(ZF, "od zf", "od -An -w16 -t x1 zf", "od -j 16 -N 32 zf", "od -j 16 -N 64 -v -w16 -t x1 zf | tail -n 2")
+# standard input and several files, which are one stream
+case(BF, "cat bf | od -c", "cat bf | od -An -t x1", "od -c - < bf", "od -c -j 5 -N 10 - < bf", "cat bf | od -j 5 -t x1", "od -c bf - < bf", "od -tx1 - bf < bf")
+case(BF, RF, "cat rg | od", "cat rg | od -v | wc -l", "cat rg | od -j 3 -N 100 -t x1", "od -c bf bf", "od -j 40 -c bf bf", "od -j 38 -c bf bf",
+     "od -N 50 -c bf rg", "od -A d bf rg", "od -c rg rg", "od -t x1 -w4 rg bf", "od -j 70 -N 20 -t x1 rg bf rg", "od -j 118 -c bf rg bf")
+case(BF, RF, "?od nosuch bf > xo", "cat xo", "?od bf nosuch > xo", "cat xo", "?od nosuch > xo", "cat xo",
+     "?od nosuch nosuch2 > xo", "cat xo", "?od -N 0 nosuch bf > xo", "cat xo", "?od -j 100 nosuch > xo", "cat xo",
+     "?od -j 100 nosuch bf > xo", "cat xo", "?od -j 1k -N 1 nosuch bf > xo", "cat xo", "?od -c nosuch rg nosuch2 > xo", "cat xo",
+     "?od -A n nosuch > xo", "cat xo", "?od -N 0 -A x bf nosuch > xo", "cat xo")
+# longer inputs
+case("seq 1 3000 > bg", "od bg | wc -l", "od -c bg | tail -n 2", "od -An -t x1 bg | tail -n 1", "od -j 7000 -N 40 -c bg",
+     "od -j 0x2000 -N 16 -t x1 bg", "od -j 1k -N 32 -c bg", "od -N 1k bg | tail -n 2", "od -v bg | wc -l", "od -A d -j 13000 bg",
+     "od -t d8 bg | tail -n 2", "od -t x1z bg | tail -n 3", "?od -j 20000 bg", "?od -j 14k bg", "od -j 13892 bg", "od -j 13891 bg",
+     "od -j 14000 -N 16 -c bg bg", "cat bg bg | od -j 13880 -N 40 -c", "cat bg | od -j 10000 -N 16 -c", "od -j 5k -N 5 -A x -c bg")
+case("yes abcdefghijklmno | head -n 2000 > by", "od by", "od -v by | wc -l", "od -c by | tail -n 3", "od -w32 by", "od -w8 -t x4 by | tail -n 2",
+     "od -j 3 by | head -n 3", "od -j 3 -t c by | tail -n 3", "od -t x1 -w48 by")
+case("seq 1 3000 | od -An -c | tail -n 2", "seq 1 3000 | od -An -t d4 | wc -l", "seq 1 3000 | od -j 12000 -c | tail -n 3")
+
+SF = binf("sf", b"abc\x00hello world\x01\x02test\ttab\nline two\x7fxyz\x80\xffabcde\x1b[31mred\x00end\x00ab\x00abcd")
+SF2 = binf("sg", b"\x00\x00second file\x00\x00xyzzy\x00fg\x80hijklm\xffn\x00tail")
+SV = "| tr '\\011\\010\\015 ' 'TBR.' | tr '\\200-\\377' '+'"
+SO = ["", "-n 2", "-n 3", "-n 5", "-n 10", "-n 1", "-3", "-2", "-8", "-n3", "-n 0x3", "-n 010", "-n +4", "-n ' 5'", "--bytes=3", "--bytes 3",
+      "--bytes=0x6", "-n 3 -n 6", "-a", "-a -n 3", "-", "- -n 3", "-f", "-f -n 3", "-t o", "-t d", "-t x", "-o", "-o -t d", "--radix=x",
+      "--radix d", "-t x -n 3", "-f -t d", "-ft x", "-e s", "-e S", "-eS", "--encoding=S", "-e S -e s", "-e s -e S", "--all",
+      "--print-file-name", "-fa", "-n 3 -t o -f", "-e S -n 2 -t d", "-e S -f", "-n 2147483648", "-t d -t x", "-o -t x",
+      "-10", "-n 1 -e S -t x", "-- ", "-n 3 -- ", "-an3", "-fn3", "-3 -f", "-t d -- ", "--bytes=3 -f", "-n 3 -a - "]
+for o in SO:
+    case(SF, "strings " + o + " sf " + SV)
+for o in ["", "-f", "-t d", "-f -t x -n 3", "-e S -n 2", "-n 2"]:
+    case(SF, SF2, "strings " + o + " sf sg " + SV, "strings " + o + " sg sf sg " + SV)
+    case(SF, "cat sf | strings " + o + " " + SV, "strings " + o + " < sf " + SV, "strings " + o + " - sf < sf " + SV)
+SERR = ["-n 0", "-n x", "-n 4k", "-n 4294967296", "-n 4294967295", "-n -3", "-n ''", "-n ' '", "-n 0x", "-n 08", "-n 99999999999999999999",
+        "-n 99999999999999999999x", "--bytes=0", "--bytes=x", "-0", "-n -4294967296", "-n 1.5", "-n 4abc"]
+for o in SERR:
+    case(SF, "?strings " + o + " sf")
+case(SF, "?strings nosuch sf > so", "cat so " + SV, "?strings -f nosuch sf > so", "cat so " + SV, "?strings sf nosuch > so", "cat so " + SV,
+     "?strings nosuch > so", "cat so", "mkdir sd", "?strings sd sf > so", "cat so " + SV, "?strings -f sf sd > so", "cat so " + SV,
+     "?strings -t d nosuch sf nosuch2 > so", "cat so " + SV)
+case("seq 1 3000 > bg", "strings bg | wc -l", "strings -n 20 bg | wc -l", "strings -n 1 bg | wc -l", "strings -t d bg | tail -n 2",
+     "strings -f -t x bg | tail -n 2", "cat bg | strings -n 3 | tail -n 2")
+case("seq 1 3000 | paste -s -d x > bl", "strings bl | wc -c", "strings -n 13892 bl | wc -c", "strings -n 13893 bl | wc -c",
+     "strings -n 3000 bl | wc -c", "strings -t d bl | wc -c", "strings -n 5000 -t d bl | wc -c", "cat bl bl | strings | wc -c",
+     "cat bl bl | strings -t x | cut -c 1-12", "strings -n 2147483647 bl | wc -c", "strings -n 4294967294 bl | wc -c")
+case("yes | head -n 3000 | tr 'y\\n' 'a\\000' > ba", "strings ba | wc -l", "strings -n 1 ba | wc -l", "strings -n 1 -t d ba | tail -n 2",
+     "yes | head -n 600 | tr 'y\\n' 'a\\011' > bt", "strings -n 1 bt | wc -c", "strings -n 5 -t d bt | wc -c")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:
@@ -777,7 +884,7 @@ def run_all():
             may_fail = c.startswith("?")
             # stderr is merged in order: RingTail's console shows both, and a
             # tool flushes what it wrote before it complains
-            p = subprocess.run(["bash", "-c", c.lstrip("?")], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+            p = subprocess.run(["bash", "-c", c.lstrip("?")], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, env=dict(os.environ, LC_ALL="C"))
             if p.returncode and not may_fail:
                 bad.append(f"{c!r}: {p.stdout.decode().strip()}")
                 break
