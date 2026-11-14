@@ -26,8 +26,8 @@ static void field(out_t* o, const char* s, int n, int width, int left, char pad)
     for (int i = 0; i < n; i++) put(o, s[i]);
 }
 
-// 64-bit values take the slow path only when they need it: on i386
-// every 64-bit division is a call into libgcc.
+// 64-bit values take the slow path only when they need it: dividing
+// in 32 bits is the cheaper instruction.
 static int fmt_num(char* out, uint64_t v, unsigned base, int upper, int neg) {
     const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char tmp[24];

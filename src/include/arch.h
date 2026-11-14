@@ -22,8 +22,7 @@ static inline void cpu_relax(void) { __asm__ volatile("pause" ::: "memory"); }
 #define EFLAGS_IF 0x200
 
 // Register-width values (pushf pops a full register, and so do the
-// control registers) come back as uintptr_t: the same instruction
-// moves 32 bits on i386 and 64 on x86_64.
+// control registers) come back as uintptr_t.
 static inline uintptr_t read_eflags(void) {
     uintptr_t f;
     __asm__ volatile("pushf; pop %0" : "=r"(f) :: "memory");

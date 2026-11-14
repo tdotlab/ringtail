@@ -1,4 +1,4 @@
-// Host tests for the TCP engine (src/net/tcp.c), built 32-bit under the
+// Host tests for the TCP engine (src/net/tcp.c), built under the
 // address and undefined-behaviour sanitizers. This file is the platform:
 // a clock it moves by hand, a simulated network that delays, loses,
 // reorders, duplicates and corrupts segments, and malloc with a count

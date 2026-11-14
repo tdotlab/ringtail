@@ -2,7 +2,7 @@
 """RingTail integration tests: boot the real ISO in QEMU and drive the
 shell over the serial port, the way a person at a terminal would.
 
-    python3 tests/qemu_test.py --qemu qemu-system-i386 --iso build/i386/ringtail.iso --disk build/i386/test-disk.img
+    python3 tests/qemu_test.py --iso build/x86_64/ringtail.iso --disk build/x86_64/test-disk.img
 
 The disk image is copied first, so the build's image is never
 modified. After the session the copy is checked with fsck.fat (when
@@ -30,8 +30,8 @@ import threading
 # The prompt carries the current directory: "ringtail:/> ", "ringtail:/My Docs> ".
 PROMPT = rb"ringtail:/[^>\n]*> "
 
-# The system emulator: qemu-system-i386 or qemu-system-x86_64, set by --qemu.
-QEMU = "qemu-system-i386"
+# The system emulator for the target, which --qemu can change.
+QEMU = "qemu-system-x86_64"
 
 
 class Machine:
@@ -3837,8 +3837,8 @@ def main():
     global QEMU
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", default=QEMU, help="the QEMU system emulator for the target")
-    ap.add_argument("--iso", default="build/i386/ringtail.iso")
-    ap.add_argument("--disk", default="build/i386/test-disk.img")
+    ap.add_argument("--iso", default="build/x86_64/ringtail.iso")
+    ap.add_argument("--disk", default="build/x86_64/test-disk.img")
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     args = ap.parse_args()
     QEMU = args.qemu

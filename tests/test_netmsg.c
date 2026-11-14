@@ -2,7 +2,7 @@
 // strangers send: the DHCP messages (src/net/dhcpmsg.c), the DNS
 // messages (src/programs/lib/dnsmsg.c) and the SNTP messages
 // (src/programs/lib/ntpmsg.c), with the calendar arithmetic the clock
-// is set through (src/lib/civil.c). Built 32-bit with the address
+// is set through (src/lib/civil.c). Built with the address
 // and undefined-behaviour sanitizers, so a read past the end of a
 // packet is a failure even when it happens to return a harmless byte.
 // Each parser also gets a few hundred thousand mangled messages.

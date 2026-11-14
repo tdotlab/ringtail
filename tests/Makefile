@@ -10,18 +10,16 @@
 # cryptography (against the RFCs' and Project Wycheproof's vectors) and
 # the TLS client (against recorded conversations with a scripted
 # server and with OpenSSL), under the address and undefined-behaviour
-# sanitizers. Everything is built at the target's width, BITS=32 or 64
-# (the top-level make passes the one ARCH implies); 32 needs gcc -m32
-# (gcc-multilib). The disk image the run
+# sanitizers. They are built for the host, which has to be 64-bit like
+# the target, so the pointer sizes match. The disk image the run
 # leaves behind is checked with fsck.fat when it is installed.
 CC = gcc
-BITS ?= 32
-CFLAGS = -m$(BITS) -std=gnu11 -O1 -g -Wall -Wextra -fno-builtin -I../src/include
+CFLAGS = -std=gnu11 -O1 -g -Wall -Wextra -fno-builtin -I../src/include
 TEST = test_heap_diskfs
 SRCS = test_heap_diskfs.c ../src/mm/heap.c ../src/fs/diskfs.c ../src/lib/string.c
 
 NETMSG_SRCS = test_netmsg.c ../src/net/dhcpmsg.c ../src/programs/lib/dnsmsg.c ../src/programs/lib/ntpmsg.c ../src/lib/civil.c
-NETMSG_CFLAGS = -m$(BITS) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
+NETMSG_CFLAGS = -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
 	-I../src/include -I../src/net -I../src/programs/lib
 
 TCP_SRCS = test_tcp.c ../src/net/tcp.c
@@ -61,13 +59,7 @@ HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_sha
 
 all: $(HOST_TESTS)
 
-# Everything rebuilds when BITS changes: .bits holds the last value
-# and is rewritten only when it differs.
-.bits: FORCE
-	@echo $(BITS) > $@.tmp
-	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
-$(HOST_TESTS): .bits
-.PHONY: all run clean FORCE
+.PHONY: all run clean
 
 $(TEST): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
@@ -115,7 +107,7 @@ test_x509: $(X509_SRCS) $(SIG_HDRS) ../src/programs/lib/x509.h ../src/programs/l
 	$(CC) $(CRYPTO_CFLAGS) -o $@ $(X509_SRCS)
 
 run: $(HOST_TESTS)
-	./$(TEST) || qemu-i386 ./$(TEST)
+	./$(TEST)
 	./test_netmsg
 	./test_tcp
 	./test_regex
@@ -135,4 +127,4 @@ run: $(HOST_TESTS)
 	else echo "fsck.fat not installed, skipping the image check"; fi
 
 clean:
-	rm -f $(HOST_TESTS) test_disk.img .bits
+	rm -f $(HOST_TESTS) test_disk.img

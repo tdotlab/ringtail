@@ -1,7 +1,7 @@
 // RingTail system call ABI, shared by the kernel and user programs.
 //
-// Calling convention: int $0x80 with the call number in eax and up
-// to three arguments in ebx, ecx, edx. The result comes back in eax.
+// Calling convention: int $0x80 with the call number in rax and up
+// to three arguments in rdi, rsi, rdx. The result comes back in rax.
 // Failures return a negative errno value (-ENOENT and so on).
 // Exit statuses are plain ints: a killed program reports EXIT_KILLED
 // and one that faulted reports EXIT_FAULTED.

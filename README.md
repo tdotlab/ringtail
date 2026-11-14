@@ -1,7 +1,7 @@
 # RingTail OS
 
-A small 32-bit x86 operating system written from scratch in freestanding
-C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
+A small 64-bit x86 (x86_64) operating system written from scratch in
+freestanding C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
 FAT16 disk in separate, protected address spaces, and it has a preemptive
 scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
 13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
@@ -17,35 +17,37 @@ read off the FAT16 disk.
 
 ## Building and running
 
-You need nasm, grub-mkrescue (with xorriso), qemu-system-i386, python3
-and a C compiler that can target i386. An `i686-elf-gcc` cross compiler
-is used when one is installed. Otherwise the host gcc works with
-`-m32`; on Debian and Ubuntu that means gcc-multilib.
+You need nasm, grub-mkrescue (with xorriso), qemu-system-x86_64,
+python3 and a C compiler that targets x86_64. An `x86_64-elf-gcc` cross
+compiler is used when one is installed; otherwise the host gcc of any
+64-bit x86 Linux works as it is.
 
 ```
-make            # kernel, programs, disk image, bootable ISO, all in build/i386/
+make            # kernel, programs, disk image, bootable ISO, all in build/x86_64/
 make run        # boot it in QEMU; the serial console mirrors to this terminal
 make run-serial # serial only, no window
 make test       # host unit tests, then the QEMU integration suite
 make clean
 ```
 
-`ARCH` picks the machine: `i386`, the default for now, or `x86_64`,
-which is being ported (`make ARCH=x86_64 run`). Each one builds into
-its own `build/$(ARCH)/`.
+`ARCH` picks the machine, and x86_64 is the only one. What differs between
+machines lives in `src/arch/$(ARCH)` and builds into `build/$(ARCH)/`, so
+a second port is a new folder there and a few lines in the Makefile.
+(RingTail was 32-bit i386 up to v0.28; the commit that dropped it says
+what to revert to bring it back.)
 
-The disk image (`build/i386/disk.img`) is ordinary FAT16. It holds the
+The disk image (`build/x86_64/disk.img`) is ordinary FAT16. It holds the
 programs in `src/programs` plus `WELCOME.TXT`, and files you write in the OS persist on it
 across boots. Running `make` again rebuilds it from scratch, so copy it
-somewhere else if you want to keep what you wrote. `mdir -i build/i386/disk.img`
-and `fsck.fat -n build/i386/disk.img` both read it.
+somewhere else if you want to keep what you wrote. `mdir -i build/x86_64/disk.img`
+and `fsck.fat -n build/x86_64/disk.img` both read it.
 
 ## Testing
 
 `make test` runs the host tests, then the QEMU suite.
 
 `tests/test_heap_diskfs.c` builds the real kernel heap and filesystem
-code as a 32-bit Linux program, on top of a RAM disk that can be told to
+code as a 64-bit Linux program, on top of a RAM disk that can be told to
 fail writes. It covers allocation and coalescing, double frees and bad
 pointers, name rules and long names (aliases, ~N tails, case,
 slots across sectors and clusters, bad checksums), sparse writes, truncation, full disks, root
@@ -114,7 +116,7 @@ sweep (every early return in `x509.c` disabled in turn) found the
 cases that were missing. It also reads every root in `disk/roots.pem`.
 
 `tests/qemu_test.py` boots the real ISO in QEMU and drives the shell
-over a serial socket. It uses `build/i386/test-disk.img`, which adds the test
+over a serial socket. It uses `build/x86_64/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
 banner and runs every program, including the ones that are supposed to
 crash. It covers bad pointers handed to syscalls, stack growth and
@@ -163,9 +165,11 @@ serial log and the disk.
 
 ## Design in brief
 
-Memory: the kernel identity-maps the first 1 GB for itself, supervisor
-only, with its code and read-only data write-protected. Each program gets
-the range from 1 GB to 3 GB. Its image is mapped from the ELF segments
+Memory: the CPU runs in long mode with 4-level page tables. The kernel
+identity-maps the first 1 GB for itself, supervisor only, with its code
+and read-only data write-protected and nothing but its code executable;
+SMEP stops it from running a program's pages. Each program gets the
+range from 1 GB to 3 GB, and nothing it can write is executable. Its image is mapped from the ELF segments
 with their real permissions. The stack sits at the top and grows on
 demand up to 1 MB, with an unmapped guard gap below it. The kernel heap
 and the physical frame pool are sized from the Multiboot memory map. A program's heap is the break above its image, moved with
@@ -197,8 +201,8 @@ alike. Opening `/dev/tty` (`DEV_TTY`) gives the terminal itself, read-only for
 keys or write-only for output, whatever standard input and output are
 redirected to; that is how `more` can wait for a key at the end of a pipe.
 
-System calls: `int 0x80`, with the number in eax, arguments in ebx, ecx
-and edx, and the result in eax. A failed call returns a negative errno.
+System calls: `int 0x80`, with the number in rax, arguments in rdi, rsi
+and rdx (where a C call puts them), and the result in rax. A failed call returns a negative errno.
 Every user pointer is checked against the caller's page tables before the
 kernel touches it. The numbers and structures are in
 `src/include/ringtail/abi.h`, and the user-side wrappers are in
@@ -359,7 +363,7 @@ roots are Mozilla's, as the ca-certificates package ships them, in
 ## Source layout
 
 ```
-src/arch       what differs between machines, one folder each (i386, x86_64): the multiboot
+src/arch       what differs between machines, one folder each (x86_64): the multiboot
                entry, linker script, GDT and TSS, IDT gates and interrupt entry, task switch,
                page tables, the saved register frame and FPU state (include/arch/)
 src/kernel     kernel_main, interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
@@ -456,7 +460,7 @@ Programs on the disk:
 | basename | `basename NAME [SUFFIX]` or `basename [-a] [-s SUFFIX] NAME...`: the last part of a path, with an optional suffix taken off. |
 | dirname | `dirname NAME...`: a path without its last part. |
 | seq | `seq [-w] [-s SEP] [FIRST [INCR]] LAST`: the numbers from FIRST to LAST, with up to 9 decimals; `-w` pads with zeros, `-s` changes the separator. |
-| factor | `factor [-h | --exponents] [NUMBER...]`: breaks numbers into their primes, so `factor 360` writes `360: 2 2 2 3 3 5`. With no NUMBER it reads them from standard input, separated by blanks or newlines. `-h` writes a repeated factor as `p^e` (`360: 2^3 3^2 5`). Numbers go up to 2^64-1 (18446744073709551615): Miller-Rabin tells primes from the rest and Pollard's rho finds the factors, so even the product of two 32-bit primes comes back at once, and with no 128-bit type on i386 the multiplication modulo n is done by hand (Montgomery's way). A bad number (`12a`, `-3`, `0x10`) is reported as `factor: 'TOKEN' is not a valid positive integer` and a bigger one as too large; the work goes on and the end status is 1. As with GNU's when it writes to a pipe, the answers are held back until the end (or until it waits for input), so such messages come out first. Checked against GNU on thousands of numbers, among them primes near 2^64, squares of big primes and Carmichael numbers. GNU's goes on beyond 2^64, this one stops there. A usage error is status 2, where GNU's is 1, and `--version` stops with a message. |
+| factor | `factor [-h | --exponents] [NUMBER...]`: breaks numbers into their primes, so `factor 360` writes `360: 2 2 2 3 3 5`. With no NUMBER it reads them from standard input, separated by blanks or newlines. `-h` writes a repeated factor as `p^e` (`360: 2^3 3^2 5`). Numbers go up to 2^64-1 (18446744073709551615): Miller-Rabin tells primes from the rest and Pollard's rho finds the factors, so even the product of two 32-bit primes comes back at once; the multiplication modulo n is done by hand (Montgomery's way). A bad number (`12a`, `-3`, `0x10`) is reported as `factor: 'TOKEN' is not a valid positive integer` and a bigger one as too large; the work goes on and the end status is 1. As with GNU's when it writes to a pipe, the answers are held back until the end (or until it waits for input), so such messages come out first. Checked against GNU on thousands of numbers, among them primes near 2^64, squares of big primes and Carmichael numbers. GNU's goes on beyond 2^64, this one stops there. A usage error is status 2, where GNU's is 1, and `--version` stops with a message. |
 | diff | `diff [-u \| -U N \| -c \| -C N] [-q] [-s] [-i] [-b] [-w] [-a] [-r] [-N] [-d] [--label L] FILE1 FILE2`: which lines changed, in the normal, unified (`-u`) or context (`-c`) format, picking the same changes as GNU diff, byte for byte. `-i -b -w` ignore case and blanks, `-q` only says whether they differ, `-r` goes through two directory trees, `-N` treats a missing file as empty. A file and a directory compare the file with its namesake inside. Binary files (a NUL in the first 4 KB) are only reported unless `-a`. Exit 0 same, 1 different, 2 trouble. |
 | cmp | `cmp [-l] [-s] [-n LIMIT] FILE1 [FILE2]`: the first byte where two files differ (or every one with `-l`); exit 0 same, 1 different, 2 trouble. |
 | yes | `yes [STRING...]`: prints STRING (or `y`) forever, until the reader quits. |
@@ -514,7 +518,7 @@ are limited to 1 MB. If it ever hangs, Ctrl+\ ends it.
 ## Limits
 
 These are deliberate, or simply not done yet. Programs get the x87 FPU
-(its state is saved per task) but not SSE. Long names are ASCII only (a name
+and SSE (their state is saved per task with fxsave), but not AVX. Long names are ASCII only (a name
 with other characters shows as its short alias). The clock is the CMOS
 one, with no time zone (UTC under QEMU) and no changes for summer time;
 it is set by `sntp`, once at boot and whenever someone runs it, to the

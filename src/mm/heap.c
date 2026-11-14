@@ -1,6 +1,5 @@
 // Kernel heap: first-fit over one address-ordered list of blocks,
-// each with a header (16 bytes on i386, 32 on x86_64: a multiple of
-// the alignment either way), merged with free neighbours on free.
+// each with a header (32 bytes: a multiple of the alignment), merged with free neighbours on free.
 // Every allocation is 16-byte aligned.
 //
 // kfree validates its argument by finding it in the block list, so

@@ -32,7 +32,7 @@ int parse_ipv4(const char* s, uint32_t* out);
 // printf subset: %d %i %u %x %X %p %s %c %%, with the '0' and '-'
 // flags, a field width (or *), and the length modifiers l, ll and z.
 // An address prints as %lx of (unsigned long)addr, which is pointer
-// sized on both i386 and x86_64; %p pads to the pointer's width.
+// sized; %p pads to the pointer's width.
 int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
 int snprintf(char* buf, size_t size, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
 

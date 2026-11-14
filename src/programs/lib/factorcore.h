@@ -1,6 +1,6 @@
 // The arithmetic of factor: reading a number, telling a prime from a
-// composite, and splitting a number below 2^64 into primes. There is no
-// 128-bit type on i386, so the multiplication modulo n is done by hand.
+// composite, and splitting a number below 2^64 into primes. The
+// multiplication modulo n is done by hand (Montgomery's way).
 #ifndef RINGTAIL_FACTORCORE_H
 #define RINGTAIL_FACTORCORE_H
 

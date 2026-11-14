@@ -1,5 +1,5 @@
 // Host tests for the kernel heap (heap.c) and the FAT16 filesystem
-// (diskfs.c), built 32-bit so pointer sizes match the target.
+// (diskfs.c), built 64-bit, so pointer sizes match the target.
 //
 // diskfs.c talks to the disk through ata_read/ata_write/ata_flush;
 // here those copy to and from a RAM image, with a switch that makes

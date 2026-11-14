@@ -52,12 +52,10 @@ static uintptr_t interesting(void) {
         0x3FFFFFFF, 0x3FFFFFFC, 0x40000000, 0xBFFFFFFF, 0xBFFFFFFC, 0xC0000000, 0xC0000004,
         0x00100000, 0x00110000, 0x50000000, 0x0B8000, 0x0A0000, 0x1000, 0x400000,
         3600 * 100, 3600 * 100 + 1, 1u << 20, (1u << 20) + 1,
-#if UINTPTR_MAX > 0xFFFFFFFFu
         // Wider than 32 bits: a kernel that cut an address down to 32
         // bits would take most of these for user space.
         0x140000000, 0x100000000, 0x1BFFFFFFF, 0xFFFFFFFF40000000, 0x0000800000000000,
         0xFFFF800000000000, (uintptr_t)-1, (uintptr_t)-4096,
-#endif
     };
     return v[rnd() % (sizeof v / sizeof v[0])];
 }

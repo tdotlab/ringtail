@@ -1,6 +1,5 @@
-// Program loader: reads a static ELF executable for this machine
-// (32-bit for i386, 64-bit for x86_64) from the disk into a fresh
-// address space and starts it as a user task.
+// Program loader: reads a static 64-bit x86_64 ELF executable from
+// the disk into a fresh address space and starts it as a user task.
 //
 // The file is untrusted. Every header field is checked before use,
 // segments must lie inside the user image range, and file offsets
@@ -26,7 +25,6 @@
 #define MAX_PHDRS 16
 #define ARGS_MAX_BYTES 3072
 
-#ifdef __x86_64__
 #define ELF_CLASS 2     // 64-bit
 #define ELF_MACHINE 62  // EM_X86_64
 typedef struct {
@@ -41,19 +39,6 @@ typedef struct {
     uint32_t type, flags;
     uint64_t offset, vaddr, paddr, filesz, memsz, align;
 } elf_phdr_t;
-#else
-#define ELF_CLASS 1     // 32-bit
-#define ELF_MACHINE 3   // EM_386
-typedef struct {
-    uint8_t ident[16];
-    uint16_t type, machine;
-    uint32_t version, entry, phoff, shoff, flags;
-    uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
-} elf_header_t;
-typedef struct {
-    uint32_t type, offset, vaddr, paddr, filesz, memsz, flags, align;
-} elf_phdr_t;
-#endif
 
 static int read_exact(int node, void* buf, uint32_t len, uint32_t off) {
     int n = diskfs_pread(node, buf, len, off);

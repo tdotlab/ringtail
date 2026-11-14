@@ -8,17 +8,13 @@
 #include "ringtail/abi.h"
 #include "lib.h"  // string functions, snprintf, strerror, parse_uint
 
-// int 0x80 with the number in eax and the arguments in ebx, ecx, edx
-// on i386; rax, and rdi, rsi, rdx, on x86_64. Arguments and the result
-// are register sized, so a pointer passes whole either way. The
+// int 0x80 with the number in rax and the arguments in rdi, rsi and
+// rdx, as for a C call; the result comes back in rax. Arguments and
+// the result are register sized, so a pointer passes whole. The
 // kernel keeps every other register.
 static inline long syscall3(long n, uintptr_t a, uintptr_t b, uintptr_t c) {
     long r;
-#ifdef __x86_64__
     __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory");
-#else
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "b"(a), "c"(b), "d"(c) : "memory");
-#endif
     return r;
 }
 #define SC0(n) syscall3((n), 0, 0, 0)

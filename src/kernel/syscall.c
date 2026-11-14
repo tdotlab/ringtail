@@ -1,5 +1,5 @@
 // System calls: int 0x80, with the number and three arguments in the
-// registers interrupt.h names (eax, ebx, ecx, edx on i386) and the
+// registers arch/regs.h names (rax, then rdi, rsi, rdx) and the
 // result back in the first (negative errno on failure). Arguments and
 // results are register sized, so an address fits whatever the width.
 // Interrupts are on while a call runs, so calls can block.

@@ -48,7 +48,7 @@ void frame_free(uintptr_t phys);
 void frame_stats(uint32_t* total, uint32_t* free);
 
 // ---- Paging (arch/<arch>/paging.c) ----
-// Layout of every address space, the same on i386 and x86_64:
+// Layout of every address space:
 //   0 - 4 KB      not mapped, so null pointers fault
 //   4 KB - 1 GB   kernel: identity-mapped RAM, supervisor only,
 //                 kernel code and read-only data write-protected
@@ -66,8 +66,7 @@ void frame_stats(uint32_t* total, uint32_t* free);
 // never mapped between the image and the lowest possible stack page.
 #define USER_IMAGE_LIMIT (USER_STACK_LOW - PAGE_SIZE)
 
-// A page table entry is as wide as a pointer: 32 bits on i386 (no
-// PAE), 64 on x86_64.
+// A page table entry is as wide as a pointer.
 typedef uintptr_t pte_t;
 #define PTE_PRESENT  0x001
 #define PTE_WRITE    0x002
@@ -87,8 +86,7 @@ uintptr_t kernel_pd(void);
 void* mmio_map(uintptr_t phys, uint32_t size);
 
 // An address space is named by the physical address of its top-level
-// table (the page directory on i386, the PML4 on x86_64): what goes
-// in CR3.
+// table (the PML4): what goes in CR3.
 uintptr_t as_create(void);
 void as_destroy(uintptr_t pd);
 // Map a fresh zeroed frame at va (page aligned, user range). If the

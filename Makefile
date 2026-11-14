@@ -4,25 +4,15 @@
 #   make test     host unit tests, then the QEMU integration tests
 #                 (on the test disk, which adds tests/programs)
 #   make clean
-# ARCH picks the machine: x86_64 (64-bit) or i386 (32-bit), as in
-# make ARCH=x86_64 test.
+# ARCH picks the machine. x86_64 is the only one so far; what differs
+# between machines lives in src/arch/$(ARCH), so a port adds a folder
+# there and a block here.
 
-ARCH ?= i386
+ARCH ?= x86_64
 BUILD := build/$(ARCH)
 
-ifeq ($(ARCH),i386)
-CROSS := i686-elf-gcc
-HOST_BITS := 32
-ARCH_CFLAGS := -march=i686
-KARCH_CFLAGS :=
-# No SSE in programs: the kernel saves only the x87 state.
-UARCH_CFLAGS := -mno-sse -mno-mmx
-ARCH_LDFLAGS :=
-ASFLAGS := -f elf32
-QEMU := qemu-system-i386
-else ifeq ($(ARCH),x86_64)
+ifeq ($(ARCH),x86_64)
 CROSS := x86_64-elf-gcc
-HOST_BITS := 64
 ARCH_CFLAGS :=
 # The kernel takes interrupts on the stack it is running on, so the
 # 128 bytes below rsp are not free for it to use.
@@ -34,7 +24,7 @@ ARCH_LDFLAGS := -Wl,-z,max-page-size=0x1000
 ASFLAGS := -f elf64
 QEMU := qemu-system-x86_64
 else
-$(error ARCH is i386 or x86_64, not $(ARCH))
+$(error there is no port to ARCH=$(ARCH); x86_64 is the only one)
 endif
 
 # Prefer a real cross compiler; otherwise a multilib host gcc works,
@@ -44,7 +34,7 @@ CC := $(CROSS)
 TARGET :=
 else
 CC := gcc
-TARGET := -m$(HOST_BITS) -fno-pie -fno-pic
+TARGET := -m64 -fno-pie -fno-pic
 endif
 AS := nasm
 PYTHON := python3
@@ -170,7 +160,7 @@ run-serial: all
 test: test-host test-qemu
 
 test-host:
-	$(MAKE) -C tests run BITS=$(HOST_BITS)
+	$(MAKE) -C tests run
 
 test-qemu: all $(TEST_DISK)
 	$(PYTHON) tests/qemu_test.py --qemu $(QEMU) --iso $(ISO) --disk $(TEST_DISK)

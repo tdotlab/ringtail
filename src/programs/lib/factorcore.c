@@ -30,8 +30,10 @@ void fc_u64_text(uint64_t v, char* out) {
 
 // ---- arithmetic modulo an odd n ------------------------------------------------
 //
-// A product of two numbers below n needs up to 128 bits, and i386 has no
-// type for that. Montgomery's trick avoids the division: numbers are kept as
+// A product of two numbers below n needs up to 128 bits, and reducing it
+// mod n would be a 128-by-64 division. (This was written for i386, which
+// had no 128-bit type at all; TODO.md has the switch to unsigned
+// __int128.) Montgomery's trick avoids the division: numbers are kept as
 // x*2^64 mod n ("in Montgomery form"), and a product is the 128-bit result
 // (built from four 32-bit multiplications) shifted down by 64 bits with one
 // more multiplication.

@@ -7,8 +7,8 @@
 ; In 64-bit mode the CPU always pushes SS and RSP and aligns the stack
 ; to 16 bytes first, so the frame looks the same whether the trap came
 ; from ring 0 or ring 3, and rsp is 16-byte aligned at the call. The
-; data segment registers play no part in addressing here, so unlike on
-; i386 there is nothing of the user's to replace on the way in.
+; data segment registers play no part in addressing here, so there is
+; nothing of the user's to replace on the way in.
 
 section .text
 

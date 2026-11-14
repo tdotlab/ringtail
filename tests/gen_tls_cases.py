@@ -37,7 +37,7 @@ The scripted server is deterministic, so its cases come out the same
 every time. OpenSSL chooses fresh random numbers, so those cases differ
 from run to run (in bytes, not in meaning).
 
-Needs: gcc -m32, Python's cryptography package, the openssl program.
+Needs: gcc, Python's cryptography package, the openssl program.
 """
 import hashlib
 import hmac
@@ -1443,7 +1443,7 @@ def build_client(workdir):
     src = [os.path.join(ROOT, p) for p in (
         'tests/test_tls.c', 'src/programs/lib/tls.c', 'src/programs/lib/chachapoly.c', 'src/programs/lib/x25519.c',
         'src/programs/lib/aesgcm.c', 'src/lib/sha256.c', 'src/lib/chacha20.c')]
-    subprocess.run(['gcc', '-m32', '-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-DNO_CASES',
+    subprocess.run(['gcc', '-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-DNO_CASES',
                     '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                     '-Wl,--wrap=x25519', '-Wl,--wrap=x25519_public',  # see test_tls.c
                     '-I' + os.path.join(ROOT, 'src/include'), '-I' + os.path.join(ROOT, 'src/programs/lib'),

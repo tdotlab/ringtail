@@ -53,6 +53,19 @@ Every task ends the same way, or it is not done:
   given date. Put the clock back afterwards (the `cal` block shows how).
 - `make test` takes about ten minutes. Run it in the background and wait
   on its log.
+- The machine is x86_64 now. The kernel is built with `-mno-red-zone`
+  (interrupts land on the stack it is running on) and
+  `-mgeneral-regs-only` (it never touches the SSE registers, which belong
+  to whichever program was running). The kernel links with
+  `-z max-page-size=0x1000`, or the Multiboot header ends up past the
+  first 8 KB of the file, where GRUB stops looking. Code that only one
+  machine needs goes in `src/arch/x86_64`, not behind an `#ifdef`
+  elsewhere.
+- System call handlers return `long`, so `-ENOENT` comes back
+  sign-extended in rax. A wrapper that returns a pointer or an address
+  checks it with `IS_ERR` (`ringtail/abi.h`), not `< 0` on a `uint32_t`.
+- Host tests build the kernel's own code with the host gcc, so they
+  only mean something on a 64-bit host, where the pointer sizes match.
 
 ## Small programs
 
@@ -162,6 +175,61 @@ dynamic blocks, long distances, empty), plus malformed ones that must fail
 cleanly and never read or write out of bounds. Then the QEMU test with
 `httpd` or a Python server sending a gzip body, chunked and not. Remove
 "does not ask for compressed pages" from the Limits.
+
+## After the move to 64-bit
+
+RingTail went from i386 to x86_64 after v0.28.0, and i386 was dropped
+once the whole suite passed on x86_64 (to bring it back, revert the commit
+"drop i386: x86_64 is the only target"; the port before it built both).
+Everything below was left out of that move on purpose, to keep it to one
+change at a time. The memory layout is still the 32-bit one, which is why
+the first two go together.
+
+**A higher-half kernel.** The kernel runs in the low 1 GB it identity-maps
+and programs get 1 GB to 3 GB. Moving the kernel to the top of the address
+space (0xFFFFFFFF80000000 for its image, a direct map of all RAM below
+that) gives programs the whole lower half and is how every 64-bit kernel
+does it. It touches the linker script, the boot page tables, `phys_to_virt`
+and everything that assumed an address below 4 GB is physical.
+
+**RAM above 1 GB.** `frames_init` and `setup_memory` stop at
+`RAM_IDENTITY_LIMIT`, so a machine with 8 GB uses one. With a direct map
+from the item above, the limit goes away; the frame counts in `kinfo` are
+`uint32_t` frames, which is fine up to 16 TB.
+
+**SYSCALL/SYSRET instead of int 0x80.** Faster, and what 64-bit code
+expects. It needs the STAR/LSTAR/FMASK MSRs, a way to find the kernel
+stack on entry (swapgs and a per-CPU block, or a fixed slot while there is
+one CPU), and the check every kernel has to make before SYSRET: a
+non-canonical return address faults in ring 0 on Intel. Keep int 0x80
+working alongside, at least until every program is rebuilt.
+
+**factor on unsigned __int128.** `factorcore.c` builds each 128-bit
+product out of four 32-bit multiplications, because i386 had no 128-bit
+type. On x86_64 gcc has `unsigned __int128`, and one `mulq` gives the
+product. Montgomery's reduction can stay (it still saves the division);
+only the product changes. Time it on the suite's big semiprimes, and the
+GNU cases say whether the answers stay right.
+
+**UEFI.** GRUB boots RingTail through Multiboot 1 from a BIOS. Most real
+machines boot UEFI. Multiboot2 through GRUB's EFI build is the small step;
+a loader of our own (or Limine) is the big one. The framebuffer from UEFI
+would also replace VGA text, which UEFI machines may not have.
+
+**APIC, ACPI and SMP.** The 8259 PIC and the PIT are the old way; the local
+APIC and IOAPIC are what SMP needs, and ACPI's tables are how you find
+them. SMP itself is the hard part: per-CPU data, locks that hold across
+CPUs, and a scheduler that knows there is more than one of them. It is
+listed again under Opus below for that reason.
+
+**AVX.** Programs get x87 and SSE, saved with `fxsave`. AVX needs `xsave`
+and a bigger save area, sized from CPUID.
+
+**ARM64.** The `src/arch` split is where a port starts, but it is far from
+all of it: the drivers talk to PC hardware (port I/O, PCI through 0xCF8,
+VGA, PS/2, ATA PIO, the CMOS clock), and an ARM board has none of that.
+It would need a device tree, a UART such as the PL011, and virtio devices
+under QEMU's `virt` machine, before the shell could start.
 
 ## Keep for Opus on high
 
