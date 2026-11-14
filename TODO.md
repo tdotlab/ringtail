@@ -43,8 +43,9 @@ Every task ends the same way, or it is not done:
   `gen_text_cases.py` end in `| cat`; see the `du` and `cal` cases.
 - `echo -e` has no `\f` or `\v` yet (an item below): use `\x0c` and `\x0b`.
 - A spawned program gets its own copy of each file offset, not a shared
-  one (see "find -exec" below). Anything that runs programs into a file
-  it is also writing has to allow for that.
+  one (see "Shared file offsets" in the Opus section). Anything that runs
+  programs into a file it is also writing has to allow for that, as `xargs`
+  and `find -exec` do by seeking to the end after each run.
 - Not every reference is GNU: `cal` is checked against BSD `ncal`, because
   that is the layout people know. Check the reference's `--version`, say
   which one it is in the commit, and make the generator refuse to run
@@ -62,17 +63,6 @@ its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
 ## Features in programs that exist
-
-**find -exec into a file.** A spawned program gets its own copy of each
-file descriptor with its own offset (`src/fs/file.c` says so), so when
-`xargs` ran with `> out`, each run wrote over the one before from the
-start of the file; `xargs` now seeks to the end after each run. `find
--exec` spawns the same way with no such seek, so `find . -name '*.txt'
--exec cat {} ; > out` very likely keeps only the last file. Write that
-test first and watch it fail, then fix it as `xargs` did: flush before
-each run, seek to the end after it, and check `-print` mixed with
-`-exec`. If it does not fail, find out why before changing anything. The
-real fix is in the Opus section.
 
 **echo -e with \f and \v.** GNU's `echo -e` turns `\f` into a form feed
 and `\v` into a vertical tab; ours prints them as they are. Add both,
@@ -185,8 +175,8 @@ confidently.
 
 **Shared file offsets.** A copy of a file descriptor keeps its own
 offset (`src/fs/file.c`), where in POSIX a parent and the programs it
-starts share one open file and one offset. That is why `xargs` seeks
-after each run and `find -exec` needs to. The fix is a shared,
+starts share one open file and one offset. That is why `xargs` and
+`find -exec` seek to the end after each run. The fix is a shared,
 reference-counted open file that `spawn` (and `dup2`: check what it does
 now) hands on, after which those seeks can go. It changes when a file is
 really closed and who frees it, across tasks: a mistake there is a

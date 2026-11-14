@@ -958,6 +958,19 @@ case("mkdir fd", "echo one > fd/f1", "echo two > fd/f2", "find fd -type f -name 
      "find fd -type f | xargs grep -c o | sort", "find fd -name f1 | xargs wc -c")
 case("echo hello > sp1", "echo 'a b' > 'sp 2'", "find . -name 'sp*' -print0 | xargs -0 -n1 echo | sort", "find . -name 'sp*' | sort | xargs -n1 echo | wc -l",
      "find . -name 'sp 2' -print0 | xargs -0 cat", "?find . -name 'sp 2' | xargs cat")
+# find -exec into a file: each run writes after the one before, and after what find itself wrote
+case("mkdir fe", "echo AAA > fe/a.txt", "echo BBB > fe/b.txt", "echo CCC > fe/c.txt",
+     "find fe -name '*.txt' -exec cat {} \\; > so", "sort so",
+     "find fe -name '*.txt' -exec echo got {} \\; > so", "sort so", "wc -l so",
+     "find fe -name '*.txt' -exec cat {} \\; -print > so", "sort so", "wc -l so",
+     "find fe -name '*.txt' -print -exec cat {} \\; > so", "sort so", "wc -l so",
+     "find fe -name a.txt -print -exec cat {} \\; -print > so", "cat so",
+     "find fe -name b.txt -exec cat {} \\; -exec cat {} \\; > so", "cat so",
+     "echo first > so", "find fe -name '*.txt' -exec cat {} \\; >> so", "sort so",
+     "find fe -name '*.txt' -exec grep -c A {} \\; > so", "sort so",
+     "?find fe -name '*.txt' -exec grep A {} \\; > so", "sort so", "?find fe -name '*.txt' -exec grep A {} \\; -print > so", "sort so")
+case("seq 1 400 > fl", "mkdir fe2", "cp fl fe2/x", "cp fl fe2/y", "find fe2 -type f -exec cat {} \\; > so", "wc -l so",
+     "find fe2 -type f -exec cat {} \\; -exec echo end {} \\; > so", "wc -l so", "grep -c end so", "tail -n 1 so | cut -c1-3")
 # standard input is not shared with the children: more input than one read takes, and a child that would read it
 case("seq 1 300 | xargs -I{} wc -c | sort | uniq -c")
 # the same wrapped in pipes
