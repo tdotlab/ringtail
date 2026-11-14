@@ -1,7 +1,7 @@
 // echo [-n] [-e | -E] [TEXT...]    write the words, with one space between them
 //
 // -n leaves off the newline. -e reads backslash escapes in the text
-// (\n \t \r \a \b \e \\, \0NNN for a byte in octal, \xHH in hex, and \c
+// (\n \t \r \a \b \e \f \v \\, \0NNN for a byte in octal, \xHH in hex, and \c
 // to stop there with no newline); -E, the default, leaves them as
 // typed. The flags may be bundled (-ne) and only count while every
 // letter in the word is one of n, e, E; anything else is text. To keep
@@ -52,6 +52,8 @@ static int out_escaped(const char* s) {
         case 'a': out('\a'); break;
         case 'b': out('\b'); break;
         case 'e': out(27); break;
+        case 'f': out('\f'); break;
+        case 'v': out('\v'); break;
         case '\\': out('\\'); break;
         case 'c': return 1;
         case '0': {

@@ -197,6 +197,7 @@ CASES = [
     (("echo -e 'a\\\\b' | tr '\\\\' '/'",), ('a/b\n',)),
     (("echo -e 'a\\\\b' | tr '\\\\\\\\' '/'",), ('a/b\n',)),
     (("echo -e 'aabb' | tr aa xy",), ('yybb\n',)),
+    (("echo -e 'a\\fb' | od -c", "echo -e 'a\\vb' | od -c", "echo -e '\\f\\v\\f' | od -An -tx1", "echo -e '\\v' | od -An -tx1", "echo -E 'a\\fb\\vc' | od -c", "echo -e 'x\\f' 'y\\v' | od -c", "echo -n -e '\\fa\\v' | od -c", "echo -e 'a\\fb\\cc\\v' | od -c", "echo -e '\\\\f\\\\v' | od -c", "echo -e '\\0014\\v' | od -An -tx1", "echo -e 'a\\\\\\fb' | od -c", "echo -e '\\f\\g\\v' | od -c", "echo -ne '\\v\\f' | od -An -tx1", "echo -e 'tab\\there\\fform\\vvert' | od -c"), ('0000000   a  \\f   b  \\n\n0000004\n', '0000000   a  \\v   b  \\n\n0000004\n', ' 0c 0b 0c 0a\n', ' 0b 0a\n', '0000000   a   \\   f   b   \\   v   c  \\n\n0000010\n', '0000000   x  \\f       y  \\v  \\n\n0000006\n', '0000000  \\f   a  \\v\n0000003\n', '0000000   a  \\f   b\n0000003\n', '0000000   \\   f   \\   v  \\n\n0000005\n', ' 0c 0b 0a\n', '0000000   a   \\  \\f   b  \\n\n0000005\n', '0000000  \\f   \\   g  \\v  \\n\n0000005\n', ' 0b 0c\n', '0000000   t   a   b  \\t   h   e   r   e  \\f   f   o   r   m  \\v   v   e\n0000020   r   t  \\n\n0000023\n')),
     (("echo -e 'abc' | tr 'abc' 'xxx'",), ('xxx\n',)),
     (("echo -e 'abc' | tr -s 'abc' 'x'",), ('x\n',)),
     (("echo -e 'a[b]c' | tr '[]' '()'",), ('a(b)c\n',)),

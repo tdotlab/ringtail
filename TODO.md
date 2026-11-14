@@ -41,7 +41,6 @@ Every task ends the same way, or it is not done:
   so a program's name is at most 8 characters.
 - The shell has no `2>&1` yet (an item below). Error cases in
   `gen_text_cases.py` end in `| cat`; see the `du` and `cal` cases.
-- `echo -e` has no `\f` or `\v` yet (an item below): use `\x0c` and `\x0b`.
 - A spawned program gets its own copy of each file offset, not a shared
   one (see "Shared file offsets" in the Opus section). Anything that runs
   programs into a file it is also writing has to allow for that, as `xargs`
@@ -63,10 +62,6 @@ its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
 ## Features in programs that exist
-
-**echo -e with \f and \v.** GNU's `echo -e` turns `\f` into a form feed
-and `\v` into a vertical tab; ours prints them as they are. Add both,
-with cases. (The `cal` cases use `\x0c` and `\x0b`; leave them.)
 
 **sort with several keys.** `sort` takes one `-k`. GNU takes any number,
 tried in order, each with its own letters (`-k2,2n -k1,1r`); a key with

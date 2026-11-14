@@ -78,6 +78,11 @@ case("echo -e 'a-b' | tr 'a-' 'xy'")
 case("echo -e 'a\\\\b' | tr '\\\\' '/'")
 case("echo -e 'a\\\\b' | tr '\\\\\\\\' '/'")
 case("echo -e 'aabb' | tr aa xy")
+# echo -e: \f and \v (form feed 0x0c, vertical tab 0x0b)
+case("echo -e 'a\\fb' | od -c", "echo -e 'a\\vb' | od -c", "echo -e '\\f\\v\\f' | od -An -tx1", "echo -e '\\v' | od -An -tx1",
+     "echo -E 'a\\fb\\vc' | od -c", "echo -e 'x\\f' 'y\\v' | od -c", "echo -n -e '\\fa\\v' | od -c", "echo -e 'a\\fb\\cc\\v' | od -c",
+     "echo -e '\\\\f\\\\v' | od -c", "echo -e '\\0014\\v' | od -An -tx1", "echo -e 'a\\\\\\fb' | od -c", "echo -e '\\f\\g\\v' | od -c",
+     "echo -ne '\\v\\f' | od -An -tx1", "echo -e 'tab\\there\\fform\\vvert' | od -c")
 case("echo -e 'abc' | tr 'abc' 'xxx'")
 case("echo -e 'abc' | tr -s 'abc' 'x'")
 case("echo -e 'a[b]c' | tr '[]' '()'")
