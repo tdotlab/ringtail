@@ -10,41 +10,17 @@
 #include "random.h"
 #include "ringtail/abi.h"
 
-typedef struct {
-    uint16_t base_low;
-    uint16_t sel;
-    uint8_t zero;
-    uint8_t flags;
-    uint16_t base_high;
-} __attribute__((packed)) idt_entry_t;
-
-typedef struct {
-    uint16_t limit;
-    uint32_t base;
-} __attribute__((packed)) idt_ptr_t;
-
-static idt_entry_t idt[256];
-static idt_ptr_t idt_ptr;
 static irq_handler_t irq_handlers[16];
 volatile int need_resched;
 
 extern const uintptr_t isr_stub_table[48];
 extern const uintptr_t isr_syscall_stub;  // a word holding the stub's address
-extern void idt_load(idt_ptr_t* p);
 
 #define PIC1_CMD  0x20
 #define PIC1_DATA 0x21
 #define PIC2_CMD  0xA0
 #define PIC2_DATA 0xA1
 #define PIC_EOI   0x20
-
-static void idt_set(int vec, uintptr_t handler, uint8_t flags) {
-    idt[vec].base_low = handler & 0xFFFF;
-    idt[vec].base_high = (handler >> 16) & 0xFFFF;
-    idt[vec].sel = SEL_KERNEL_CODE;
-    idt[vec].zero = 0;
-    idt[vec].flags = flags;
-}
 
 // Move the PICs' IRQs to vectors 32-47, clear of the CPU exceptions,
 // and mask everything. Lines are unmasked one by one as drivers
@@ -82,14 +58,12 @@ void irq_register(int irq, irq_handler_t handler) {
 
 void idt_init(void) {
     pic_init();
-    for (int i = 0; i < 48; i++) idt_set(i, isr_stub_table[i], 0x8E);
+    for (int i = 0; i < 48; i++) idt_set_gate(i, isr_stub_table[i], 0);
     // DPL 3 on the syscall gate so ring 3 may invoke it; it still
     // lands in ring 0 code. Every other gate is DPL 0, so a user
     // "int 14" faults with #GP instead of faking a page fault.
-    idt_set(SYSCALL_VECTOR, isr_syscall_stub, 0xEE);
-    idt_ptr.limit = sizeof(idt) - 1;
-    idt_ptr.base = (uint32_t)(uintptr_t)&idt;
-    idt_load(&idt_ptr);
+    idt_set_gate(SYSCALL_VECTOR, isr_syscall_stub, 3);
+    idt_install();
 }
 
 static const char* const exception_names[32] = {
@@ -102,14 +76,6 @@ static const char* const exception_names[32] = {
     "reserved", "reserved", "reserved", "reserved", "reserved", "reserved",
     "hypervisor injection", "VMM communication", "security", "reserved",
 };
-
-static void dump_regs(const regs_t* r) {
-    kprintf("  eax=%08x ebx=%08x ecx=%08x edx=%08x\n", r->eax, r->ebx, r->ecx, r->edx);
-    kprintf("  esi=%08x edi=%08x ebp=%08x esp=%08lx\n", r->esi, r->edi, r->ebp,
-            regs_from_user(r) ? (unsigned long)r->user_esp : (unsigned long)&r->user_esp);
-    kprintf("  eip=%08x cs=%04x eflags=%08x err=%08x cr2=%08lx\n",
-            r->eip, r->cs, r->eflags, r->err, (unsigned long)read_cr2());
-}
 
 // Walk saved frame pointers. The kernel is built with frame pointers
 // so this gives a usable call chain without a symbol table: the

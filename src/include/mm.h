@@ -47,9 +47,15 @@ uintptr_t frame_alloc(void);
 void frame_free(uintptr_t phys);
 void frame_stats(uint32_t* total, uint32_t* free);
 
-// ---- Paging (paging.c) ----
-// Kernel space is the first 1 GB, identity mapped and supervisor
-// only. User space is 1 GB to 3 GB, private to each address space.
+// ---- Paging (arch/<arch>/paging.c) ----
+// Layout of every address space, the same on i386 and x86_64:
+//   0 - 4 KB      not mapped, so null pointers fault
+//   4 KB - 1 GB   kernel: identity-mapped RAM, supervisor only,
+//                 kernel code and read-only data write-protected
+//   1 GB - 3 GB   user: program image, then a 1 MB stack region
+//                 just below 3 GB that grows on demand
+//   3 GB - +4 MB  device registers (mmio_map): kernel only, uncached
+//   the rest      not mapped
 #define RAM_IDENTITY_LIMIT 0x40000000u
 #define USER_BASE        0x40000000u
 #define USER_TOP         0xC0000000u
@@ -80,8 +86,9 @@ uintptr_t kernel_pd(void);
 #define MMIO_WINDOW_SIZE 0x00400000u
 void* mmio_map(uintptr_t phys, uint32_t size);
 
-// Address spaces are identified by their page directory's physical
-// (equal to virtual, below 1 GB) address.
+// An address space is named by the physical address of its top-level
+// table (the page directory on i386, the PML4 on x86_64): what goes
+// in CR3.
 uintptr_t as_create(void);
 void as_destroy(uintptr_t pd);
 // Map a fresh zeroed frame at va (page aligned, user range). If the
@@ -99,7 +106,7 @@ uint32_t as_pages(uintptr_t pd);
 // the stack, 0 if the program must be killed.
 int user_fault_fixup(uintptr_t addr, uintptr_t err);
 
-// ---- Checked user access (usercopy in paging.c) ----
+// ---- Checked user access (usermem.c) ----
 // These validate against the current task's page tables: every byte
 // must be in the user range, mapped, user accessible, and writable
 // for writes. They return 0 or -EFAULT. Nothing is copied unless the

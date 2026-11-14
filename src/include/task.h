@@ -9,6 +9,7 @@
 #include "sync.h"
 #include "lib.h"
 #include "ringtail/abi.h"
+#include "arch/fpu.h"
 
 typedef enum {
     TASK_READY,
@@ -47,7 +48,7 @@ typedef struct task {
     char name[TASK_NAME_MAX];
     fd_t fds[MAX_FDS];
     int cwd;               // current directory, a diskfs node (0 is the root)
-    uint8_t fpu[108];      // x87 state, fnsave format
+    fpu_state_t fpu;       // floating-point registers, saved on every switch
 
     struct task* next;
 } task_t;
@@ -56,6 +57,10 @@ extern task_t* current;
 
 void task_init(void);
 void fpu_init(void);
+// Lay out a new task's kernel stack, which ends at top, so switch_to
+// pops a zeroed frame and returns into entry. Returns the saved stack
+// pointer (arch/<arch>/cpu.c).
+uintptr_t arch_task_stack(uintptr_t top, void (*entry)(void));
 int task_create_kernel(const char* name, void (*entry)(void*), void* arg);
 // Takes ownership of pd. The task starts in ring 3 at ip with the
 // given user stack pointer; its heap starts empty at brk. Job 0 makes

@@ -2,7 +2,7 @@
 """RingTail integration tests: boot the real ISO in QEMU and drive the
 shell over the serial port, the way a person at a terminal would.
 
-    python3 tests/qemu_test.py --iso build/ringtail.iso --disk build/disk.img
+    python3 tests/qemu_test.py --qemu qemu-system-i386 --iso build/i386/ringtail.iso --disk build/i386/test-disk.img
 
 The disk image is copied first, so the build's image is never
 modified. After the session the copy is checked with fsck.fat (when
@@ -30,6 +30,9 @@ import threading
 # The prompt carries the current directory: "ringtail:/> ", "ringtail:/My Docs> ".
 PROMPT = rb"ringtail:/[^>\n]*> "
 
+# The system emulator: qemu-system-i386 or qemu-system-x86_64, set by --qemu.
+QEMU = "qemu-system-i386"
+
 
 class Machine:
     # net: QEMU arguments for the network card; by default QEMU gives an
@@ -39,7 +42,7 @@ class Machine:
         self.serial_path = os.path.join(workdir, "serial.sock")
         self.monitor_path = os.path.join(workdir, "monitor.sock")
         self.qemu = subprocess.Popen(
-            ["qemu-system-i386", "-cdrom", iso,
+            [QEMU, "-cdrom", iso,
              "-drive", f"file={disk},format=raw,if=ide,index=0",
              "-boot", "d", "-m", str(mem), "-display", "none",
              *(["-cpu", cpu] if cpu else []), *(["-machine", machine] if machine else []),
@@ -3831,11 +3834,14 @@ def short_boots(iso, disk, work, t):
 
 
 def main():
+    global QEMU
     ap = argparse.ArgumentParser()
-    ap.add_argument("--iso", default="build/ringtail.iso")
-    ap.add_argument("--disk", default="build/test-disk.img")
+    ap.add_argument("--qemu", default=QEMU, help="the QEMU system emulator for the target")
+    ap.add_argument("--iso", default="build/i386/ringtail.iso")
+    ap.add_argument("--disk", default="build/i386/test-disk.img")
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     args = ap.parse_args()
+    QEMU = args.qemu
 
     work = tempfile.mkdtemp(prefix="ringtail-test-")
     disk = os.path.join(work, "disk.img")

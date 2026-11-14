@@ -1,23 +1,14 @@
-// Paging: the kernel's address space, per-task user address spaces,
-// stack growth, and checked access to user memory.
+// Page tables, i386: a page directory and page tables of 1024 32-bit
+// entries each, with 4 MB pages for most of the kernel's RAM.
 //
-// Layout of every address space:
-//   0 - 4 KB      not mapped, so null pointers fault
-//   4 KB - 1 GB   kernel: identity-mapped RAM, supervisor only,
-//                 kernel code and read-only data write-protected
-//   1 GB - 3 GB   user: program image, then a 1 MB stack region
-//                 just below 3 GB that grows on demand
-//   3 GB - +4 MB  device registers (mmio_map): kernel only, uncached
-//   the rest      not mapped
-// Kernel entries are the same in every page directory (copied from
-// the kernel directory, and never changed after boot), so the kernel
-// keeps running across address-space switches. The device window's
-// page table is shared, so mappings added to it reach every address
-// space.
+// The layout is the one in mm.h. Kernel entries are the same in every
+// page directory (copied from the kernel directory, and never changed
+// after boot), so the kernel keeps running across address-space
+// switches. The device window's page table is shared, so mappings
+// added to it reach every address space.
 #include "kernel.h"
 #include "arch.h"
 #include "mm.h"
-#include "task.h"
 #include "ringtail/abi.h"
 
 #define PDE_INDEX(va) ((va) >> 22)
@@ -161,59 +152,4 @@ uintptr_t as_lookup(uintptr_t pd, uintptr_t va, int* writable) {
     if (!pte || !(*pte & PTE_PRESENT)) return 0;
     if (writable) *writable = (*pte & PTE_WRITE) != 0;
     return FRAME(*pte);
-}
-
-static int in_stack_region(uintptr_t addr) {
-    return addr >= USER_STACK_LOW && addr < USER_STACK_TOP;
-}
-
-int user_fault_fixup(uintptr_t addr, uintptr_t err) {
-    if (err & 1) return 0;  // the page was present: a protection violation
-    if (!in_stack_region(addr)) return 0;
-    return as_map(current->cr3, ALIGN_DOWN(addr, PAGE_SIZE), 1) != 0;
-}
-
-// Validate one page of the current address space for access, growing
-// the stack if the page lies in the stack region and is not mapped.
-static int page_ok(uintptr_t va, int write) {
-    int w = 0;
-    if (as_lookup(current->cr3, va, &w)) return !write || w;
-    if (in_stack_region(va)) return as_map(current->cr3, ALIGN_DOWN(va, PAGE_SIZE), 1) != 0;
-    return 0;
-}
-
-int user_range_ok(uintptr_t uaddr, size_t len, int write) {
-    if (len == 0) return 0;
-    uintptr_t end = uaddr + len;
-    if (uaddr < USER_BASE || end < uaddr || end > USER_TOP) return -EFAULT;
-    for (uintptr_t p = ALIGN_DOWN(uaddr, PAGE_SIZE); p < end; p += PAGE_SIZE) {
-        if (!page_ok(p, write)) return -EFAULT;
-        if (p + PAGE_SIZE < p) break;
-    }
-    return 0;
-}
-
-int copy_from_user(void* dst, const void* usrc, size_t len) {
-    if (user_range_ok((uintptr_t)usrc, len, 0)) return -EFAULT;
-    memcpy(dst, usrc, len);
-    return 0;
-}
-
-int copy_to_user(void* udst, const void* src, size_t len) {
-    if (user_range_ok((uintptr_t)udst, len, 1)) return -EFAULT;
-    memcpy(udst, src, len);
-    return 0;
-}
-
-int strncpy_from_user(char* dst, const char* usrc, size_t max) {
-    uintptr_t a = (uintptr_t)usrc;
-    for (size_t i = 0; i < max; i++, a++) {
-        if (i == 0 || (a & (PAGE_SIZE - 1)) == 0) {
-            if (user_range_ok(a, 1, 0)) return -EFAULT;
-        }
-        dst[i] = *(const char*)a;
-        if (!dst[i]) return (int)i;
-    }
-    if (max) dst[max - 1] = 0;
-    return -ENAMETOOLONG;
 }

@@ -23,7 +23,7 @@ task_t* current;
 static task_t* task_list_head;
 static task_t* idle_task;
 static int next_id;
-static uint8_t fpu_clean[108];
+static fpu_state_t fpu_clean;  // the state after reset, for new tasks
 
 #define STACK_CANARY 0x5AFEC0DEu
 
@@ -43,16 +43,12 @@ const char* task_state_name(task_state_t s) {
 
 // The kernel itself never touches the FPU (it is compiled with
 // general registers only), but programs may. Each task gets its own
-// x87 state, saved and restored on every switch. That costs a few
-// hundred cycles and avoids the lazy-switching machinery.
+// floating-point state (arch/fpu.h), saved and restored on every
+// switch. That costs a few hundred cycles and avoids the
+// lazy-switching machinery.
 void fpu_init(void) {
-    uintptr_t cr0 = read_cr0();
-    cr0 &= ~(1u << 2);  // EM: no emulation
-    cr0 &= ~(1u << 3);  // TS: never trap on use
-    cr0 |= (1u << 1);   // MP
-    cr0 |= (1u << 5);   // NE: report x87 errors as exceptions
-    write_cr0(cr0);
-    __asm__ volatile("fninit; fnsave %0" : "=m"(fpu_clean));
+    fpu_enable();
+    fpu_save(&fpu_clean);
 }
 
 void task_init(void) {
@@ -66,7 +62,7 @@ void task_init(void) {
     extern char stack_top[];
     idle_task->kstack_top = (uintptr_t)stack_top;
     strlcpy(idle_task->name, "idle", TASK_NAME_MAX);
-    memcpy(idle_task->fpu, fpu_clean, sizeof(fpu_clean));
+    idle_task->fpu = fpu_clean;
     idle_task->next = idle_task;
     task_list_head = idle_task;
     current = idle_task;
@@ -148,8 +144,8 @@ void schedule(void) {
     check_canary(prev);
     tss_set_kstack(next->kstack_top);
     if (next->cr3 != prev->cr3) write_cr3(next->cr3);
-    __asm__ volatile("fnsave %0" : "=m"(prev->fpu));
-    __asm__ volatile("frstor %0" :: "m"(next->fpu));
+    fpu_save(&prev->fpu);
+    fpu_restore(&next->fpu);
     current = next;
     switch_to(&prev->ksp, next->ksp);
 }
@@ -223,18 +219,12 @@ static task_t* task_alloc(const char* name) {
     if (!t->kstack) { kfree(t); return 0; }
     *(uint32_t*)t->kstack = STACK_CANARY;
     t->kstack_top = (uintptr_t)t->kstack + KSTACK_SIZE;
-    // Fake the frame switch_to pops: ebx, esi, edi, ebp, return.
-    uintptr_t* sp = (uintptr_t*)t->kstack_top;
-    *--sp = (uintptr_t)task_trampoline;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    t->ksp = (uintptr_t)sp;
+    // A frame for switch_to to pop, returning into the trampoline.
+    t->ksp = arch_task_stack(t->kstack_top, task_trampoline);
     t->cr3 = kernel_pd();
     t->parent = task_current_id();
     strlcpy(t->name, name, TASK_NAME_MAX);
-    memcpy(t->fpu, fpu_clean, sizeof(fpu_clean));
+    t->fpu = fpu_clean;
     return t;
 }
 

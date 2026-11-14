@@ -23,18 +23,22 @@ is used when one is installed. Otherwise the host gcc works with
 `-m32`; on Debian and Ubuntu that means gcc-multilib.
 
 ```
-make            # kernel, programs, disk image, bootable ISO, all in build/
+make            # kernel, programs, disk image, bootable ISO, all in build/i386/
 make run        # boot it in QEMU; the serial console mirrors to this terminal
 make run-serial # serial only, no window
 make test       # host unit tests, then the QEMU integration suite
 make clean
 ```
 
-The disk image (`build/disk.img`) is ordinary FAT16. It holds the
+`ARCH` picks the machine: `i386`, the default for now, or `x86_64`,
+which is being ported (`make ARCH=x86_64 run`). Each one builds into
+its own `build/$(ARCH)/`.
+
+The disk image (`build/i386/disk.img`) is ordinary FAT16. It holds the
 programs in `src/programs` plus `WELCOME.TXT`, and files you write in the OS persist on it
 across boots. Running `make` again rebuilds it from scratch, so copy it
-somewhere else if you want to keep what you wrote. `mdir -i build/disk.img`
-and `fsck.fat -n build/disk.img` both read it.
+somewhere else if you want to keep what you wrote. `mdir -i build/i386/disk.img`
+and `fsck.fat -n build/i386/disk.img` both read it.
 
 ## Testing
 
@@ -110,7 +114,7 @@ sweep (every early return in `x509.c` disabled in turn) found the
 cases that were missing. It also reads every root in `disk/roots.pem`.
 
 `tests/qemu_test.py` boots the real ISO in QEMU and drives the shell
-over a serial socket. It uses `build/test-disk.img`, which adds the test
+over a serial socket. It uses `build/i386/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
 banner and runs every program, including the ones that are supposed to
 crash. It covers bad pointers handed to syscalls, stack growth and
@@ -297,7 +301,7 @@ divider in reset while it writes, so that its next second starts half
 a second after the call; a caller that wants it exact calls at the
 half second. The kernel refuses a time before the last commit it was
 built from (`RINGTAIL_TIME_FLOOR`, which the Makefile writes to
-`build/gen/timefloor.h`), since a clock set before the code existed is
+`build/$(ARCH)/gen/timefloor.h`), since a clock set before the code existed is
 wrong, and since an expired certificate looks good again to a clock
 wound back to when it was. `sntp` (`src/programs/net/sntp.c` over
 `lib/ntpmsg.c`) is the client, RFC 4330 SNTP: it sends a version 4
@@ -355,9 +359,11 @@ roots are Mozilla's, as the ca-certificates package ships them, in
 ## Source layout
 
 ```
-src/boot       Multiboot header, entry, kernel linker script
-src/kernel     kernel_main, GDT/IDT/interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
-src/mm         heap, physical frames, paging and checked user copies
+src/arch       what differs between machines, one folder each (i386, x86_64): the multiboot
+               entry, linker script, GDT and TSS, IDT gates and interrupt entry, task switch,
+               page tables, the saved register frame and FPU state (include/arch/)
+src/kernel     kernel_main, interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
+src/mm         heap, physical frames and checked user copies
 src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000
 src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)

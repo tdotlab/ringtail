@@ -1,35 +1,65 @@
-# RingTail build. Everything goes into build/.
+# RingTail build. Everything goes into build/$(ARCH)/.
 #   make          kernel, programs, disk image and bootable ISO
 #   make run      boot in QEMU (screen + serial on this terminal)
 #   make test     host unit tests, then the QEMU integration tests
-#                 (on build/test-disk.img, which adds tests/programs)
+#                 (on the test disk, which adds tests/programs)
 #   make clean
+# ARCH picks the machine: x86_64 (64-bit) or i386 (32-bit), as in
+# make ARCH=x86_64 test.
 
-BUILD := build
+ARCH ?= i386
+BUILD := build/$(ARCH)
+
+ifeq ($(ARCH),i386)
+CROSS := i686-elf-gcc
+HOST_BITS := 32
+ARCH_CFLAGS := -march=i686
+KARCH_CFLAGS :=
+# No SSE in programs: the kernel saves only the x87 state.
+UARCH_CFLAGS := -mno-sse -mno-mmx
+ARCH_LDFLAGS :=
+ASFLAGS := -f elf32
+QEMU := qemu-system-i386
+else ifeq ($(ARCH),x86_64)
+CROSS := x86_64-elf-gcc
+HOST_BITS := 64
+ARCH_CFLAGS :=
+# The kernel takes interrupts on the stack it is running on, so the
+# 128 bytes below rsp are not free for it to use.
+KARCH_CFLAGS := -mno-red-zone
+UARCH_CFLAGS :=
+# Without this the linker aligns segments in the file to 2 MB, which
+# moves the multiboot header out of the first 8 KB, where GRUB looks.
+ARCH_LDFLAGS := -Wl,-z,max-page-size=0x1000
+ASFLAGS := -f elf64
+QEMU := qemu-system-x86_64
+else
+$(error ARCH is i386 or x86_64, not $(ARCH))
+endif
 
 # Prefer a real cross compiler; otherwise a multilib host gcc works,
 # with position-independent code turned off.
-ifneq ($(shell command -v i686-elf-gcc 2>/dev/null),)
-CC := i686-elf-gcc
-ARCH :=
+ifneq ($(shell command -v $(CROSS) 2>/dev/null),)
+CC := $(CROSS)
+TARGET :=
 else
 CC := gcc
-ARCH := -m32 -fno-pie -fno-pic
+TARGET := -m$(HOST_BITS) -fno-pie -fno-pic
 endif
 AS := nasm
 PYTHON := python3
-QEMU := qemu-system-i386
 
-COMMON := $(ARCH) -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-builtin \
-          -fno-stack-protector -fno-omit-frame-pointer -march=i686 \
+ARCHDIR := src/arch/$(ARCH)
+COMMON := $(TARGET) $(ARCH_CFLAGS) -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-builtin \
+          -fno-stack-protector -fno-omit-frame-pointer \
           -fno-asynchronous-unwind-tables -MMD -MP
-KCFLAGS := $(COMMON) -mgeneral-regs-only -DRINGTAIL_KERNEL -Isrc/include -I$(BUILD)/gen
-UCFLAGS := $(COMMON) -mno-sse -mno-mmx -Isrc/include -Isrc/programs/lib
-LDFLAGS := $(ARCH) -nostdlib -static -no-pie -Wl,--build-id=none
-ASFLAGS := -f elf32
+KCFLAGS := $(COMMON) $(KARCH_CFLAGS) -mgeneral-regs-only -DRINGTAIL_KERNEL -Isrc/include -I$(ARCHDIR)/include \
+           -I$(BUILD)/gen
+UCFLAGS := $(COMMON) $(UARCH_CFLAGS) -Isrc/include -Isrc/programs/lib
+LDFLAGS := $(TARGET) $(ARCH_LDFLAGS) -nostdlib -static -no-pie -Wl,--build-id=none
 
-KERNEL_C := $(wildcard src/kernel/*.c src/drivers/*.c src/mm/*.c src/fs/*.c src/net/*.c src/lib/*.c)
-KERNEL_ASM := src/boot/boot.asm src/kernel/isr.asm src/kernel/switch.asm
+KERNEL_C := $(wildcard src/kernel/*.c src/drivers/*.c src/mm/*.c src/fs/*.c src/net/*.c src/lib/*.c $(ARCHDIR)/*.c)
+KERNEL_ASM := $(wildcard $(ARCHDIR)/*.asm)
 KERNEL_OBJS := $(KERNEL_C:%.c=$(BUILD)/k/%.o) $(KERNEL_ASM:%.asm=$(BUILD)/k/%.o)
 KERNEL := $(BUILD)/ringtail.bin
 
@@ -86,8 +116,8 @@ $(BUILD)/k/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(KERNEL): $(KERNEL_OBJS) src/boot/linker.ld
-	$(CC) $(LDFLAGS) -T src/boot/linker.ld -o $@ $(KERNEL_OBJS) -lgcc
+$(KERNEL): $(KERNEL_OBJS) $(ARCHDIR)/linker.ld
+	$(CC) $(LDFLAGS) -T $(ARCHDIR)/linker.ld -o $@ $(KERNEL_OBJS) -lgcc
 
 $(BUILD)/u/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -140,13 +170,13 @@ run-serial: all
 test: test-host test-qemu
 
 test-host:
-	$(MAKE) -C tests run
+	$(MAKE) -C tests run BITS=$(HOST_BITS)
 
 test-qemu: all $(TEST_DISK)
-	$(PYTHON) tests/qemu_test.py --iso $(ISO) --disk $(TEST_DISK)
+	$(PYTHON) tests/qemu_test.py --qemu $(QEMU) --iso $(ISO) --disk $(TEST_DISK)
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf build
 	$(MAKE) -C tests clean
 
 -include $(KERNEL_OBJS:.o=.d) $(ULIB_OBJS:.o=.d)

@@ -1,5 +1,5 @@
-# Host tests: the kernel heap and FAT16 code built as a 32-bit Linux
-# program against a RAM disk; the DHCP, DNS and SNTP message code (the parts
+# Host tests: the kernel heap and FAT16 code built as a Linux program
+# against a RAM disk; the DHCP, DNS and SNTP message code (the parts
 # that read bytes off the wire), the TCP engine (run against a
 # simulated network), the regular-expression engine grep uses (run
 # against GNU grep's answers), diff's core (against GNU diff's), base64's (against GNU base64's), the checksum-list
@@ -10,15 +10,18 @@
 # cryptography (against the RFCs' and Project Wycheproof's vectors) and
 # the TLS client (against recorded conversations with a scripted
 # server and with OpenSSL), under the address and undefined-behaviour
-# sanitizers. Needs gcc -m32 (gcc-multilib). The disk image the run
+# sanitizers. Everything is built at the target's width, BITS=32 or 64
+# (the top-level make passes the one ARCH implies); 32 needs gcc -m32
+# (gcc-multilib). The disk image the run
 # leaves behind is checked with fsck.fat when it is installed.
 CC = gcc
-CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fno-builtin -I../src/include
+BITS ?= 32
+CFLAGS = -m$(BITS) -std=gnu11 -O1 -g -Wall -Wextra -fno-builtin -I../src/include
 TEST = test_heap_diskfs
 SRCS = test_heap_diskfs.c ../src/mm/heap.c ../src/fs/diskfs.c ../src/lib/string.c
 
 NETMSG_SRCS = test_netmsg.c ../src/net/dhcpmsg.c ../src/programs/lib/dnsmsg.c ../src/programs/lib/ntpmsg.c ../src/lib/civil.c
-NETMSG_CFLAGS = -m32 -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
+NETMSG_CFLAGS = -m$(BITS) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
 	-I../src/include -I../src/net -I../src/programs/lib
 
 TCP_SRCS = test_tcp.c ../src/net/tcp.c
@@ -57,6 +60,14 @@ X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509
 
 all: $(HOST_TESTS)
+
+# Everything rebuilds when BITS changes: .bits holds the last value
+# and is rewritten only when it differs.
+.bits: FORCE
+	@echo $(BITS) > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+$(HOST_TESTS): .bits
+.PHONY: all run clean FORCE
 
 $(TEST): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
@@ -124,4 +135,4 @@ run: $(HOST_TESTS)
 	else echo "fsck.fat not installed, skipping the image check"; fi
 
 clean:
-	rm -f $(HOST_TESTS) test_disk.img
+	rm -f $(HOST_TESTS) test_disk.img .bits

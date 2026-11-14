@@ -5,7 +5,7 @@
 // Interrupts are on while a call runs, so calls can block.
 //
 // Every pointer a program passes is a user pointer and goes through
-// the checked copy routines in paging.c. Nothing here dereferences
+// the checked copy routines in usermem.c. Nothing here dereferences
 // one directly except gfx_blit, after user_range_ok has proven the
 // whole buffer mapped and user readable.
 #include "kernel.h"
