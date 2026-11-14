@@ -61,7 +61,7 @@ static void merge_up(hdr_t* h) {
 }
 
 void* sbrk(int incr) {
-    int r = SC1(SYS_SBRK, incr);
+    long r = SC1(SYS_SBRK, incr);
     return IS_ERR(r) ? 0 : (void*)r;
 }
 
@@ -110,7 +110,7 @@ void* malloc(size_t size) {
 
 static hdr_t* checked(void* p, const char* who) {
     hdr_t* h = (hdr_t*)p - 1;
-    if ((uint8_t*)h < heap_lo || (uint8_t*)h >= heap_hi || ((uint32_t)p & 15) ||
+    if ((uint8_t*)h < heap_lo || (uint8_t*)h >= heap_hi || ((uintptr_t)p & 15) ||
         h->magic != MAGIC || h->free) {
         printf("%s: bad pointer %p\n", who, p);
         sys_exit(-3);

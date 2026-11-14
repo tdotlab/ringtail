@@ -39,7 +39,8 @@ extern char _kernel_start[], _ro_start[], _ro_end[], _kernel_end[];
 void panic(const char* fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 
 void gdt_init(void);
-void tss_set_esp0(uint32_t esp0);
+// The kernel stack the CPU switches to on a trap from ring 3.
+void tss_set_kstack(uintptr_t top);
 
 // Fault log: the last few fatal events, kept so a fault that happened
 // while the screen was in graphics mode can still be read afterwards.

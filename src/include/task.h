@@ -22,10 +22,10 @@ typedef enum {
 #define KSTACK_SIZE   (16 * 1024)
 
 typedef struct task {
-    uint32_t esp;          // saved kernel stack pointer while switched out
-    uint32_t cr3;          // page directory
+    uintptr_t ksp;         // saved kernel stack pointer while switched out
+    uintptr_t cr3;         // top-level page table
     uint8_t* kstack;
-    uint32_t kstack_top;
+    uintptr_t kstack_top;
 
     int id;
     int job;               // tasks started together share a job; Ctrl+C kills a job
@@ -41,8 +41,8 @@ typedef struct task {
 
     void (*entry)(void*);
     void* arg;
-    uint32_t user_eip, user_esp;
-    uint32_t brk_start, brk;  // user heap: from the end of the image to the break
+    uintptr_t user_ip, user_sp;
+    uintptr_t brk_start, brk;  // user heap: from the end of the image to the break
 
     char name[TASK_NAME_MAX];
     fd_t fds[MAX_FDS];
@@ -57,15 +57,15 @@ extern task_t* current;
 void task_init(void);
 void fpu_init(void);
 int task_create_kernel(const char* name, void (*entry)(void*), void* arg);
-// Takes ownership of pd. The task starts in ring 3 at eip with the
+// Takes ownership of pd. The task starts in ring 3 at ip with the
 // given user stack pointer; its heap starts empty at brk. Job 0 makes
 // it the leader of a new job. With std (three of the current task's
 // descriptors, already checked), descriptors 0-2 are copies of those;
 // without, they are the console. A held task does not run until
 // task_release: that gives its creator time to hand it the terminal,
 // which it would otherwise race to read.
-int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
-                     uint32_t brk, int job, const int std[3], int held);
+int task_create_user(const char* name, uintptr_t pd, uintptr_t ip, uintptr_t sp,
+                     uintptr_t brk, int job, const int std[3], int held);
 void task_release(int id);
 void task_exit(int status) __attribute__((noreturn));
 

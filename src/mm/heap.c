@@ -1,5 +1,6 @@
 // Kernel heap: first-fit over one address-ordered list of blocks,
-// each with a 16-byte header, merged with free neighbours on free.
+// each with a header (16 bytes on i386, 32 on x86_64: a multiple of
+// the alignment either way), merged with free neighbours on free.
 // Every allocation is 16-byte aligned.
 //
 // kfree validates its argument by finding it in the block list, so
@@ -21,7 +22,8 @@ typedef struct block {
     struct block* next;    // next block in address order
     uint32_t free;
     uint32_t magic;
-} block_t;
+} __attribute__((aligned(ALIGN))) block_t;
+_Static_assert(sizeof(block_t) % ALIGN == 0, "block headers keep payloads aligned");
 
 #define BLOCK_MAGIC 0x4B484550u
 
@@ -104,7 +106,7 @@ int kfree(void* p) {
 
 void heap_get_stats(heap_stats_t* s) {
     uint32_t f = irq_save();
-    s->start = (uint32_t)(uintptr_t)heap_base;
+    s->start = (uintptr_t)heap_base;
     s->total = heap_size;
     s->used = heap_used;
     s->free = 0;

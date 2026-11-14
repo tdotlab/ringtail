@@ -19,19 +19,21 @@ boot_info_t boot_info;
 
 // Copy what we need out of the multiboot structures, which live in
 // memory the frame allocator is about to hand out.
+// The bootloader hands over 32-bit physical addresses.
 static void read_boot_info(uint32_t mbi) {
-    const uint32_t* m = (const uint32_t*)mbi;
+    const uint32_t* m = phys_to_virt(mbi);
     uint32_t flags = m[0];
     if (flags & MB_FLAG_CMDLINE)
-        strlcpy(boot_info.cmdline, (const char*)m[4], sizeof boot_info.cmdline);
+        strlcpy(boot_info.cmdline, phys_to_virt(m[4]), sizeof boot_info.cmdline);
     if (!(flags & MB_FLAG_MMAP)) panic("bootloader gave no memory map");
     uint32_t p = m[12], end = m[12] + m[11];
     while (p < end && boot_info.mmap_count < BOOT_MMAP_MAX) {
-        uint32_t size = *(const uint32_t*)p;
+        const uint8_t* q = phys_to_virt(p);
+        uint32_t size = *(const uint32_t*)q;
         mmap_entry_t* e = &boot_info.mmap[boot_info.mmap_count++];
-        e->base = *(const uint64_t*)(p + 4);
-        e->len = *(const uint64_t*)(p + 12);
-        e->type = *(const uint32_t*)(p + 20);
+        e->base = *(const uint64_t*)(q + 4);
+        e->len = *(const uint64_t*)(q + 12);
+        e->type = *(const uint32_t*)(q + 20);
         p += size + 4;
     }
 }
@@ -39,7 +41,7 @@ static void read_boot_info(uint32_t mbi) {
 // The heap goes right after the kernel image, in the RAM region the
 // kernel was loaded into; frames get everything else.
 static void setup_memory(void) {
-    uint32_t heap_start = ALIGN_UP((uint32_t)_kernel_end, PAGE_SIZE);
+    uintptr_t heap_start = ALIGN_UP(virt_to_phys(_kernel_end), PAGE_SIZE);
     uint64_t usable = 0, region_end = 0, ram_top = 0;
     for (uint32_t i = 0; i < boot_info.mmap_count; i++) {
         const mmap_entry_t* e = &boot_info.mmap[i];
@@ -59,9 +61,9 @@ static void setup_memory(void) {
     uint64_t room = region_end - heap_start;
     uint32_t size = (uint32_t)(want < room ? want : room);
     if (size < 256 * 1024) panic("only %u KB of RAM after the kernel", size / 1024);
-    heap_init((void*)heap_start, size);
+    heap_init(phys_to_virt(heap_start), size);
     frames_init(heap_start + size);
-    paging_init((uint32_t)ram_top);
+    paging_init((uintptr_t)ram_top);
 }
 
 static void banner(void) {

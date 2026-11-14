@@ -10,6 +10,7 @@
 // to the owner instead of characters to the terminal.
 #include "kernel.h"
 #include "arch.h"
+#include "mm.h"
 #include "console.h"
 #include "drivers.h"
 #include "task.h"
@@ -17,7 +18,7 @@
 
 #define W GFX_WIDTH
 #define H GFX_HEIGHT
-static volatile uint8_t* const FB = (volatile uint8_t*)0xA0000;
+#define FB ((volatile uint8_t*)phys_to_virt(0xA0000))
 
 // ---- Register tables for mode 13h (the standard published values) ----
 static const uint8_t seq_13h[5] = { 0x03, 0x01, 0x0F, 0x00, 0x0E };

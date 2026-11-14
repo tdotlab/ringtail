@@ -12,7 +12,7 @@ static void fill(uint8_t* p, uint32_t n, uint8_t seed) {
 
 int main(void) {
     uint8_t* b0 = sbrk(0);
-    check(b0 != 0 && ((uint32_t)b0 & 4095) == 0, "the first break is page aligned");
+    check(b0 != 0 && ((uintptr_t)b0 & 4095) == 0, "the first break is page aligned");
     uint8_t* b1 = sbrk(100);
     check(b1 == b0 && sbrk(0) == b0 + 100, "sbrk returns the old break");
     b1[0] = 1; b1[99] = 2;  // must be mapped
@@ -28,7 +28,7 @@ int main(void) {
     uint8_t* b = malloc(5000);
     uint8_t* c = malloc(30);
     check(a && b && c, "three mallocs");
-    check(((uint32_t)a & 15) == 0 && ((uint32_t)b & 15) == 0 && ((uint32_t)c & 15) == 0,
+    check(((uintptr_t)a & 15) == 0 && ((uintptr_t)b & 15) == 0 && ((uintptr_t)c & 15) == 0,
           "pointers are 16-byte aligned");
     check(b >= a + 100 && c >= b + 5000, "blocks do not overlap");
     fill(a, 100, 1); fill(b, 5000, 2); fill(c, 30, 3);

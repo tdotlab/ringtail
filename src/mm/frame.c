@@ -5,18 +5,18 @@
 #include "arch.h"
 #include "mm.h"
 
-static uint32_t free_head;   // physical address of the first free frame, 0 if none
+static uintptr_t free_head;   // physical address of the first free frame, 0 if none
 static uint32_t total_frames;
 static uint32_t free_frames;
 
-static void push(uint32_t phys) {
-    *(uint32_t*)phys = free_head;
+static void push(uintptr_t phys) {
+    *(uintptr_t*)phys_to_virt(phys) = free_head;
     free_head = phys;
     free_frames++;
 }
 
-void frames_init(uint32_t reserved_end) {
-    uint32_t kstart = ALIGN_DOWN((uint32_t)_kernel_start, PAGE_SIZE);
+void frames_init(uintptr_t reserved_end) {
+    uintptr_t kstart = ALIGN_DOWN(virt_to_phys(_kernel_start), PAGE_SIZE);
     for (uint32_t i = 0; i < boot_info.mmap_count; i++) {
         const mmap_entry_t* e = &boot_info.mmap[i];
         if (e->type != 1) continue;
@@ -24,9 +24,9 @@ void frames_init(uint32_t reserved_end) {
         if (lo < 0x100000) lo = 0x100000;  // leave low memory to the BIOS and VGA
         if (hi > RAM_IDENTITY_LIMIT) hi = RAM_IDENTITY_LIMIT;
         if (lo >= hi) continue;
-        uint32_t a = ALIGN_UP((uint32_t)lo, PAGE_SIZE);
-        uint32_t b = ALIGN_DOWN((uint32_t)hi, PAGE_SIZE);
-        for (uint32_t p = a; p < b; p += PAGE_SIZE) {
+        uintptr_t a = (uintptr_t)ALIGN_UP(lo, PAGE_SIZE);
+        uintptr_t b = (uintptr_t)ALIGN_DOWN(hi, PAGE_SIZE);
+        for (uintptr_t p = a; p < b; p += PAGE_SIZE) {
             if (p >= kstart && p < reserved_end) continue;  // kernel image and heap
             push(p);
             total_frames++;
@@ -34,20 +34,20 @@ void frames_init(uint32_t reserved_end) {
     }
 }
 
-uint32_t frame_alloc(void) {
+uintptr_t frame_alloc(void) {
     uint32_t f = irq_save();
-    uint32_t p = free_head;
+    uintptr_t p = free_head;
     if (p) {
-        free_head = *(uint32_t*)p;
+        free_head = *(uintptr_t*)phys_to_virt(p);
         free_frames--;
     }
     irq_restore(f);
-    if (p) memset((void*)p, 0, PAGE_SIZE);
+    if (p) memset(phys_to_virt(p), 0, PAGE_SIZE);
     return p;
 }
 
-void frame_free(uint32_t phys) {
-    if (!phys || (phys & (PAGE_SIZE - 1))) panic("frame_free(%08x): bad frame", phys);
+void frame_free(uintptr_t phys) {
+    if (!phys || (phys & (PAGE_SIZE - 1))) panic("frame_free(%08lx): bad frame", (unsigned long)phys);
     uint32_t f = irq_save();
     push(phys);
     irq_restore(f);

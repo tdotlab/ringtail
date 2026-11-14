@@ -8,15 +8,23 @@
 #include "ringtail/abi.h"
 #include "lib.h"  // string functions, snprintf, strerror, parse_uint
 
-static inline int syscall3(int n, uint32_t a, uint32_t b, uint32_t c) {
-    int r;
+// int 0x80 with the number in eax and the arguments in ebx, ecx, edx
+// on i386; rax, and rdi, rsi, rdx, on x86_64. Arguments and the result
+// are register sized, so a pointer passes whole either way. The
+// kernel keeps every other register.
+static inline long syscall3(long n, uintptr_t a, uintptr_t b, uintptr_t c) {
+    long r;
+#ifdef __x86_64__
+    __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory");
+#else
     __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "b"(a), "c"(b), "d"(c) : "memory");
+#endif
     return r;
 }
 #define SC0(n) syscall3((n), 0, 0, 0)
-#define SC1(n, a) syscall3((n), (uint32_t)(a), 0, 0)
-#define SC2(n, a, b) syscall3((n), (uint32_t)(a), (uint32_t)(b), 0)
-#define SC3(n, a, b, c) syscall3((n), (uint32_t)(a), (uint32_t)(b), (uint32_t)(c))
+#define SC1(n, a) syscall3((n), (uintptr_t)(a), 0, 0)
+#define SC2(n, a, b) syscall3((n), (uintptr_t)(a), (uintptr_t)(b), 0)
+#define SC3(n, a, b, c) syscall3((n), (uintptr_t)(a), (uintptr_t)(b), (uintptr_t)(c))
 
 static inline int sys_print(const char* s, uint32_t len) { return SC2(SYS_PRINT, s, len); }
 static inline __attribute__((noreturn)) void sys_exit(int status) {

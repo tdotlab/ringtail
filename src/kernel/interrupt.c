@@ -28,8 +28,8 @@ static idt_ptr_t idt_ptr;
 static irq_handler_t irq_handlers[16];
 volatile int need_resched;
 
-extern const uint32_t isr_stub_table[48];
-extern const uint32_t isr_syscall_stub;
+extern const uintptr_t isr_stub_table[48];
+extern const uintptr_t isr_syscall_stub;  // a word holding the stub's address
 extern void idt_load(idt_ptr_t* p);
 
 #define PIC1_CMD  0x20
@@ -38,7 +38,7 @@ extern void idt_load(idt_ptr_t* p);
 #define PIC2_DATA 0xA1
 #define PIC_EOI   0x20
 
-static void idt_set(int vec, uint32_t handler, uint8_t flags) {
+static void idt_set(int vec, uintptr_t handler, uint8_t flags) {
     idt[vec].base_low = handler & 0xFFFF;
     idt[vec].base_high = (handler >> 16) & 0xFFFF;
     idt[vec].sel = SEL_KERNEL_CODE;
@@ -88,7 +88,7 @@ void idt_init(void) {
     // "int 14" faults with #GP instead of faking a page fault.
     idt_set(SYSCALL_VECTOR, isr_syscall_stub, 0xEE);
     idt_ptr.limit = sizeof(idt) - 1;
-    idt_ptr.base = (uint32_t)&idt;
+    idt_ptr.base = (uint32_t)(uintptr_t)&idt;
     idt_load(&idt_ptr);
 }
 
@@ -105,22 +105,22 @@ static const char* const exception_names[32] = {
 
 static void dump_regs(const regs_t* r) {
     kprintf("  eax=%08x ebx=%08x ecx=%08x edx=%08x\n", r->eax, r->ebx, r->ecx, r->edx);
-    kprintf("  esi=%08x edi=%08x ebp=%08x esp=%08x\n", r->esi, r->edi, r->ebp,
-            regs_from_user(r) ? r->user_esp : (uint32_t)&r->user_esp);
-    kprintf("  eip=%08x cs=%04x eflags=%08x err=%08x cr2=%08x\n",
-            r->eip, r->cs, r->eflags, r->err, read_cr2());
+    kprintf("  esi=%08x edi=%08x ebp=%08x esp=%08lx\n", r->esi, r->edi, r->ebp,
+            regs_from_user(r) ? (unsigned long)r->user_esp : (unsigned long)&r->user_esp);
+    kprintf("  eip=%08x cs=%04x eflags=%08x err=%08x cr2=%08lx\n",
+            r->eip, r->cs, r->eflags, r->err, (unsigned long)read_cr2());
 }
 
 // Walk saved frame pointers. The kernel is built with frame pointers
 // so this gives a usable call chain without a symbol table: the
 // addresses can be looked up with addr2line or nm.
-static void backtrace(uint32_t ebp) {
+static void backtrace(uintptr_t fp) {
     kprintf("  backtrace:");
-    for (int i = 0; i < 12 && ebp >= (uint32_t)_kernel_start && ebp < RAM_IDENTITY_LIMIT; i++) {
-        uint32_t* frame = (uint32_t*)ebp;
-        kprintf(" %08x", frame[1]);
-        if (frame[0] <= ebp) break;
-        ebp = frame[0];
+    for (int i = 0; i < 12 && fp >= (uintptr_t)_kernel_start && fp < RAM_IDENTITY_LIMIT; i++) {
+        const uintptr_t* frame = (const uintptr_t*)fp;
+        kprintf(" %08lx", (unsigned long)frame[1]);
+        if (frame[0] <= fp) break;
+        fp = frame[0];
     }
     kprintf("\n");
 }
@@ -133,8 +133,9 @@ static void kernel_exception(regs_t* r) {
     if (current) kprintf(" in task %d (%s)", current->id, current->name);
     kprintf("\n");
     dump_regs(r);
-    backtrace(r->ebp);
-    faultlog_add("kernel: %s at eip=%08x cr2=%08x", exception_names[r->vector], r->eip, read_cr2());
+    backtrace(regs_fp(r));
+    faultlog_add("kernel: %s at " REGS_IP_NAME "=%08lx cr2=%08lx", exception_names[r->vector],
+                 (unsigned long)regs_ip(r), (unsigned long)read_cr2());
     kprintf_color(COLOR_ERROR, "System halted.\n");
     for (;;) { cli(); hlt(); }
 }
@@ -146,13 +147,15 @@ static void user_exception(regs_t* r) {
     sti();
     char what[96];
     if (r->vector == 14) {
-        snprintf(what, sizeof(what), "page fault at %08x (%s, %s)", read_cr2(),
+        snprintf(what, sizeof(what), "page fault at %08lx (%s, %s)", (unsigned long)read_cr2(),
                  (r->err & 1) ? "protection" : "not mapped", (r->err & 2) ? "write" : "read");
     } else {
         snprintf(what, sizeof(what), "%s", exception_names[r->vector]);
     }
-    faultlog_add("task %d (%s): %s, eip=%08x", current->id, current->name, what, r->eip);
-    kprintf_color(COLOR_ERROR, "%s: %s at eip=%08x - task killed\n", current->name, what, r->eip);
+    faultlog_add("task %d (%s): %s, " REGS_IP_NAME "=%08lx", current->id, current->name, what,
+                 (unsigned long)regs_ip(r));
+    kprintf_color(COLOR_ERROR, "%s: %s at " REGS_IP_NAME "=%08lx - task killed\n", current->name, what,
+                  (unsigned long)regs_ip(r));
     task_exit(EXIT_FAULTED);
 }
 
@@ -207,7 +210,7 @@ void panic(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     kprintf_color(COLOR_ERROR, "\nKERNEL PANIC: %s\n", buf);
-    backtrace((uint32_t)__builtin_frame_address(0));
+    backtrace((uintptr_t)__builtin_frame_address(0));
     kprintf_color(COLOR_ERROR, "System halted.\n");
     for (;;) { cli(); hlt(); }
 }

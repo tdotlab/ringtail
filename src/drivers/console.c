@@ -3,15 +3,16 @@
 #include "console.h"
 #include "kernel.h"
 #include "arch.h"
+#include "mm.h"
 #include "sync.h"
 #include "drivers.h"
 
 #define COLS 80
 #define ROWS 25
 
-static uint16_t* const VGA = (uint16_t*)0xB8000;
+#define VGA ((uint16_t*)phys_to_virt(0xB8000))
 static uint16_t shadow[COLS * ROWS];
-static uint16_t* screen = VGA;
+static uint16_t* screen;  // VGA, or shadow while detached; set by console_init
 static int detached;
 static int row, col;
 static int wrap_pending;        // wrote the last column; wrap on the next character
@@ -198,6 +199,7 @@ static void serial_mirror(const char* s, size_t len) {
 }
 
 void console_init(void) {
+    screen = VGA;
     console_clear();
 }
 

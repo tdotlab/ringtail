@@ -21,16 +21,21 @@ static inline void cpu_relax(void) { __asm__ volatile("pause" ::: "memory"); }
 
 #define EFLAGS_IF 0x200
 
-static inline uint32_t read_eflags(void) {
-    uint32_t f;
+// Register-width values (pushf pops a full register, and so do the
+// control registers) come back as uintptr_t: the same instruction
+// moves 32 bits on i386 and 64 on x86_64.
+static inline uintptr_t read_eflags(void) {
+    uintptr_t f;
     __asm__ volatile("pushf; pop %0" : "=r"(f) :: "memory");
     return f;
 }
 
 // Nestable critical section: disables interrupts and returns the
-// previous state, so an inner restore never re-enables early.
+// previous state, so an inner restore never re-enables early. Only
+// the low 32 bits of the flags are kept: IF is bit 9, and the upper
+// half of RFLAGS is reserved.
 static inline uint32_t irq_save(void) {
-    uint32_t f = read_eflags();
+    uint32_t f = (uint32_t)read_eflags();
     cli();
     return f;
 }
@@ -39,15 +44,15 @@ static inline void irq_restore(uint32_t f) {
 }
 static inline int irqs_enabled(void) { return (read_eflags() & EFLAGS_IF) != 0; }
 
-static inline uint32_t read_cr0(void) { uint32_t v; __asm__ volatile("mov %%cr0, %0" : "=r"(v)); return v; }
-static inline uint32_t read_cr2(void) { uint32_t v; __asm__ volatile("mov %%cr2, %0" : "=r"(v)); return v; }
-static inline uint32_t read_cr3(void) { uint32_t v; __asm__ volatile("mov %%cr3, %0" : "=r"(v)); return v; }
-static inline uint32_t read_cr4(void) { uint32_t v; __asm__ volatile("mov %%cr4, %0" : "=r"(v)); return v; }
-static inline void write_cr0(uint32_t v) { __asm__ volatile("mov %0, %%cr0" :: "r"(v) : "memory"); }
-static inline void write_cr3(uint32_t v) { __asm__ volatile("mov %0, %%cr3" :: "r"(v) : "memory"); }
-static inline void write_cr4(uint32_t v) { __asm__ volatile("mov %0, %%cr4" :: "r"(v) : "memory"); }
+static inline uintptr_t read_cr0(void) { uintptr_t v; __asm__ volatile("mov %%cr0, %0" : "=r"(v)); return v; }
+static inline uintptr_t read_cr2(void) { uintptr_t v; __asm__ volatile("mov %%cr2, %0" : "=r"(v)); return v; }
+static inline uintptr_t read_cr3(void) { uintptr_t v; __asm__ volatile("mov %%cr3, %0" : "=r"(v)); return v; }
+static inline uintptr_t read_cr4(void) { uintptr_t v; __asm__ volatile("mov %%cr4, %0" : "=r"(v)); return v; }
+static inline void write_cr0(uintptr_t v) { __asm__ volatile("mov %0, %%cr0" :: "r"(v) : "memory"); }
+static inline void write_cr3(uintptr_t v) { __asm__ volatile("mov %0, %%cr3" :: "r"(v) : "memory"); }
+static inline void write_cr4(uintptr_t v) { __asm__ volatile("mov %0, %%cr4" :: "r"(v) : "memory"); }
 
-static inline void invlpg(uint32_t va) { __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory"); }
+static inline void invlpg(uintptr_t va) { __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory"); }
 
 static inline void cpuid(uint32_t leaf, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {
     __asm__ volatile("cpuid" : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d) : "a"(leaf), "c"(0));

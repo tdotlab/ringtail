@@ -143,7 +143,7 @@ int file_pipe(int* ufds) {
     if (fds[0] < 0) return fds[0];
     fds[1] = free_fd(fds[0] + 1);
     if (fds[1] < 0) return fds[1];
-    if (user_range_ok((uint32_t)ufds, sizeof fds, 1)) return -EFAULT;
+    if (user_range_ok((uintptr_t)ufds, sizeof fds, 1)) return -EFAULT;
     struct pipe* p = pipe_new();
     if (!p) return -ENOMEM;
     if (copy_to_user(ufds, fds, sizeof fds)) {
@@ -208,7 +208,7 @@ int file_accept(int fd, sock_addr_t* uaddr, int timeout_ms) {
     // taken, so none is lost.
     int nfd = free_fd(0);
     if (nfd < 0) return nfd;
-    if (uaddr && user_range_ok((uint32_t)uaddr, sizeof *uaddr, 1)) return -EFAULT;
+    if (uaddr && user_range_ok((uintptr_t)uaddr, sizeof *uaddr, 1)) return -EFAULT;
     struct tcp* c;
     sock_addr_t a;
     uint32_t ip;
@@ -271,7 +271,7 @@ int file_pollfd(pollfd_t* ufds, uint32_t n, int timeout_ms) {
     if (n > MAX_FDS) return -EINVAL;
     pollfd_t p[MAX_FDS];
     uint32_t size = n * (uint32_t)sizeof *p;
-    if (copy_from_user(p, ufds, size) || user_range_ok((uint32_t)ufds, size, 1)) return -EFAULT;
+    if (copy_from_user(p, ufds, size) || user_range_ok((uintptr_t)ufds, size, 1)) return -EFAULT;
     uint64_t ticks = timeout_ms > 0 ? ((uint64_t)timeout_ms * TIMER_HZ + 999) / 1000 : 0;
     uint32_t until = timer_ticks() + (uint32_t)ticks;
     int count;
@@ -312,7 +312,7 @@ static int console_read(void* ubuf, uint32_t len) {
     if (current->job != tty_foreground()) return -EIO;  // background job
     char buf[256];
     if (len > sizeof buf) len = sizeof buf;
-    if (user_range_ok((uint32_t)ubuf, len, 1)) return -EFAULT;
+    if (user_range_ok((uintptr_t)ubuf, len, 1)) return -EFAULT;
     int n = tty_read(buf, len);
     if (n > 0 && copy_to_user(ubuf, buf, (size_t)n)) return -EFAULT;
     return n;
@@ -325,7 +325,7 @@ int file_read(int fd, void* ubuf, uint32_t len) {
     if (len == 0) return 0;
     if (f->kind == FD_CONSOLE_IN) return console_read(ubuf, len);
     if (f->kind != FD_FILE && f->kind != FD_PIPE_R && f->kind != FD_TCP) return -EBADF;
-    if (user_range_ok((uint32_t)ubuf, len, 1)) return -EFAULT;
+    if (user_range_ok((uintptr_t)ubuf, len, 1)) return -EFAULT;
 
     uint8_t* bounce = kmalloc(BOUNCE);
     if (!bounce) return -ENOMEM;
@@ -357,7 +357,7 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
     if (!f || (f->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
     if (f->kind == FD_SOCKET) return -EINVAL;  // and SYS_SENDTO
     if (len == 0) return 0;
-    if (user_range_ok((uint32_t)ubuf, len, 0)) return -EFAULT;
+    if (user_range_ok((uintptr_t)ubuf, len, 0)) return -EFAULT;
 
     uint8_t* bounce = kmalloc(BOUNCE);
     if (!bounce) return -ENOMEM;

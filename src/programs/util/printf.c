@@ -1,8 +1,8 @@
 // printf FORMAT [ARG...]    write the arguments the way FORMAT says
 //
 // Nothing is added: no newline unless the format has \n. In the format, text
-// is written as it is, with the escapes of echo -e (\n \t \r \a \b \e \f \v \\
-// \" \NNN in octal, \xHH in hex, \c to stop there) and \uHHHH \UHHHHHHHH
+// is written as it is, with the escapes of echo -e (\n \t \r \a \b \e \f \v
+// \\ \" \NNN in octal, \xHH in hex, \c to stop there) and \uHHHH \UHHHHHHHH
 // (written back as typed when the character is not ASCII). A % starts a
 // directive, which takes the next argument:
 //   %s  a string          %b  a string with its escapes read (\0NNN, \c too)

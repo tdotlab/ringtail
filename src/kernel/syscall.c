@@ -1,6 +1,8 @@
-// System calls: int 0x80, number in eax, arguments in ebx, ecx, edx,
-// result in eax (negative errno on failure). Interrupts are on while
-// a call runs, so calls can block.
+// System calls: int 0x80, with the number and three arguments in the
+// registers interrupt.h names (eax, ebx, ecx, edx on i386) and the
+// result back in the first (negative errno on failure). Arguments and
+// results are register sized, so an address fits whatever the width.
+// Interrupts are on while a call runs, so calls can block.
 //
 // Every pointer a program passes is a user pointer and goes through
 // the checked copy routines in paging.c. Nothing here dereferences
@@ -22,9 +24,9 @@
 #include "timefloor.h"  // RINGTAIL_TIME_FLOOR, made by the Makefile
 #include "ringtail/abi.h"
 
-typedef int (*syscall_fn)(uint32_t a, uint32_t b, uint32_t c);
+typedef long (*syscall_fn)(uintptr_t a, uintptr_t b, uintptr_t c);
 
-static int sys_print(uint32_t ubuf, uint32_t len, uint32_t c) {
+static long sys_print(uintptr_t ubuf, uintptr_t len, uintptr_t c) {
     (void)c;
     if (user_range_ok(ubuf, len, 0)) return -EFAULT;
     char buf[256];
@@ -40,68 +42,68 @@ static int sys_print(uint32_t ubuf, uint32_t len, uint32_t c) {
     return (int)done;
 }
 
-static int sys_exit(uint32_t status, uint32_t b, uint32_t c) {
+static long sys_exit(uintptr_t status, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     task_exit((int)status);
 }
 
-static int sys_sleep(uint32_t seconds, uint32_t b, uint32_t c) {
+static long sys_sleep(uintptr_t seconds, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (seconds > 86400) seconds = 86400;
     return task_sleep_ticks(seconds * TIMER_HZ);
 }
 
-static int sys_open(uint32_t name, uint32_t flags, uint32_t c) {
+static long sys_open(uintptr_t name, uintptr_t flags, uintptr_t c) {
     (void)c;
     return file_open((const char*)name, (int)flags);
 }
 
-static int sys_read(uint32_t fd, uint32_t buf, uint32_t len) {
+static long sys_read(uintptr_t fd, uintptr_t buf, uintptr_t len) {
     return file_read((int)fd, (void*)buf, len);
 }
 
-static int sys_write(uint32_t fd, uint32_t buf, uint32_t len) {
+static long sys_write(uintptr_t fd, uintptr_t buf, uintptr_t len) {
     return file_write((int)fd, (const void*)buf, len);
 }
 
-static int sys_close(uint32_t fd, uint32_t b, uint32_t c) {
+static long sys_close(uintptr_t fd, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return file_close((int)fd);
 }
 
-static int copy_path(char path[PATH_MAX], uint32_t upath) {
+static int copy_path(char path[PATH_MAX], uintptr_t upath) {
     return strncpy_from_user(path, (const char*)upath, PATH_MAX);
 }
 
-static int sys_delete(uint32_t upath, uint32_t b, uint32_t c) {
+static long sys_delete(uintptr_t upath, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     char path[PATH_MAX];
     int n = copy_path(path, upath);
     return n < 0 ? n : diskfs_unlink(file_cwd(), path);
 }
 
-static int sys_mkdir(uint32_t upath, uint32_t b, uint32_t c) {
+static long sys_mkdir(uintptr_t upath, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     char path[PATH_MAX];
     int n = copy_path(path, upath);
     return n < 0 ? n : diskfs_mkdir(file_cwd(), path);
 }
 
-static int sys_rmdir(uint32_t upath, uint32_t b, uint32_t c) {
+static long sys_rmdir(uintptr_t upath, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     char path[PATH_MAX];
     int n = copy_path(path, upath);
     return n < 0 ? n : diskfs_rmdir(file_cwd(), path);
 }
 
-static int sys_chdir(uint32_t upath, uint32_t b, uint32_t c) {
+static long sys_chdir(uintptr_t upath, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     char path[PATH_MAX];
     int n = copy_path(path, upath);
     return n < 0 ? n : file_chdir(path);
 }
 
-static int sys_getcwd(uint32_t ubuf, uint32_t size, uint32_t c) {
+static long sys_getcwd(uintptr_t ubuf, uintptr_t size, uintptr_t c) {
     (void)c;
     char path[PATH_MAX];
     int n = diskfs_getcwd(file_cwd(), path, sizeof path);
@@ -114,14 +116,14 @@ static int sys_getcwd(uint32_t ubuf, uint32_t size, uint32_t c) {
 // clusters and the directory entry switches only once they are all
 // written, so a full disk or an I/O error leaves the old file intact.
 #define SAVE_MAX (1024u * 1024u)
-static int sys_rename(uint32_t ufrom, uint32_t uto, uint32_t c) {
+static long sys_rename(uintptr_t ufrom, uintptr_t uto, uintptr_t c) {
     (void)c;
     char from[PATH_MAX], to[PATH_MAX];
     int n = copy_path(from, ufrom);
     if (n >= 0) n = copy_path(to, uto);
     return n < 0 ? n : diskfs_rename(file_cwd(), from, to);
 }
-static int sys_stat(uint32_t upath, uint32_t uent, uint32_t c) {
+static long sys_stat(uintptr_t upath, uintptr_t uent, uintptr_t c) {
     (void)c;
     char path[PATH_MAX];
     dirent_t d;
@@ -130,7 +132,7 @@ static int sys_stat(uint32_t upath, uint32_t uent, uint32_t c) {
     if (n < 0) return n;
     return copy_to_user((void*)uent, &d, sizeof d) ? -EFAULT : 0;
 }
-static int sys_time(uint32_t ut, uint32_t b, uint32_t c) {
+static long sys_time(uintptr_t ut, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     rtc_time_t t;
     rtc_read(&t);
@@ -138,7 +140,7 @@ static int sys_time(uint32_t ut, uint32_t b, uint32_t c) {
 }
 // The floor is the time of the last commit when the kernel was built:
 // the code did not exist before then, so a clock set earlier is wrong.
-static int sys_settime(uint32_t ut, uint32_t b, uint32_t c) {
+static long sys_settime(uintptr_t ut, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     rtc_time_t t;
     if (copy_from_user(&t, (const void*)ut, sizeof t)) return -EFAULT;
@@ -147,7 +149,7 @@ static int sys_settime(uint32_t ut, uint32_t b, uint32_t c) {
     rtc_write(&t);
     return 0;
 }
-static int sys_save(uint32_t upath, uint32_t ubuf, uint32_t len) {
+static long sys_save(uintptr_t upath, uintptr_t ubuf, uintptr_t len) {
     char path[PATH_MAX];
     int n = copy_path(path, upath);
     if (n < 0) return n;
@@ -164,31 +166,31 @@ static int sys_save(uint32_t upath, uint32_t ubuf, uint32_t len) {
 
 static int is_owner(void) { return gfx_owner() == current->id; }
 
-static int sys_gfx_begin(uint32_t a, uint32_t b, uint32_t c) {
+static long sys_gfx_begin(uintptr_t a, uintptr_t b, uintptr_t c) {
     (void)a; (void)b; (void)c;
     if (is_owner()) return 0;
     return gfx_acquire(current->id);
 }
 
-static int sys_gfx_end(uint32_t a, uint32_t b, uint32_t c) {
+static long sys_gfx_end(uintptr_t a, uintptr_t b, uintptr_t c) {
     (void)a; (void)b; (void)c;
     return gfx_release(current->id);
 }
 
-static int sys_gfx_pixel(uint32_t x, uint32_t y, uint32_t color) {
+static long sys_gfx_pixel(uintptr_t x, uintptr_t y, uintptr_t color) {
     if (!is_owner()) return -EPERM;
     gfx_pixel((int)x, (int)y, (uint8_t)color);
     return 0;
 }
 
-static int sys_gfx_clear(uint32_t color, uint32_t b, uint32_t c) {
+static long sys_gfx_clear(uintptr_t color, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (!is_owner()) return -EPERM;
     gfx_clear((uint8_t)color);
     return 0;
 }
 
-static int sys_gfx_rect(uint32_t uarg, uint32_t b, uint32_t c) {
+static long sys_gfx_rect(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (!is_owner()) return -EPERM;
     gfx_rect_t r;
@@ -197,7 +199,7 @@ static int sys_gfx_rect(uint32_t uarg, uint32_t b, uint32_t c) {
     return 0;
 }
 
-static int sys_gfx_line(uint32_t uarg, uint32_t b, uint32_t c) {
+static long sys_gfx_line(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (!is_owner()) return -EPERM;
     gfx_line_t l;
@@ -206,7 +208,7 @@ static int sys_gfx_line(uint32_t uarg, uint32_t b, uint32_t c) {
     return 0;
 }
 
-static int sys_gfx_text(uint32_t uarg, uint32_t b, uint32_t c) {
+static long sys_gfx_text(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (!is_owner()) return -EPERM;
     gfx_text_t t;
@@ -222,7 +224,7 @@ static int sys_gfx_text(uint32_t uarg, uint32_t b, uint32_t c) {
     return 0;
 }
 
-static int sys_gfx_blit(uint32_t upix, uint32_t b, uint32_t c) {
+static long sys_gfx_blit(uintptr_t upix, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (!is_owner()) return -EPERM;
     if (user_range_ok(upix, GFX_WIDTH * GFX_HEIGHT, 0)) return -EFAULT;
@@ -230,21 +232,21 @@ static int sys_gfx_blit(uint32_t upix, uint32_t b, uint32_t c) {
     return 0;
 }
 
-static int sys_gfx_font(uint32_t ubuf, uint32_t b, uint32_t c) {
+static long sys_gfx_font(uintptr_t ubuf, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return copy_to_user((void*)ubuf, gfx_font(), 256 * 16);
 }
 
 // ---- Input ----
 
-static int sys_mouse_state(uint32_t uarg, uint32_t b, uint32_t c) {
+static long sys_mouse_state(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     mouse_state_t m;
     mouse_get(&m.x, &m.y, &m.buttons);
     return copy_to_user((void*)uarg, &m, sizeof m);
 }
 
-static int sys_key_get(uint32_t a, uint32_t b, uint32_t c) {
+static long sys_key_get(uintptr_t a, uintptr_t b, uintptr_t c) {
     (void)a; (void)b; (void)c;
     if (!is_owner()) return -EPERM;
     int k = keyboard_raw_get();
@@ -261,7 +263,7 @@ static int input_ready(int lx, int ly, int lb) {
     return current->job == tty_foreground() && tty_pending();
 }
 
-static int sys_wait(uint32_t lx, uint32_t ly, uint32_t lb) {
+static long sys_wait(uintptr_t lx, uintptr_t ly, uintptr_t lb) {
     uint32_t f = irq_save();
     int r = 0;
     while (!input_ready((int)lx, (int)ly, (int)lb)) {
@@ -277,7 +279,7 @@ static int sys_wait(uint32_t lx, uint32_t ly, uint32_t lb) {
 // to a key at once. Capped at an hour. Nothing is read: the caller does
 // that with SYS_READ. A program that is not in the foreground just
 // sleeps the time out.
-static int sys_poll(uint32_t ticks, uint32_t b, uint32_t c) {
+static long sys_poll(uintptr_t ticks, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (ticks > 3600u * TIMER_HZ) ticks = 3600u * TIMER_HZ;
     uint32_t end = timer_ticks() + ticks;
@@ -290,7 +292,7 @@ static int sys_poll(uint32_t ticks, uint32_t b, uint32_t c) {
 }
 
 // One ICMP echo request and its reply (net.c does the work).
-static int sys_ping(uint32_t up, uint32_t b, uint32_t c) {
+static long sys_ping(uintptr_t up, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     ping_t p;
     if (copy_from_user(&p, (const void*)up, sizeof p)) return -EFAULT;
@@ -302,12 +304,12 @@ static int sys_ping(uint32_t up, uint32_t b, uint32_t c) {
 
 // ---- Sockets (udp.c, tcpsock.c) and the network's configuration (net.c) ----
 
-static int sys_socket(uint32_t type, uint32_t b, uint32_t c) {
+static long sys_socket(uintptr_t type, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return file_socket((int)type);
 }
 
-static int sys_bind(uint32_t fd, uint32_t port, uint32_t c) {
+static long sys_bind(uintptr_t fd, uintptr_t port, uintptr_t c) {
     (void)c;
     struct socket* s;
     struct tcp* t;
@@ -316,18 +318,18 @@ static int sys_bind(uint32_t fd, uint32_t port, uint32_t c) {
     return r ? r : udp_bind(s, (int)port);
 }
 
-static int sys_listen(uint32_t fd, uint32_t backlog, uint32_t c) {
+static long sys_listen(uintptr_t fd, uintptr_t backlog, uintptr_t c) {
     (void)c;
     struct tcp* t;
     int r = file_get_tcp((int)fd, &t);
     return r ? r : tcpsock_listen(t, (int)backlog);
 }
 
-static int sys_accept(uint32_t fd, uint32_t uaddr, uint32_t timeout_ms) {
+static long sys_accept(uintptr_t fd, uintptr_t uaddr, uintptr_t timeout_ms) {
     return file_accept((int)fd, (sock_addr_t*)uaddr, (int)timeout_ms);
 }
 
-static int sys_connect(uint32_t fd, uint32_t uaddr, uint32_t timeout_ms) {
+static long sys_connect(uintptr_t fd, uintptr_t uaddr, uintptr_t timeout_ms) {
     struct tcp* t;
     sock_addr_t a;
     int r = file_get_tcp((int)fd, &t);
@@ -336,7 +338,7 @@ static int sys_connect(uint32_t fd, uint32_t uaddr, uint32_t timeout_ms) {
     return tcpsock_connect(t, a.ip, a.port, (int)timeout_ms);
 }
 
-static int sys_shutdown(uint32_t fd, uint32_t how, uint32_t c) {
+static long sys_shutdown(uintptr_t fd, uintptr_t how, uintptr_t c) {
     (void)c;
     struct tcp* t;
     int r = file_get_tcp((int)fd, &t);
@@ -344,7 +346,7 @@ static int sys_shutdown(uint32_t fd, uint32_t how, uint32_t c) {
 }
 
 // A UDP socket has only a port of its own: its address is any of ours.
-static int sys_sockaddr(uint32_t fd, uint32_t peer, uint32_t uaddr) {
+static long sys_sockaddr(uintptr_t fd, uintptr_t peer, uintptr_t uaddr) {
     struct tcp* t;
     struct socket* s;
     sock_addr_t a;
@@ -361,16 +363,16 @@ static int sys_sockaddr(uint32_t fd, uint32_t peer, uint32_t uaddr) {
     return copy_to_user((void*)uaddr, &a, sizeof a);
 }
 
-static int sys_pollfd(uint32_t ufds, uint32_t n, uint32_t timeout_ms) {
+static long sys_pollfd(uintptr_t ufds, uintptr_t n, uintptr_t timeout_ms) {
     return file_pollfd((pollfd_t*)ufds, n, (int)timeout_ms);
 }
 
-static int sys_fdtype(uint32_t fd, uint32_t b, uint32_t c) {
+static long sys_fdtype(uintptr_t fd, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return file_fdtype((int)fd);
 }
 
-static int sys_random(uint32_t ubuf, uint32_t len, uint32_t c) {
+static long sys_random(uintptr_t ubuf, uintptr_t len, uintptr_t c) {
     (void)c;
     uint8_t buf[RANDOM_MAX];
     if (len > sizeof buf) return -EINVAL;
@@ -380,7 +382,7 @@ static int sys_random(uint32_t ubuf, uint32_t len, uint32_t c) {
     return r;
 }
 
-static int sys_sendto(uint32_t fd, uint32_t umsg, uint32_t c) {
+static long sys_sendto(uintptr_t fd, uintptr_t umsg, uintptr_t c) {
     (void)c;
     struct socket* s;
     udp_msg_t m;
@@ -396,7 +398,7 @@ static int sys_sendto(uint32_t fd, uint32_t umsg, uint32_t c) {
     return r;
 }
 
-static int sys_recvfrom(uint32_t fd, uint32_t umsg, uint32_t c) {
+static long sys_recvfrom(uintptr_t fd, uintptr_t umsg, uintptr_t c) {
     (void)c;
     struct socket* s;
     udp_msg_t m;
@@ -406,7 +408,7 @@ static int sys_recvfrom(uint32_t fd, uint32_t umsg, uint32_t c) {
     if (m.len < 0) return -EINVAL;
     uint32_t size = MIN((uint32_t)m.len, UDP_MAX_SIZE);
     // Checked before a datagram is taken, so a bad buffer loses nothing.
-    if (user_range_ok((uint32_t)m.buf, size, 1) || user_range_ok(umsg, sizeof m, 1)) return -EFAULT;
+    if (user_range_ok((uintptr_t)m.buf, size, 1) || user_range_ok(umsg, sizeof m, 1)) return -EFAULT;
     uint8_t* buf = kmalloc(UDP_MAX_SIZE);
     if (!buf) return -ENOMEM;
     uint32_t ip;
@@ -421,7 +423,7 @@ static int sys_recvfrom(uint32_t fd, uint32_t umsg, uint32_t c) {
     return r;
 }
 
-static int sys_netconf(uint32_t op, uint32_t uc, uint32_t c) {
+static long sys_netconf(uintptr_t op, uintptr_t uc, uintptr_t c) {
     (void)c;
     netconf_t n;
     if (op == NETCONF_STATIC && copy_from_user(&n, (const void*)uc, sizeof n)) return -EFAULT;
@@ -433,14 +435,14 @@ static int sys_netconf(uint32_t op, uint32_t uc, uint32_t c) {
 
 // ---- Files and tasks ----
 
-static int sys_seek(uint32_t fd, uint32_t off, uint32_t whence) {
+static long sys_seek(uintptr_t fd, uintptr_t off, uintptr_t whence) {
     return file_seek((int)fd, (int32_t)off, (int)whence);
 }
 
 // Name of the index-th file (not directory) in the current directory.
 // Restarts from the top on every call: slow for a big directory, but
 // stateless.
-static int sys_list(uint32_t index, uint32_t ubuf, uint32_t size) {
+static long sys_list(uintptr_t index, uintptr_t ubuf, uintptr_t size) {
     dirent_t d;
     int cursor = 0;
     for (uint32_t i = 0;; i++) {
@@ -466,7 +468,7 @@ static int spawn_job(const spawn_opts_t* o) {
     return current->job;
 }
 
-static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t uopts) {
+static long sys_spawn(uintptr_t uname, uintptr_t uargv, uintptr_t uopts) {
     char name[PATH_MAX];
     int n = copy_path(name, uname);
     if (n < 0) return n;
@@ -490,8 +492,8 @@ static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t uopts) {
     uint32_t used = 0;
     if (!uargv) argv[argc++] = name;
     while (uargv) {
-        uint32_t up;
-        if (copy_from_user(&up, (const void*)(uargv + (uint32_t)argc * 4), 4)) { r = -EFAULT; break; }
+        uintptr_t up;
+        if (copy_from_user(&up, (const void*)(uargv + (uintptr_t)argc * sizeof up), sizeof up)) { r = -EFAULT; break; }
         if (!up) break;
         if (argc == ARGV_MAX) { r = -E2BIG; break; }
         int len = strncpy_from_user(strings + used, (const char*)up, SPAWN_ARGS_BYTES - used);
@@ -517,24 +519,24 @@ static int sys_spawn(uint32_t uname, uint32_t uargv, uint32_t uopts) {
     return r;
 }
 
-static int sys_tty_fg(uint32_t job, uint32_t b, uint32_t c) {
+static long sys_tty_fg(uintptr_t job, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return tty_handover((int)job);
 }
 
-static int sys_wait_job(uint32_t job, uint32_t b, uint32_t c) {
+static long sys_wait_job(uintptr_t job, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if ((int)job <= 0) return -EINVAL;
     task_wait_job((int)job);
     return current->killed ? -EINTR : 0;
 }
 
-static int sys_kill(uint32_t id, uint32_t b, uint32_t c) {
+static long sys_kill(uintptr_t id, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return task_kill_user((int)id);
 }
 
-static int sys_readdir(uint32_t upath, uint32_t ucursor, uint32_t uent) {
+static long sys_readdir(uintptr_t upath, uintptr_t ucursor, uintptr_t uent) {
     char path[PATH_MAX];
     int n = copy_path(path, upath);
     if (n < 0) return n;
@@ -553,7 +555,7 @@ static int sys_readdir(uint32_t upath, uint32_t ucursor, uint32_t uent) {
 }
 
 #define KINFO_MAX 4096
-static int sys_kinfo(uint32_t what, uint32_t ubuf, uint32_t size) {
+static long sys_kinfo(uintptr_t what, uintptr_t ubuf, uintptr_t size) {
     char* buf = kmalloc(KINFO_MAX);
     if (!buf) return -ENOMEM;
     sbuf_t sb = { buf, KINFO_MAX, 0 };
@@ -567,24 +569,24 @@ static int sys_kinfo(uint32_t what, uint32_t ubuf, uint32_t size) {
     return r ? r : (int)sb.len;
 }
 
-static int sys_set_color(uint32_t color, uint32_t b, uint32_t c) {
+static long sys_set_color(uintptr_t color, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (color > 0xFF || (color >> 4) == (color & 0x0F)) return -EINVAL;  // invisible text
     console_set_color((uint8_t)color);
     return 0;
 }
 
-static int sys_pipe(uint32_t ufds, uint32_t b, uint32_t c) {
+static long sys_pipe(uintptr_t ufds, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return file_pipe((int*)ufds);
 }
 
-static int sys_dup2(uint32_t oldfd, uint32_t newfd, uint32_t c) {
+static long sys_dup2(uintptr_t oldfd, uintptr_t newfd, uintptr_t c) {
     (void)c;
     return file_dup2((int)oldfd, (int)newfd);
 }
 
-static int sys_power(uint32_t what, uint32_t b, uint32_t c) {
+static long sys_power(uintptr_t what, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (what == POWER_REBOOT) { kprintf("Rebooting...\n"); machine_reboot(); }
     if (what == POWER_OFF) { kprintf("Powering off...\n"); machine_poweroff(); }
@@ -594,34 +596,34 @@ static int sys_power(uint32_t what, uint32_t b, uint32_t c) {
 // Move the program break. The pages between the old and new break
 // are mapped at once, so the heap never takes a page fault. Shrinking
 // moves the break but keeps the pages, which a later grow reuses.
-static int sys_sbrk(uint32_t incr, uint32_t b, uint32_t c) {
+static long sys_sbrk(uintptr_t incr, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    uint32_t old = current->brk;
-    int64_t want = (int64_t)old + (int32_t)incr;
+    uintptr_t old = current->brk;
+    int64_t want = (int64_t)old + (int32_t)incr;  // sbrk takes an int
     if (want < (int64_t)current->brk_start || want > (int64_t)USER_IMAGE_LIMIT) return -ENOMEM;
-    uint32_t nb = (uint32_t)want;
-    for (uint32_t va = ALIGN_UP(old, PAGE_SIZE); va < ALIGN_UP(nb, PAGE_SIZE); va += PAGE_SIZE)
+    uintptr_t nb = (uintptr_t)want;
+    for (uintptr_t va = ALIGN_UP(old, PAGE_SIZE); va < ALIGN_UP(nb, PAGE_SIZE); va += PAGE_SIZE)
         if (!as_map(current->cr3, va, 1)) return -ENOMEM;
     current->brk = nb;
-    return (int)old;
+    return (long)old;
 }
 
-static int sys_tty_mode(uint32_t mode, uint32_t b, uint32_t c) {
+static long sys_tty_mode(uintptr_t mode, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return tty_set_mode((int)mode);
 }
 
-static int sys_ticks(uint32_t a, uint32_t b, uint32_t c) {
+static long sys_ticks(uintptr_t a, uintptr_t b, uintptr_t c) {
     (void)a; (void)b; (void)c;
     return (int)timer_ticks();
 }
 
-static int sys_getpid(uint32_t a, uint32_t b, uint32_t c) {
+static long sys_getpid(uintptr_t a, uintptr_t b, uintptr_t c) {
     (void)a; (void)b; (void)c;
     return current->id;
 }
 
-static int sys_join(uint32_t id, uint32_t b, uint32_t c) {
+static long sys_join(uintptr_t id, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return task_join((int)id);
 }
@@ -691,10 +693,10 @@ static const syscall_fn table[NUM_SYSCALLS] = {
 };
 
 void syscall_handle(regs_t* r) {
-    uint32_t n = r->eax;
+    uintptr_t n = SYSCALL_NR(r);
     if (n >= NUM_SYSCALLS || !table[n]) {
-        r->eax = (uint32_t)-ENOSYS;
+        SYSCALL_RET(r) = (uintptr_t)-ENOSYS;
         return;
     }
-    r->eax = (uint32_t)table[n](r->ebx, r->ecx, r->edx);
+    SYSCALL_RET(r) = (uintptr_t)table[n](SYSCALL_ARG0(r), SYSCALL_ARG1(r), SYSCALL_ARG2(r));
 }

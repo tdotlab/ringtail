@@ -138,7 +138,7 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 
 // Values from -4095 to -1 are errors. Anything else is a result,
 // including addresses above 2 GB that look negative as an int.
-#define IS_ERR(r) ((unsigned)(r) >= (unsigned)-4095)
+#define IS_ERR(r) ((unsigned long)(r) >= (unsigned long)-4095)
 
 // Terminal modes for SYS_TTY_MODE. TTY_RAW: reads return keys as
 // they arrive, without echo or line editing; Backspace reads as 0x7F

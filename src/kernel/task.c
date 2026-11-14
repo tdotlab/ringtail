@@ -27,8 +27,8 @@ static uint8_t fpu_clean[108];
 
 #define STACK_CANARY 0x5AFEC0DEu
 
-extern void switch_to(uint32_t* save_esp, uint32_t new_esp);
-extern void enter_user(uint32_t eip, uint32_t esp);
+extern void switch_to(uintptr_t* save_sp, uintptr_t new_sp);
+extern void enter_user(uintptr_t ip, uintptr_t sp);
 
 const char* task_state_name(task_state_t s) {
     switch (s) {
@@ -46,7 +46,7 @@ const char* task_state_name(task_state_t s) {
 // x87 state, saved and restored on every switch. That costs a few
 // hundred cycles and avoids the lazy-switching machinery.
 void fpu_init(void) {
-    uint32_t cr0 = read_cr0();
+    uintptr_t cr0 = read_cr0();
     cr0 &= ~(1u << 2);  // EM: no emulation
     cr0 &= ~(1u << 3);  // TS: never trap on use
     cr0 |= (1u << 1);   // MP
@@ -64,7 +64,7 @@ void task_init(void) {
     idle_task->state = TASK_RUNNING;
     idle_task->cr3 = kernel_pd();
     extern char stack_top[];
-    idle_task->kstack_top = (uint32_t)stack_top;
+    idle_task->kstack_top = (uintptr_t)stack_top;
     strlcpy(idle_task->name, "idle", TASK_NAME_MAX);
     memcpy(idle_task->fpu, fpu_clean, sizeof(fpu_clean));
     idle_task->next = idle_task;
@@ -146,12 +146,12 @@ void schedule(void) {
     if (next == prev) return;
 
     check_canary(prev);
-    tss_set_esp0(next->kstack_top);
+    tss_set_kstack(next->kstack_top);
     if (next->cr3 != prev->cr3) write_cr3(next->cr3);
     __asm__ volatile("fnsave %0" : "=m"(prev->fpu));
     __asm__ volatile("frstor %0" :: "m"(next->fpu));
     current = next;
-    switch_to(&prev->esp, next->esp);
+    switch_to(&prev->ksp, next->ksp);
 }
 
 void task_yield(void) {
@@ -209,7 +209,7 @@ int task_sleep_ticks(uint32_t ticks) {
 static void task_trampoline(void) {
     task_t* t = current;
     if (t->user) {
-        enter_user(t->user_eip, t->user_esp);  // does not return
+        enter_user(t->user_ip, t->user_sp);  // does not return
     }
     sti();
     t->entry(t->arg);
@@ -222,15 +222,15 @@ static task_t* task_alloc(const char* name) {
     t->kstack = kmalloc(KSTACK_SIZE);
     if (!t->kstack) { kfree(t); return 0; }
     *(uint32_t*)t->kstack = STACK_CANARY;
-    t->kstack_top = (uint32_t)t->kstack + KSTACK_SIZE;
+    t->kstack_top = (uintptr_t)t->kstack + KSTACK_SIZE;
     // Fake the frame switch_to pops: ebx, esi, edi, ebp, return.
-    uint32_t* sp = (uint32_t*)t->kstack_top;
-    *--sp = (uint32_t)task_trampoline;
+    uintptr_t* sp = (uintptr_t*)t->kstack_top;
+    *--sp = (uintptr_t)task_trampoline;
     *--sp = 0;
     *--sp = 0;
     *--sp = 0;
     *--sp = 0;
-    t->esp = (uint32_t)sp;
+    t->ksp = (uintptr_t)sp;
     t->cr3 = kernel_pd();
     t->parent = task_current_id();
     strlcpy(t->name, name, TASK_NAME_MAX);
@@ -260,14 +260,14 @@ int task_create_kernel(const char* name, void (*entry)(void*), void* arg) {
     return task_start(t, 0);  // a kernel task is its own job
 }
 
-int task_create_user(const char* name, uint32_t pd, uint32_t eip, uint32_t esp,
-                     uint32_t brk, int job, const int std[3], int held) {
+int task_create_user(const char* name, uintptr_t pd, uintptr_t ip, uintptr_t sp,
+                     uintptr_t brk, int job, const int std[3], int held) {
     task_t* t = task_alloc(name);
     if (!t) { as_destroy(pd); return -ENOMEM; }
     t->user = 1;
     t->cr3 = pd;
-    t->user_eip = eip;
-    t->user_esp = esp;
+    t->user_ip = ip;
+    t->user_sp = sp;
     t->brk_start = t->brk = brk;
     t->job = job;
     files_init_std(t);

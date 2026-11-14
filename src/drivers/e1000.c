@@ -85,6 +85,7 @@ typedef struct {
 static volatile uint32_t* regs;
 static volatile rx_desc_t* rx;
 static volatile tx_desc_t* tx;
+static uintptr_t rx_ring_phys, tx_ring_phys;  // where the card finds the rings
 static uint8_t* rx_buf[RX_N];
 static uint8_t* tx_buf[TX_N];
 static uint32_t rx_cur, tx_cur;
@@ -178,22 +179,25 @@ static void read_mac(uint8_t mac[6]) {
 // Frames for the rings and buffers. Never freed: the card owns them
 // for as long as the machine runs.
 static int alloc_rings(void) {
-    uint32_t ring = frame_alloc();
+    uintptr_t ring = frame_alloc();
     if (!ring) return -ENOMEM;
-    rx = (volatile rx_desc_t*)ring;
-    tx = (volatile tx_desc_t*)(ring + RX_N * sizeof(rx_desc_t));
+    rx = phys_to_virt(ring);
+    tx = phys_to_virt(ring + RX_N * sizeof(rx_desc_t));
     for (int i = 0; i < RX_N; i += PAGE_SIZE / BUF_SIZE) {
-        uint32_t f = frame_alloc();
+        uintptr_t f = frame_alloc();
         if (!f) return -ENOMEM;
-        for (uint32_t j = 0; j < PAGE_SIZE / BUF_SIZE; j++) rx_buf[i + j] = (uint8_t*)(f + j * BUF_SIZE);
+        for (uint32_t j = 0; j < PAGE_SIZE / BUF_SIZE; j++) rx_buf[i + j] = phys_to_virt(f + j * BUF_SIZE);
     }
     for (int i = 0; i < TX_N; i += PAGE_SIZE / BUF_SIZE) {
-        uint32_t f = frame_alloc();
+        uintptr_t f = frame_alloc();
         if (!f) return -ENOMEM;
-        for (uint32_t j = 0; j < PAGE_SIZE / BUF_SIZE; j++) tx_buf[i + j] = (uint8_t*)(f + j * BUF_SIZE);
+        for (uint32_t j = 0; j < PAGE_SIZE / BUF_SIZE; j++) tx_buf[i + j] = phys_to_virt(f + j * BUF_SIZE);
     }
-    for (int i = 0; i < RX_N; i++) { rx[i].addr = (uint32_t)rx_buf[i]; rx[i].status = 0; }
-    for (int i = 0; i < TX_N; i++) { tx[i].addr = (uint32_t)tx_buf[i]; tx[i].status = TX_STATUS_DD; }
+    // The card reads and writes these by physical address.
+    for (int i = 0; i < RX_N; i++) { rx[i].addr = virt_to_phys(rx_buf[i]); rx[i].status = 0; }
+    for (int i = 0; i < TX_N; i++) { tx[i].addr = virt_to_phys(tx_buf[i]); tx[i].status = TX_STATUS_DD; }
+    rx_ring_phys = ring;
+    tx_ring_phys = ring + RX_N * sizeof(rx_desc_t);
     return 0;
 }
 
@@ -216,16 +220,16 @@ static netdev_t* start(const pci_dev_t* p, const char* model) {
     read_mac(card.mac);
     for (int i = 0; i < 128; i++) wr(REG_MTA + 4 * i, 0);
 
-    wr(REG_RDBAL, (uint32_t)rx);
-    wr(REG_RDBAH, 0);
+    wr(REG_RDBAL, (uint32_t)rx_ring_phys);
+    wr(REG_RDBAH, (uint32_t)((uint64_t)rx_ring_phys >> 32));
     wr(REG_RDLEN, RX_N * sizeof(rx_desc_t));
     wr(REG_RDH, 0);
     wr(REG_RDT, RX_N - 1);
     wr(REG_RDTR, 0);
     wr(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);  // 2 KB buffers
 
-    wr(REG_TDBAL, (uint32_t)tx);
-    wr(REG_TDBAH, 0);
+    wr(REG_TDBAL, (uint32_t)tx_ring_phys);
+    wr(REG_TDBAH, (uint32_t)((uint64_t)tx_ring_phys >> 32));
     wr(REG_TDLEN, TX_N * sizeof(tx_desc_t));
     wr(REG_TDH, 0);
     wr(REG_TDT, 0);

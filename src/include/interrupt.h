@@ -15,6 +15,18 @@ typedef struct regs {
 
 static inline int regs_from_user(const regs_t* r) { return (r->cs & 3) == 3; }
 
+// What code outside the entry stubs needs from a frame, under names
+// that do not depend on the register set.
+#define REGS_IP_NAME "eip"
+static inline uintptr_t regs_ip(const regs_t* r) { return r->eip; }
+static inline uintptr_t regs_fp(const regs_t* r) { return r->ebp; }
+// System calls: the number and three arguments in, one result out.
+#define SYSCALL_NR(r)   ((r)->eax)
+#define SYSCALL_ARG0(r) ((r)->ebx)
+#define SYSCALL_ARG1(r) ((r)->ecx)
+#define SYSCALL_ARG2(r) ((r)->edx)
+#define SYSCALL_RET(r)  ((r)->eax)
+
 #define IRQ_BASE      32
 #define IRQ_TIMER     0
 #define IRQ_KEYBOARD  1

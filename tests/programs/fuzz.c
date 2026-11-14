@@ -45,34 +45,40 @@ static const char* const strings[] = {
 };
 #define NSTRINGS ((int)(sizeof strings / sizeof strings[0]))
 
-static uint32_t interesting(void) {
-    static const uint32_t v[] = {
+static uintptr_t interesting(void) {
+    static const uintptr_t v[] = {
         0, 1, 2, 3, 4, 7, 8, 15, 16, 255, 256, 4095, 4096, 4097, 8191, 8192, 0x10000, 0x100000,
         0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFFFFFF, 0xFFFFFFFE, 0xFFFFF000, 0xFFFFFFF0,
         0x3FFFFFFF, 0x3FFFFFFC, 0x40000000, 0xBFFFFFFF, 0xBFFFFFFC, 0xC0000000, 0xC0000004,
         0x00100000, 0x00110000, 0x50000000, 0x0B8000, 0x0A0000, 0x1000, 0x400000,
         3600 * 100, 3600 * 100 + 1, 1u << 20, (1u << 20) + 1,
+#if UINTPTR_MAX > 0xFFFFFFFFu
+        // Wider than 32 bits: a kernel that cut an address down to 32
+        // bits would take most of these for user space.
+        0x140000000, 0x100000000, 0x1BFFFFFFF, 0xFFFFFFFF40000000, 0x0000800000000000,
+        0xFFFF800000000000, (uintptr_t)-1, (uintptr_t)-4096,
+#endif
     };
     return v[rnd() % (sizeof v / sizeof v[0])];
 }
 
 // A pointer the call may legitimately use, or one placed to hurt.
-static uint32_t pointer(void) {
+static uintptr_t pointer(void) {
     switch (rnd() % 10) {
-    case 0: return (uint32_t)scratch;
-    case 1: return (uint32_t)scratch + 4096 - (rnd() % 20);          // straddles the page
-    case 2: return (uint32_t)scratch + sizeof scratch - (rnd() % 20); // straddles the end
-    case 3: return (uint32_t)strings[rnd() % NSTRINGS];
-    case 4: return (uint32_t)main;                                    // read-only code
-    case 5: return (uint32_t)scratch + 4096 + (rnd() % 64);
+    case 0: return (uintptr_t)scratch;
+    case 1: return (uintptr_t)scratch + 4096 - (rnd() % 20);          // straddles the page
+    case 2: return (uintptr_t)scratch + sizeof scratch - (rnd() % 20); // straddles the end
+    case 3: return (uintptr_t)strings[rnd() % NSTRINGS];
+    case 4: return (uintptr_t)main;                                    // read-only code
+    case 5: return (uintptr_t)scratch + 4096 + (rnd() % 64);
     case 6: return 0;
-    case 7: return (uint32_t)scratch + (rnd() % 8192);
-    case 8: return (uint32_t)scratch + 128;                           // a plausible struct
+    case 7: return (uintptr_t)scratch + (rnd() % 8192);
+    case 8: return (uintptr_t)scratch + 128;                           // a plausible struct
     default: return interesting();
     }
 }
 
-static uint32_t value(void) {
+static uintptr_t value(void) {
     switch (rnd() % 10) {
     case 0: case 1: case 2: return interesting();
     case 3: case 4: case 5: return pointer();
@@ -133,10 +139,10 @@ static int last_port = 9;   // and sends now and then to the port it was bound t
 // Words at scratch+128 that look like the argument structs: small
 // coordinates and sizes, a valid string, now and then something nasty.
 static void shuffle_struct(void) {
-    uint32_t* w = (uint32_t*)(scratch + 128);
+    uintptr_t* w = (uintptr_t*)(scratch + 128);
     for (int i = 0; i < 8; i++) {
         switch (rnd() % 6) {
-        case 0: w[i] = (uint32_t)strings[rnd() % NSTRINGS]; break;
+        case 0: w[i] = (uintptr_t)strings[rnd() % NSTRINGS]; break;
         case 1: w[i] = interesting(); break;
         case 2: w[i] = rnd(); break;
         default: w[i] = rnd() % 330; break;
@@ -153,7 +159,7 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     if (n == 0) n = (rnd() & 1) ? (int)rnd() : NUM_SYSCALLS + (int)(rnd() % 100);
     if (force_gfx) n = (int[]){ SYS_GFX_PIXEL, SYS_GFX_CLEAR, SYS_GFX_RECT, SYS_GFX_LINE, SYS_GFX_TEXT,
                                 SYS_GFX_BLIT, SYS_GFX_FONT, SYS_MOUSE_STATE, SYS_KEY_GET }[rnd() % 9];
-    uint32_t a = value(), b = value(), d = value();
+    uintptr_t a = value(), b = value(), d = value();
     if ((n == SYS_BIND || n == SYS_SENDTO || n == SYS_RECVFROM) && last_sock < 0) {
         last_sock = sys_socket(SOCK_DGRAM);
         if (rnd() & 1) last_port = sys_bind(last_sock, 0);
@@ -171,34 +177,34 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         break;
     case SYS_OPEN: a = pointer(); b = (rnd() & 1) ? (rnd() % 0x800) : (rnd() % 4) | ((rnd() & 1) ? O_CREAT : 0); break;
     case SYS_DELETE: case SYS_MKDIR: case SYS_RMDIR: case SYS_CHDIR: case SYS_STAT:
-        a = (rnd() % 3) ? (uint32_t)strings[rnd() % NSTRINGS] : pointer();
-        if (n == SYS_STAT && (rnd() & 1)) b = (uint32_t)scratch + 1024;
+        a = (rnd() % 3) ? (uintptr_t)strings[rnd() % NSTRINGS] : pointer();
+        if (n == SYS_STAT && (rnd() & 1)) b = (uintptr_t)scratch + 1024;
         break;
     case SYS_RENAME:
-        a = (rnd() % 4) ? (uint32_t)strings[rnd() % NSTRINGS] : pointer();
-        b = (rnd() % 4) ? (uint32_t)strings[rnd() % NSTRINGS] : pointer();
+        a = (rnd() % 4) ? (uintptr_t)strings[rnd() % NSTRINGS] : pointer();
+        b = (rnd() % 4) ? (uintptr_t)strings[rnd() % NSTRINGS] : pointer();
         break;
     case SYS_SAVE:
-        a = (rnd() % 3) ? (uint32_t)strings[rnd() % NSTRINGS] : pointer();
+        a = (rnd() % 3) ? (uintptr_t)strings[rnd() % NSTRINGS] : pointer();
         if (rnd() % 3) b = pointer();
         if (rnd() % 2) d = rnd() % 9000;
         break;
     case SYS_SPAWN:
         // Only names that are not programs, so nothing real starts.
-        a = (rnd() % 3) ? (uint32_t)strings[rnd() % NSTRINGS] : pointer();
+        a = (rnd() % 3) ? (uintptr_t)strings[rnd() % NSTRINGS] : pointer();
         break;
     case SYS_GFX_RECT: case SYS_GFX_LINE: case SYS_GFX_TEXT:
-        if (rnd() & 1) a = (uint32_t)scratch + 128;
+        if (rnd() & 1) a = (uintptr_t)scratch + 128;
         break;
     case SYS_READDIR:
-        a = (rnd() % 4) ? (uint32_t)strings[rnd() % NSTRINGS] : pointer();
-        if (rnd() & 1) b = (uint32_t)scratch + 128;
-        if (rnd() & 1) d = (uint32_t)scratch + 1024;
+        a = (rnd() % 4) ? (uintptr_t)strings[rnd() % NSTRINGS] : pointer();
+        if (rnd() & 1) b = (uintptr_t)scratch + 128;
+        if (rnd() & 1) d = (uintptr_t)scratch + 1024;
         break;
     case SYS_SLEEP: a = 0; break;
     case SYS_POLL: a = rnd() % 3; break;
     case SYS_WAIT: a = 0x7FFF1234; break;  // differs from any mouse position, so it returns
-    case SYS_TTY_MODE: a &= ~3u; break;     // no raw mode: it would swallow Ctrl+C
+    case SYS_TTY_MODE: a &= ~(uintptr_t)3; break;     // no raw mode: it would swallow Ctrl+C
     case SYS_JOIN: case SYS_WAIT_JOB: case SYS_KILL: a = odd_id(); break;
     case SYS_TTY_FG: a = rnd() % 4 ? odd_id() : rnd() % 8; break;
     case SYS_SBRK:
@@ -223,13 +229,13 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         m->buf = (void*)pointer();
         // What is sent may be received into scratch and then printed, so
         // it comes from scratch too, for the reason the print calls do.
-        uint32_t sc = (uint32_t)scratch, p = (uint32_t)m->buf;
+        uintptr_t sc = (uintptr_t)scratch, p = (uintptr_t)m->buf;
         if (n == SYS_SENDTO && p >= USER_BASE_ADDR && p < USER_TOP_ADDR && (p < sc || p >= sc + sizeof scratch))
             m->buf = scratch + rnd() % 4000;
         m->len = rnd() % 3 ? (int)(rnd() % 2000) : (int)interesting();
         m->timeout_ms = (int)(rnd() % 3);
         a = rnd() % 4 ? (uint32_t)last_sock : fd_value();
-        b = rnd() % 8 ? (uint32_t)m : (rnd() & 1) ? 0 : 0xC0000000u + (rnd() & 0xFFF);
+        b = rnd() % 8 ? (uintptr_t)m : (rnd() & 1) ? 0 : 0xC0000000u + (rnd() & 0xFFF);
         break;
     }
     case SYS_LISTEN: case SYS_SHUTDOWN: case SYS_SOCKADDR:
@@ -251,8 +257,8 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         sa->ip = ips[rnd() % (sizeof ips / sizeof ips[0])];
         sa->port = sa->ip == 0x7F000001 ? (rnd() & 1 ? 0 : 65536 + (int)(rnd() % 1000)) : (int)(rnd() % 70000);
         a = rnd() % 4 ? (uint32_t)last_tcp : rnd() % 2 ? (uint32_t)last_sock : fd_value();
-        b = rnd() % 6 ? (uint32_t)sa : pointer();
-        if (b != (uint32_t)sa && b >= USER_BASE_ADDR && b < USER_TOP_ADDR) b = 0xC0000000u + (rnd() & 0xFFF);
+        b = rnd() % 6 ? (uintptr_t)sa : pointer();
+        if (b != (uintptr_t)sa && b >= USER_BASE_ADDR && b < USER_TOP_ADDR) b = 0xC0000000u + (rnd() & 0xFFF);
         d = rnd() % 3 ? 1 + rnd() % 5 : interesting();
         break;
     }
@@ -262,7 +268,7 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
             pf[i].fd = rnd() % 3 ? (int)fd_value() : -1;
             pf[i].events = (int)(rnd() % 64);
         }
-        a = rnd() % 4 ? (uint32_t)pf : pointer();
+        a = rnd() % 4 ? (uintptr_t)pf : pointer();
         b = rnd() % 4 ? rnd() % 5 : value();
         d = rnd() % 3;  // never a long wait
         break;
@@ -283,8 +289,8 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     // the console (or fill the disk). Those only go with a pointer that
     // must fail anyway.
     if (n == SYS_PRINT || n == SYS_WRITE) {
-        uint32_t* len = (n == SYS_PRINT) ? &b : &d;
-        uint32_t* ptr = (n == SYS_PRINT) ? &a : &b;
+        uintptr_t* len = (n == SYS_PRINT) ? &b : &d;
+        uintptr_t* ptr = (n == SYS_PRINT) ? &a : &b;
         if (*len > 300) {
             if (rnd() & 1) *len %= 300;
             else *ptr = (rnd() & 1) ? 0xC0000000u + (rnd() & 0xFFF) : (interesting() | 0x80000000u);
@@ -292,15 +298,15 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         // Valid memory that is not the scratch buffer would put this
         // program's own code and strings (the word FAIL among them) on the
         // console, where a test reading the output would take it for a result.
-        uint32_t sc = (uint32_t)scratch;
+        uintptr_t sc = (uintptr_t)scratch;
         if (*ptr >= USER_BASE_ADDR && *ptr < USER_TOP_ADDR && (*ptr < sc || *ptr >= sc + sizeof scratch) && *len) {
             *ptr = sc + (rnd() % 4000);
             *len %= 300;  // the pointer may have been one of the "must fail" ones above, with a huge length
         }
     }
 
-    if (iter >= verbose_from) out("  #%u %s(%x, %x, %x)\n", iter, c->name, a, b, d);
-    int r = syscall3(n, a, b, d);
+    if (iter >= verbose_from) out("  #%u %s(%lx, %lx, %lx)\n", iter, c->name, (unsigned long)a, (unsigned long)b, (unsigned long)d);
+    long r = syscall3(n, a, b, d);
 
     if ((unsigned)n < 64) {
         if (r >= 0) stat_ok[n]++;

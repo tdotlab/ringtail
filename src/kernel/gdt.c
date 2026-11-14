@@ -53,12 +53,12 @@ void gdt_init(void) {
     // An I/O bitmap offset past the segment limit means there is no
     // bitmap, so with IOPL 0 every port access from ring 3 faults.
     tss.iomap_base = sizeof(tss);
-    set_entry(5, (uint32_t)&tss, sizeof(tss) - 1, 0x89, 0x00);  // 0x28 TSS
+    set_entry(5, (uint32_t)(uintptr_t)&tss, sizeof(tss) - 1, 0x89, 0x00);  // 0x28 TSS
     gdt_ptr.limit = sizeof(gdt) - 1;
-    gdt_ptr.base = (uint32_t)&gdt;
+    gdt_ptr.base = (uint32_t)(uintptr_t)&gdt;
     gdt_load(&gdt_ptr);
 }
 
-void tss_set_esp0(uint32_t esp0) {
-    tss.esp0 = esp0;
+void tss_set_kstack(uintptr_t top) {
+    tss.esp0 = top;
 }
