@@ -2919,6 +2919,80 @@ def gnu_text_tests(m, t):
     run("rm -r jn")                          # the tests after this one count the files and directories of the root
 
 
+    # ---- v0.34.0: factor: what GNU's cannot show (it refuses above 2^64-1, --help and --version, statuses of usage errors, the work of the hard numbers) ----
+    try_line = "Try 'factor --help' for more information."
+    out, rc = st("factor --version")
+    t.check("factor --version: not here, said so, status 2", out == "factor: option '--version' is not supported\n" + try_line and rc == 2, str((out, rc)))
+    out, rc = st("factor --vers 12")
+    t.check("factor --vers: the same", out == "factor: option '--version' is not supported\n" + try_line and rc == 2, str((out, rc)))
+    out, rc = st("factor --help")
+    t.check("factor --help writes the usage, status 0", out.startswith("usage: factor [-h | --exponents] [NUMBER...]\n") and rc == 0, str((out, rc)))
+    for c, msg in (("-x 12", "factor: invalid option -- 'x'"),
+                   ("--foo 12", "factor: unrecognized option '--foo'"),
+                   ("--=x 12", "factor: option '--=x' is ambiguous; possibilities: '--exponents' '--help' '--version'"),
+                   ("--exponents=1 12", "factor: option '--exponents' doesn't allow an argument"),
+                   ("--help=1", "factor: option '--help' doesn't allow an argument")):
+        out, rc = st("factor " + c)
+        t.check(f"factor {c}: said so, and the Try line, status 2", out == msg + "\n" + try_line and rc == 2, str((out, rc)))
+    big = "factor: '%s' is too large (the most is 18446744073709551615)"
+    for c, want in (("18446744073709551616", big % "18446744073709551616"),
+                    ("99999999999999999999999999999", big % "99999999999999999999999999999"),
+                    ("+00018446744073709551616", big % "+00018446744073709551616"),
+                    ("18446744073709551616 12", big % "18446744073709551616" + "\n12: 2 2 3"),
+                    ("12 18446744073709551616 13 x", big % "18446744073709551616" + "\nfactor: 'x' is not a valid positive integer\n12: 2 2 3\n13: 13")):
+        out, rc = st("factor " + c)
+        t.check(f"factor {c}: refused as too large, the rest done, status 1", out == want and rc == 1, str((out, rc)))
+    out, rc = st("echo 99999999999999999999 7 | factor")
+    t.check("a number too large from standard input is refused too", out == big % "99999999999999999999" + "\n7: 7" and rc == 1, str((out, rc)))
+    out, rc = st("factor 000018446744073709551615 18446744073709551615 | uniq")
+    t.check("the largest number has leading zeros and is written without them", out == "18446744073709551615: 3 5 17 257 641 65537 6700417" and rc == 0, str((out, rc)))
+    # the hard kind: the product of two primes of 32 bits needs the whole of Pollard's rho
+    PR = [4294967291, 4294967279, 4294967231, 4294967197, 4294967189, 4294967161, 2147483647, 2147483629, 3037000493, 3000000019]
+    pairs = [(PR[i], PR[j]) for i in range(6) for j in range(i, 6)] + [(PR[6], PR[7]), (PR[8], PR[9]), (PR[8], PR[8])]
+    run("echo -n > fh")
+    for p, q in pairs:  # one line each: the shell takes no very long ones
+        run("echo %d >> fh" % (p * q))
+    want = "\n".join("%d: %d %d" % (p * q, min(p, q), max(p, q)) for p, q in pairs)
+    out, rc = st("factor < fh")
+    t.check(f"{len(pairs)} products of two primes of 31 and 32 bits, factored", out == want and rc == 0, str((out[-200:], rc)))
+    out, rc = st("cat fh | factor | wc -l")
+    t.check("the same from a pipe, counted", out.strip() == str(len(pairs)) and rc == 0, str((out, rc)))
+    out, rc = st("factor 18446744030759878681 18446743979220271189")
+    t.check("a square of a prime of 32 bits and a product of two", out == "18446744030759878681: 4294967291 4294967291\n18446743979220271189: 4294967279 4294967291" and rc == 0, str((out, rc)))
+    run("rm fh")
+    out, rc = st("seq 99990 100010 | factor")
+    def trial(n):
+        f, d = [], 2
+        while d * d <= n:
+            while n % d == 0:
+                f.append(d)
+                n //= d
+            d += 1
+        return f + ([n] if n > 1 else [])
+    want = "\n".join("%d: %s" % (n, " ".join(map(str, trial(n)))) for n in range(99990, 100011))
+    t.check("a run of numbers from a pipe, each its own line", out == want and rc == 0, str((out, rc)))
+    out, rc = st("echo 4294967297 | factor -h")
+    t.check("-h from standard input", out == "4294967297: 641 6700417" and rc == 0, str((out, rc)))
+    # from the keyboard an answer comes as soon as its line is typed, not at Ctrl+D
+    m.send("factor\r")
+    time.sleep(0.3)
+    m.send("12\r")
+    time.sleep(0.5)
+    while m._pending():
+        m._fill(0.2)
+    early = re.sub(r"\x1b\[[0-9;]*m", "", m.buf.decode(errors="replace")).replace("\r\n", "\n")
+    m.send("x\r")
+    time.sleep(0.2)
+    m.send("\x04")
+    raw = re.sub(r"\x1b\[[0-9;]*m", "", m.expect(PROMPT, 15)).replace("\r\n", "\n")
+    t.check("factor answers a typed line before the input ends", "12: 2 2 3" in early, repr(early))
+    t.check("factor on the keyboard: the answer and the complaint, then the prompt", "12: 2 2 3\n" in raw and "'x' is not a valid positive integer" in raw, repr(raw))
+    # a token of any length: the complaint quotes all of it; leading zeros do not count
+    big = "9" * 3000
+    out, rc = st("factor " + big[:200])
+    t.check("a 200-digit argument is refused whole", out == "factor: '%s' is too large (the most is 18446744073709551615)" % big[:200] and rc == 1, str((out[-120:], rc)))
+
+
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is
     checked against GNU grep by tests/test_regex.c) with its output and

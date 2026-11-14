@@ -1428,6 +1428,26 @@ case("echo -e 'x a\\ny b\\nz d\\nw e' > f1", "echo -e 'a 1' > f2", "join -1 2 -2
 # names that are quoted in messages: a leading ~ or #, an apostrophe, and --=
 case("echo a > f1", "?join '~x' f1", "?join '#x' f1", "?join 'x~' f1", "?join -t \"a'b\" f1 f1", "?join f1 f1 '~a' | cat", "?join f1 f1 'a#b' | cat", "?join --=x f1 f1 | cat", "?join -t 'a\\b' f1 f1")
 
+# ---------------------------------------------------------------- factor
+# (the arithmetic and the reading of a number are checked against GNU in tests/test_fcore.c, on
+# thousands of numbers; these are the program: arguments, standard input, -h, the messages and the
+# order they come out in. GNU factors numbers above 2^64 and this one refuses them, so there are none
+# here (the refusal is in qemu_test.py), and --help and --version are there too. A usage error is
+# status 1 for GNU and 2 here, so those cases end in | cat. GNU holds its answers back until the end
+# when it writes to a pipe, and so does this one.)
+case("factor 12", "factor 0 1 2 3 4 5 6 7 8 9 10", "factor 360", "factor -h 360", "factor --exponents 360 7 1024 1", "factor 18446744073709551615", "factor -h 18446744073709551615 18446744073709551614",
+     "factor 18446744073709551557 4294967297 9223372036854775807 9223372036854775808", "factor -h 4294967291", "factor 4294967291 4294967293 4294967295 4294967296")
+case("factor 18446744030759878681", "factor -h 18446744030759878681", "factor 18446744065119617025", "factor 18446743979220271189", "factor 17361641481138401521 15241578750190521",
+     "factor 1000000007 998244353 1000000009", "factor 1000036000099 1000000014000000049", "factor 1099511627776 1099511627775 1099511627777", "factor 3825123056546413051 341550071728321 3215031751")
+case("factor +12 007 +0 00", "?factor '  12' ' +12' '+ 12'", "?factor ' '", "?factor '' 5", "?factor + 5", "?factor - 5", "?factor -- -5 6", "factor -- 5 6", "factor 12 -h", "factor 12 -h 8 --exponents 9", "factor -h -h 8",
+     "factor --exp 12", "factor --e 12", "factor --exponents 12", "factor -- 12", "factor -h -- 12")
+case("?factor abc 12", "?factor 12 abc 13 | cat", "?factor -- 1e3 0x10 1.5 -1 12a a12 5", "?factor 12abc34 | cat", "?factor 99 -x | cat", "?factor 99 -hx | cat", "?factor --foo 12 | cat", "?factor --exponents=1 12 | cat",
+     "?factor --x | cat", "?factor 'a b' | cat", "?factor \"a'b\" | cat", "?factor 'a\\b' | cat", "?factor 'a\"b' | cat", "?factor '~x' | cat")
+case("echo 12 13 14 | factor", "echo -e '12\\n\\n13\\t14 15' | factor", "echo | factor", "echo -n | factor", "echo -n 12 | factor", "echo -n '12 ' | factor", "echo -e '1 \\n+5\\n 6' | factor",
+     "echo '  12   13  ' | factor", "echo -e '0\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16' | factor", "echo 18446744073709551615 4294967297 | factor", "echo 360 | factor -h",
+     "echo -e '12 x 7' | factor | cat", "?echo -e '12 x 7\\ny 8' | factor | cat", "echo -e '5 6 +7' | factor 8 9")
+case("printf '5\\0 6\\n' | factor", "?printf 'a\\001b\\rc\\n' | factor | cat", "?printf '1\\r\\n2\\r\\n' | factor | cat", "?printf '\\377 \\033x \\vy \\f1\\n' | factor | cat", "?printf '12\\n13\\n--5\\n+-5\\n' | factor | cat")
+
 def run_all():
     out, bad = [], []
     for cmds in CASES:

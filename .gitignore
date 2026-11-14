@@ -15,3 +15,4 @@ tests/test_shasum
 tests/test_pfcore
 tests/test_spcore
 tests/test_jncore
+tests/test_fcore

@@ -6,6 +6,7 @@
 # parser of sha256 -c (against GNU sha256sum's), the core of printf (against
 # GNU printf's), the numbers and file names of split (against GNU split's), the field
 # numbers, -o items, field cutting and key comparing of join (against GNU join's), the
+# factors and number reading of factor (against GNU factor's), the
 # cryptography (against the RFCs' and Project Wycheproof's vectors) and
 # the TLS client (against recorded conversations with a scripted
 # server and with OpenSSL), under the address and undefined-behaviour
@@ -36,6 +37,8 @@ SPCORE_SRCS = test_spcore.c ../src/programs/lib/splitcore.c
 
 JNCORE_SRCS = test_jncore.c ../src/programs/lib/joincore.c
 
+FCORE_SRCS = test_fcore.c ../src/programs/lib/factorcore.c
+
 # The cryptography is built -O2, as it is for the OS: the sanitizers
 # then check the code that ships, and the tests take seconds.
 CRYPTO_LIB = ../src/lib/sha256.c ../src/lib/chacha20.c ../src/programs/lib/chachapoly.c ../src/programs/lib/x25519.c ../src/programs/lib/aesgcm.c
@@ -51,7 +54,7 @@ SIG_LIB = ../src/programs/lib/sig.c ../src/programs/lib/sha512.c ../src/lib/sha2
 SIG_HDRS = ../src/programs/lib/sig.h ../src/programs/lib/sha512.h ../src/programs/lib/der.h
 X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 
-HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore test_spcore test_jncore test_crypto test_tls test_sig test_x509
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509
 
 all: $(HOST_TESTS)
 
@@ -85,6 +88,9 @@ test_spcore: $(SPCORE_SRCS) ../src/programs/lib/splitcore.h spcore_cases.h
 test_jncore: $(JNCORE_SRCS) ../src/programs/lib/joincore.h jncore_cases.h
 	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(JNCORE_SRCS)
 
+test_fcore: $(FCORE_SRCS) ../src/programs/lib/factorcore.h fcore_cases.h
+	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(FCORE_SRCS)
+
 test_crypto: test_crypto.c $(CRYPTO_LIB) $(CRYPTO_HDRS) crypto_cases.h
 	$(CC) $(CRYPTO_CFLAGS) -o $@ test_crypto.c $(CRYPTO_LIB)
 
@@ -108,6 +114,7 @@ run: $(HOST_TESTS)
 	./test_pfcore
 	./test_spcore
 	./test_jncore
+	./test_fcore
 	./test_crypto
 	./test_tls
 	./test_sig

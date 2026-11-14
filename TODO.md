@@ -61,15 +61,6 @@ README says which, under "Programs on the disk"), found by the Makefile on
 its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
-**factor** (`util/`). Breaks numbers into their primes. Small, and fun
-to watch. `factor [NUMBER...]`, or numbers from standard input, up to
-2^64-1, printed as GNU does (`12: 2 2 3`). Trial division is far too slow
-near 2^64: use Miller-Rabin (the deterministic bases for 64 bits) and
-Pollard's rho. gcc for i386 has no `__int128`, so the 64-by-64 multiply
-modulo n is done by hand; host-test it against Python on random and edge
-values (primes near 2^64, squares of big primes, 2^64-1). A bigger
-number is a clear error and a Limits line.
-
 ## Features in programs that exist
 
 **find -exec into a file.** A spawned program gets its own copy of each

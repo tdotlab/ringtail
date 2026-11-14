@@ -368,7 +368,7 @@ src/programs   user programs in folders, their C library (lib/: runtime, malloc,
   files        files and directories as things: ls, cp, mv, rm, mkdir, rmdir, touch, find, du, df, basename, dirname
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
-  util         small tools for building command lines: echo, seq, sleep, xargs, cal, hello and the like
+  util         small tools for building command lines: echo, seq, factor, sleep, xargs, cal, hello and the like
 tools          mkdisk.py, the FAT16 image builder
 tests          host unit tests, the QEMU integration suite, test programs
 ```
@@ -450,6 +450,7 @@ Programs on the disk:
 | basename | `basename NAME [SUFFIX]` or `basename [-a] [-s SUFFIX] NAME...`: the last part of a path, with an optional suffix taken off. |
 | dirname | `dirname NAME...`: a path without its last part. |
 | seq | `seq [-w] [-s SEP] [FIRST [INCR]] LAST`: the numbers from FIRST to LAST, with up to 9 decimals; `-w` pads with zeros, `-s` changes the separator. |
+| factor | `factor [-h | --exponents] [NUMBER...]`: breaks numbers into their primes, so `factor 360` writes `360: 2 2 2 3 3 5`. With no NUMBER it reads them from standard input, separated by blanks or newlines. `-h` writes a repeated factor as `p^e` (`360: 2^3 3^2 5`). Numbers go up to 2^64-1 (18446744073709551615): Miller-Rabin tells primes from the rest and Pollard's rho finds the factors, so even the product of two 32-bit primes comes back at once, and with no 128-bit type on i386 the multiplication modulo n is done by hand (Montgomery's way). A bad number (`12a`, `-3`, `0x10`) is reported as `factor: 'TOKEN' is not a valid positive integer` and a bigger one as too large; the work goes on and the end status is 1. As with GNU's when it writes to a pipe, the answers are held back until the end (or until it waits for input), so such messages come out first. Checked against GNU on thousands of numbers, among them primes near 2^64, squares of big primes and Carmichael numbers. GNU's goes on beyond 2^64, this one stops there. A usage error is status 2, where GNU's is 1, and `--version` stops with a message. |
 | diff | `diff [-u \| -U N \| -c \| -C N] [-q] [-s] [-i] [-b] [-w] [-a] [-r] [-N] [-d] [--label L] FILE1 FILE2`: which lines changed, in the normal, unified (`-u`) or context (`-c`) format, picking the same changes as GNU diff, byte for byte. `-i -b -w` ignore case and blanks, `-q` only says whether they differ, `-r` goes through two directory trees, `-N` treats a missing file as empty. A file and a directory compare the file with its namesake inside. Binary files (a NUL in the first 4 KB) are only reported unless `-a`. Exit 0 same, 1 different, 2 trouble. |
 | cmp | `cmp [-l] [-s] [-n LIMIT] FILE1 [FILE2]`: the first byte where two files differ (or every one with `-l`); exit 0 same, 1 different, 2 trouble. |
 | yes | `yes [STRING...]`: prints STRING (or `y`) forever, until the reader quits. |
@@ -525,7 +526,7 @@ TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, n
 port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already
 has the address it was given (RFC 5227). The e1000 is the only card it
-drives.
+drives. `factor` stops at 2^64-1, where GNU's goes on to bigger numbers: a bigger one is refused with a message.
 
 Certificates are checked, but not everything about them is: there is
 no revocation (no CRLs, no OCSP), so a certificate its CA has taken
