@@ -52,6 +52,16 @@ static inline void write_cr0(uintptr_t v) { __asm__ volatile("mov %0, %%cr0" :: 
 static inline void write_cr3(uintptr_t v) { __asm__ volatile("mov %0, %%cr3" :: "r"(v) : "memory"); }
 static inline void write_cr4(uintptr_t v) { __asm__ volatile("mov %0, %%cr4" :: "r"(v) : "memory"); }
 
+// Model-specific registers, such as EFER (0xC0000080).
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return (uint64_t)hi << 32 | lo;
+}
+static inline void wrmsr(uint32_t msr, uint64_t v) {
+    __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)) : "memory");
+}
+
 static inline void invlpg(uintptr_t va) { __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory"); }
 
 static inline void cpuid(uint32_t leaf, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {

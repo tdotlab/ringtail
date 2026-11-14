@@ -95,7 +95,7 @@ static void kernel_exception(regs_t* r) {
     console_panic_mode();
     gfx_emergency_text();
     kprintf_color(COLOR_ERROR, "\nKERNEL PANIC: %s (exception %u)",
-                  exception_names[r->vector], r->vector);
+                  exception_names[r->vector], (unsigned)r->vector);
     if (current) kprintf(" in task %d (%s)", current->id, current->name);
     kprintf("\n");
     dump_regs(r);
