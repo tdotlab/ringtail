@@ -2789,6 +2789,72 @@ def gnu_text_tests(m, t):
     t.check("a conversion too big to write is a write error at the end, status 1", out == "[]\nprintf: write error" and rc == 1, (out, rc))
 
 
+    # ---- v0.34.0: split: what GNU's cannot show (the options it has and has not, statuses of usage errors, a hex FROM with letters, which GNU 9.4 gets wrong) ----
+    try_line = "Try 'split --help' for more information."
+    run("mkdir spl")
+    run("cd spl")
+    run("seq 1 12 > f")
+    for c, name in (("-C 5", "-C"), ("-n 3", "-n"), ("-t x", "-t"), ("--line-bytes=5", "--line-bytes"), ("--number=3", "--number"), ("--separator=x", "--separator"),
+                    ("--filter=cat", "--filter"), ("--version", "--version"), ("--fil=cat", "--filter"), ("--vers", "--version")):
+        out, rc = st("split " + c + " f")
+        t.check(f"split {c}: not here, said so, status 2", out == f"split: option '{name}' is not supported" and rc == 2, str((out, rc)))
+    out, rc = st("ls | wc -l")
+    t.check("and none of them wrote a piece", out.strip() == "1" and rc == 0, str((out, rc)))
+    out, rc = st("split -e -u -l 5 f e")
+    t.check("-e and -u are taken, they matter only with -n", out == "" and rc == 0, str((out, rc)))
+    out, rc = st("cat eaa eac")
+    t.check("and the pieces are made as ever", out.split() == ["1", "2", "3", "4", "5", "11", "12"] and rc == 0, str((out, rc)))
+    out, rc = st("split --elide-empty-files --unbuffered -l 6 f l")
+    t.check("the same in long form", out == "" and rc == 0, str((out, rc)))
+    out, rc = st("split --help")
+    t.check("--help writes the usage, status 0", out.startswith("usage: split [OPTION]... [FILE [PREFIX]]\n") and rc == 0, str((out, rc)))
+    for c, msg in (("-z f", "split: invalid option -- 'z'"),
+                   ("--foo f", "split: unrecognized option '--foo'"),
+                   ("--lin f", "split: option '--lin' is ambiguous; possibilities: '--lines' '--line-bytes'"),
+                   ("-l", "split: option requires an argument -- 'l'"),
+                   ("--lines", "split: option '--lines' requires an argument"),
+                   ("--verbose=1 f", "split: option '--verbose' doesn't allow an argument"),
+                   ("-l 1 -b 1 f", "split: cannot split in more than one way"),
+                   ("-5 -b 1 f", "split: cannot split in more than one way"),
+                   ("f g h", "split: extra operand 'h'"),
+                   ("--additional-suffix=a/b f", "split: invalid suffix 'a/b', contains directory separator"),
+                   ("--hex-suffixes=x f", "split: 'x': invalid start value for hexadecimal suffix"),
+                   ("--numeric-suffixes=1a f", "split: '1a': invalid start value for numerical suffix"),
+                   ("-a 1 -d --numeric-suffixes=10 f", "split: numerical suffix start value is too large for the suffix length"),
+                   ("-a 1 -x --hex-suffixes=10 f", "split: numerical suffix start value is too large for the suffix length")):
+        out, rc = st("split " + c)
+        t.check(f"split {c}: said so, and the Try line, status 2", out == msg + "\n" + try_line and rc == 2, str((out, rc)))
+    for c, msg in (("-l 0 f", "split: invalid number of lines: '0'"),
+                   ("-b 1x f", "split: invalid number of bytes: '1x'"),
+                   ("-a x f", "split: invalid suffix length: 'x'"),
+                   ("-0 f", "split: invalid number of lines: '0'\n" + try_line),
+                   ("nosuch", "split: cannot open 'nosuch' for reading: no such file or directory"),
+                   (". p", "split: .: is a directory")):
+        out, rc = st("split " + c)
+        t.check(f"split {c}: GNU's message and status 1", out == msg and rc == 1, str((out, rc)))
+    out, rc = st("split -a 300 -l 1 f")
+    t.check("a suffix of 300 letters is a name too long", out == "split: File name too long" and rc == 1, str((out, rc)))
+    long_add, long_pre = "A" * 190, "p" * 20
+    out, rc = st(f"split -l 1 -a 60 --additional-suffix={long_add} f {long_pre}")
+    t.check("a name that is too long only with the additional suffix is too long as well", out == "split: File name too long" and rc == 1, str((out, rc)))
+    # pieces that end where the read of 4096 bytes ends, and files that are many reads long
+    run("seq 1000000 1001023 > big")                       # 1024 lines of 8 bytes
+    run("split -l 512 big")
+    out, rc = st("cat xab | wc -c")
+    t.check("a piece ends exactly where a read of the input ends", out.strip() == "4096" and st("cat xaa xab | cmp - big") == ("", 0), str((out, rc)))
+    run("seq 1 5000 > b2")                                 # 23893 bytes
+    run("split -b 1000 b2 z")
+    t.check("a file many reads long is cut in the right places and put together again", st("cat z* | cmp - b2") == ("", 0) and st("cat zax | wc -c")[0].strip() == "893", str(st("cat zax | wc -c")))
+    # GNU 9.4 reads past the end of the hex digits for a FROM with a letter (a is followed by 0e); here the count goes on in hex
+    run("split -l 1 --hex-suffixes=a f p")
+    out, rc = st("cat p0a p0b p0f p10 p15")
+    t.check("a hex FROM with a letter counts on through the digits", out.split() == ["1", "2", "6", "7", "12"] and rc == 0, str((out, rc)))
+    out, rc = st("ls p* | wc -l")
+    t.check("and makes as many pieces as there are lines", out.strip() == "12" and rc == 0, str((out, rc)))
+    run("cd ..")
+    run("rm -r spl")                         # the tests after this one count the files and directories of the root
+
+
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is
     checked against GNU grep by tests/test_regex.c) with its output and

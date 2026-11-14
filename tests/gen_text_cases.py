@@ -1226,6 +1226,97 @@ case("cal 13 abc | cat", "cal abc abc | cat", "cal 13 0 | cat", "cal abc 0 | cat
 case("cal -3 2026 | cat", "cal -1 2026 | cat", "cal -3 abc | cat", "cal -1 abc | cat", "cal -y abc | cat", "cal -3 13 2026 | cat", "cal -3 0 | cat", "cal -1 10000 | cat",
      "cal -3 mar 0 | cat", "cal -3 13 0 | cat", "cal -y 13 2026 | cat", "cal -y 3 0 | cat", "cal -y 0 | cat", "cal -y mar | cat", "cal -1 0 | cat", "cal -y 3 abc | cat")
 
+# ---------------------------------------------------------------- split
+# (the numbers of the options and the names of the files are checked one by one against
+# GNU in tests/test_spcore.c; these are the program: what goes into the pieces, the
+# order of the options, the messages. Pieces are listed with echo and a wildcard (no ls: it has
+# its own layout) and read with head, which names each file. A usage error is status 1 for GNU and 2 here, so those cases
+# end in | cat. Options only GNU has are in qemu_test.py.)
+LS = "echo * | tr ' ' '\\n'"
+PIECES = "head -n 100 x*"
+S25 = "seq 1 25 > f"
+case(S25, "split f", LS, PIECES)
+case(S25, "split -l 10 f", LS, PIECES, "wc -l x* | sed 's/^ *//' | tr -s ' '")
+case(S25, "split -l 5 f", LS, "wc -l x* | sed 's/^ *//' | tr -s ' '", "cat x* | cmp - f")
+case(S25, "split -l 25 f", LS, "split -l 26 f pz", "echo pz* | tr ' ' '\\n'", "split -l 24 f py", "wc -l py* | sed 's/^ *//' | tr -s ' '", "split -l 1000 f pw", "wc -l pw* | sed 's/^ *//' | tr -s ' '")
+case("seq 1 3 > f", "split -l 1 f", LS, PIECES, "split -l 2 f q", "head -n 100 q*")
+case(S25, "split --lines=7 f", "wc -l x* | sed 's/^ *//' | tr -s ' '", "split --lines 8 f a", "wc -l a* | sed 's/^ *//' | tr -s ' '", "split -l7 f b", "wc -l b* | sed 's/^ *//' | tr -s ' '", "split -l 007 f c", "wc -l c* | sed 's/^ *//' | tr -s ' '", "split -l +9 f d", "wc -l d* | sed 's/^ *//' | tr -s ' '",
+     "split -l ' 6' f e", "wc -l e* | sed 's/^ *//' | tr -s ' '", "split --lines=11 f g", "wc -l g* | sed 's/^ *//' | tr -s ' '", "split --lines=5 f h", "echo h* | tr ' ' '\\n'")
+case(S25, "split -5 f", "wc -l x* | sed 's/^ *//' | tr -s ' '", "split -12 f a", "wc -l a* | sed 's/^ *//' | tr -s ' '", "split -3 f b", "echo b* | tr ' ' '\\n'", "split -1 -2 f c", "wc -l c* | sed 's/^ *//' | tr -s ' '", "split -5 -5 f d", "wc -l d* | sed 's/^ *//' | tr -s ' '", "split -007 f e", "wc -l e* | sed 's/^ *//' | tr -s ' '",
+     "split -d5 f g", "wc -l g* | sed 's/^ *//' | tr -s ' '", "split -x3 f h", "echo h* | tr ' ' '\\n'", "split -1x2 f i", "wc -l i* | sed 's/^ *//' | tr -s ' '")
+case(S25, "split -1 -d -2 f", "wc -l x* | sed 's/^ *//' | tr -s ' '", "split -123456789012345678901 f p", "wc -l p* | sed 's/^ *//' | tr -s ' '", "split -3 -- f q", "echo q* | tr ' ' '\\n'", "split -l 5 -- f r", "echo r* | tr ' ' '\\n'")
+case(S25, "cat f | split -l 10", LS, PIECES, "cat f | split -l 10 - pre", "echo pre* | tr ' ' '\\n'", "split -l 10 - pr < f", "echo pr* | tr ' ' '\\n'")
+case(S25, "mkdir sub", "split -l 10 f sub/", "echo sub/* | tr ' ' '\\n'", "split -l 10 f sub/p", "echo sub/* | tr ' ' '\\n'", "split -l 10 f ./q", "echo * | tr ' ' '\\n'", "split -l 10 f -", "echo * | tr ' ' '\\n'")
+case("echo -n > e", "split e", LS, "split -l 3 e", "split -b 3 e", "split -d e", LS, "echo -n | split", LS)
+case("echo -n -e '1\\n2\\n3' > g", "split -l 2 g", LS, PIECES, "wc -c xaa xab | sed 's/^ *//' | tr -s ' '", "split -l 1 g q", "wc -c q* | sed 's/^ *//' | tr -s ' '", "split -l 3 g r", "wc -c r* | sed 's/^ *//' | tr -s ' '", "split -l 4 g s", "wc -c s* | sed 's/^ *//' | tr -s ' '")
+case("echo -e '\\n\\n\\n\\n\\n' > g", "split -l 2 g", LS, "wc -c x* | sed 's/^ *//' | tr -s ' '", "echo -n -e '\\n\\n\\n' > h", "split -l 1 h q", "wc -c q* | sed 's/^ *//' | tr -s ' '")
+case("echo -n -e 'a\\0b\\nc\\0d\\ne\\n' > g", "split -l 1 g", "od -c xaa", "od -c xab", "od -c xac", "split -l 2 g q", "od -c qaa", "od -c qab")
+case("echo -n -e 'a\\r\\nb\\r\\nc\\n' > g", "split -l 2 g", "od -c xaa", "od -c xab")
+# bytes
+B26 = "echo -n abcdefghijklmnopqrstuvwxyz > f"
+case(B26, "split -b 5 f", LS, PIECES, "split -b 13 f a", "head -n 100 a*", "split -b 26 f b", "head -n 100 b*", "split -b 27 f c", "head -n 100 c*", "split -b 1 f d", "echo d* | tr ' ' '\\n'", "head -n 100 da* | head -n 8")
+case(B26, "split --bytes=5 f", "wc -c x* | sed 's/^ *//' | tr -s ' '", "split --bytes 6 f a", "wc -c a* | sed 's/^ *//' | tr -s ' '", "split -b5 f b", "wc -c b* | sed 's/^ *//' | tr -s ' '", "split -b 007 f c", "wc -c c* | sed 's/^ *//' | tr -s ' '", "split -b +9 f d", "wc -c d* | sed 's/^ *//' | tr -s ' '", "split -b ' 4' f e", "wc -c e* | sed 's/^ *//' | tr -s ' '",
+     "split --by=12 f g", "wc -c g* | sed 's/^ *//' | tr -s ' '", "split --bytes=5 -- f h", "echo h* | tr ' ' '\\n'")
+case(B26, "split -b 1K f", "wc -c x* | sed 's/^ *//' | tr -s ' '", "split -b 1b f a", "wc -c a* | sed 's/^ *//' | tr -s ' '", "split -b K f b", "wc -c b* | sed 's/^ *//' | tr -s ' '", "split -b 1k f c", "wc -c c* | sed 's/^ *//' | tr -s ' '", "split -b 1KB f d", "wc -c d* | sed 's/^ *//' | tr -s ' '", "split -b 1KiB f e", "wc -c e* | sed 's/^ *//' | tr -s ' '",
+     "split -b 1M f g", "wc -c g* | sed 's/^ *//' | tr -s ' '", "split -b 1G f h", "wc -c h* | sed 's/^ *//' | tr -s ' '", "split -b 1MB f i", "wc -c i* | sed 's/^ *//' | tr -s ' '", "split -b M f j", "wc -c j* | sed 's/^ *//' | tr -s ' '", "split -b b f k", "wc -c k* | sed 's/^ *//' | tr -s ' '", "split -b KB f l", "wc -c l* | sed 's/^ *//' | tr -s ' '",
+     "split -b 4Q f m", "wc -c m* | sed 's/^ *//' | tr -s ' '", "split -b 18446744073709551615 f n", "wc -c n* | sed 's/^ *//' | tr -s ' '", "split -b 99999999999999999999 f o", "wc -c o* | sed 's/^ *//' | tr -s ' '", "split -b 1QiB f p", "wc -c p* | sed 's/^ *//' | tr -s ' '")
+case("seq 1 10 > f", "split -b 7 f", PIECES, "split -b 3 f q", "head -n 100 q*", "split -b 20 f r", "wc -c r* | sed 's/^ *//' | tr -s ' '")
+case("yes abcdefg | head -c 10000 > big", "split -b 4096 big", "wc -c x* | sed 's/^ *//' | tr -s ' '", "cat x* | cmp - big", "split -b 4095 big a", "wc -c a* | sed 's/^ *//' | tr -s ' '", "split -b 4097 big b", "wc -c b* | sed 's/^ *//' | tr -s ' '", "split -b 1000 big c", "echo c* | tr ' ' '\\n'",
+     "cat c* | cmp - big", "split -b 3333 big d", "wc -c d* | sed 's/^ *//' | tr -s ' '", "cat d* | cmp - big")
+case("yes abcdefg | head -n 2500 > big", "split big", "wc -l x* | sed 's/^ *//' | tr -s ' '", "cat x* | cmp - big", "split -l 999 big a", "wc -l a* | sed 's/^ *//' | tr -s ' '", "seq 1 60 > s", "split -l 1 s zz", "echo zz* | tr ' ' '\\n' | wc -l", "cat zz* | cmp - s",
+     "split -l 500 big c", "wc -l c* | sed 's/^ *//' | tr -s ' '", "split -l 4096 big d", "wc -l d* | sed 's/^ *//' | tr -s ' '")
+# the names
+case("seq 1 26 > f", "split -l 1 -a 1 f", LS, "split -l 1 -a 3 f a", "echo a* | tr ' ' '\\n' | head -n 3", "split -l 1 -a 0 f b", "echo b* | tr ' ' '\\n' | head -n 3", "split -l 1 -a +3 f c", "echo c* | tr ' ' '\\n' | head -n 2", "split -l 1 -a 03 f d",
+     "echo d* | tr ' ' '\\n' | head -n 2", "split -l 1 --suffix-length=4 f e", "echo e* | tr ' ' '\\n' | head -n 2", "split -l 1 --suffix-length 2 f g", "echo g* | tr ' ' '\\n' | head -n 2", "split -l 1 -a2 f h", "echo h* | tr ' ' '\\n' | head -n 2")
+case("seq 1 30 > f", "?split -l 1 -a 1 f", LS, "?split -l 1 -a 1 f q", "echo q* | tr ' ' '\\n' | wc -l", "?split -l 1 -d -a 1 f d", "echo d* | tr ' ' '\\n'", "?split -l 1 -x -a 1 f h", "echo h* | tr ' ' '\\n' | wc -l")
+case("seq 1 26 > f", "split -l 1 -a 1 f", "ls | wc -l", "seq 1 10 > g", "split -l 1 -d -a 1 g d", "echo d* | tr ' ' '\\n' | wc -l", "seq 1 16 > h", "split -l 1 -x -a 1 h q", "echo q* | tr ' ' '\\n' | wc -l")
+case("seq 1 660 > f", "split -l 1 f", "ls | wc -l", "cat xaa xab xyz", "cat xzaaa xzaaj", "?cat xzaak", "?cat xzaaz", "?cat xzaba", "?cat xzzzzz")
+case("seq 1 30 > f", "split -l 1 -d f", "echo x* | tr ' ' '\\n' | head -n 3", "echo x* | tr ' ' '\\n' | tail -n 2", "split -l 1 -x f a", "echo a* | tr ' ' '\\n' | head -n 12", "echo a* | tr ' ' '\\n' | tail -n 2", "split -l 1 --numeric-suffixes f b", "echo b* | tr ' ' '\\n' | tail -n 2",
+     "split -l 1 --hex-suffixes f c", "echo c* | tr ' ' '\\n' | tail -n 2", "split -l 1 -d -a 3 f d", "echo d* | tr ' ' '\\n' | head -n 2", "split -l 1 -x -a 3 f e", "echo e* | tr ' ' '\\n' | tail -n 2")
+case("seq 1 20 > f", "split -l 1 -d -x f", "echo x* | tr ' ' '\\n' | tail -n 6", "split -l 1 -x -d f a", "echo a* | tr ' ' '\\n' | tail -n 6", "split -l 1 --hex-suffixes --numeric-suffixes f b", "echo b* | tr ' ' '\\n' | tail -n 3",
+     "split -l 1 --numeric-suffixes --hex-suffixes f c", "echo c* | tr ' ' '\\n' | tail -n 3")
+case("seq 1 100 > f", "split -l 1 -d f", "cat x88 x89 x9000 x9001 x9009", "?cat x9010", "ls | wc -l", "split -l 1 -x f a", "cat a09 a0a a0f a10 a63", "ls | wc -l")
+case("seq 1 12 > f", "split -l 1 --numeric-suffixes=5 f", "echo x* | tr ' ' '\\n'", "split -l 1 --numeric-suffixes=08 f a", "echo a* | tr ' ' '\\n'", "split -l 1 -d --numeric-suffixes=005 -a 3 f b", "echo b* | tr ' ' '\\n' | head -n 3",
+     "split -l 1 --numeric-suffixes=0 f c", "echo c* | tr ' ' '\\n' | head -n 2", "split -l 1 --numeric-suffixes=0 -a 0 f d", "echo d* | tr ' ' '\\n' | head -n 2", "split -l 1 --numeric-suffixes= f e", "echo e* | tr ' ' '\\n' | head -n 2",
+     "split -l 1 --numeric-suffixes=7 -a 4 f g", "echo g* | tr ' ' '\\n' | head -n 2", "split -l 1 --numeric-s=3 f h", "echo h* | tr ' ' '\\n' | head -n 2")
+case("seq 1 12 > f", "split -l 1 --hex-suffixes=5 f", "echo x* | tr ' ' '\\n'", "split -l 1 --hex-suffixes=09 f a", "echo a* | tr ' ' '\\n'", "split -l 1 -x --hex-suffixes=009 -a 3 f b", "echo b* | tr ' ' '\\n' | head -n 3",
+     "split -l 1 --hex-suffixes=0 f c", "echo c* | tr ' ' '\\n' | head -n 2", "split -l 1 --hex-suffixes=099 -a 3 f d", "echo d* | tr ' ' '\\n' | head -n 2", "split -l 1 --hex-suffixes= f e", "echo e* | tr ' ' '\\n' | head -n 2",
+     "split -l 1 --hex-suffixes=19 f g", "echo g* | tr ' ' '\\n' | head -n 1", "split -l 1 --hex-su=1 f h", "echo h* | tr ' ' '\\n' | head -n 2")
+case("seq 1 30 > f", "?split -l 1 --numeric-suffixes=85 f", "echo x* | tr ' ' '\\n'", "?split -l 1 --numeric-suffixes=95 f p", "echo p* | tr ' ' '\\n'", "?split -l 1 --numeric-suffixes=95 -a 0 f q", "echo q* | tr ' ' '\\n'",
+     "?split -l 1 -d --numeric-suffixes=95 f r", "echo r* | tr ' ' '\\n'", "?split -l 1 --hex-suffixes=95 f s", "echo s* | tr ' ' '\\n' | wc -l")
+case("seq 1 5 > f", "split -l 1 --additional-suffix=.txt f", LS, "split -l 1 --additional-suffix .log f a", "echo a* | tr ' ' '\\n'", "split -l 1 --additional-suffix= f b", "echo b* | tr ' ' '\\n' | head -n 2",
+     "split -l 1 -d --additional-suffix=.d f c", "echo c* | tr ' ' '\\n' | head -n 2", "split -l 1 --additional-suffix=.q -a 3 f d", "echo d* | tr ' ' '\\n' | head -n 2", "split -l 1 --add=.z f e", "echo e* | tr ' ' '\\n' | head -n 2",
+     "split -l 1 --additional-suffix=-x f g", "echo g* | tr ' ' '\\n' | head -n 2", "cat xaa.txt")
+case("seq 1 25 > f", "split -l 10 --verbose f", "split -l 10 --verbose f pre", "split -l 10 -d --verbose f d", "split --verbose -b 20 f b", "split -l 10 --verb --additional-suffix=.z f z", "split --verb - < f | wc -l",
+     "echo -n > e", "split --verbose e", "split --verbose -l 100 f big")
+# options mixed with operands, long options by prefix
+case(S25, "split f -l 10", LS, "split f p -l 10", "echo p* | tr ' ' '\\n'", "split -l 10 f p -a 3", "echo p* | tr ' ' '\\n' | head -n 2", "split f -d p", "echo p* | tr ' ' '\\n' | head -n 2", "split -d f q -l 7", "wc -l q* | sed 's/^ *//' | tr -s ' '")
+case(S25, "split --lines 10 f", "ls | wc -l", "split --lines=10 --suffix-length=3 f p", "echo p* | tr ' ' '\\n' | head -n 2", "split --by=40 --suffix-length 3 f q", "echo q* | tr ' ' '\\n' | head -n 2", "split --b=50 --ad=.t --a=1 --verb f r")
+# numbers that are no good
+case(S25, "?split -l 0 f", "?split -l x f", "?split -l -1 f", "?split -l 1K f", "?split -l '' f", "?split -l 1 f -", "?split -l 0x10 f", "?split -l 1e3 f", "?split -l ' 5 ' f", "?split -l 5k f",
+     "?split -l 1.5 f", "?split --lines=0 f", "?split --lines=abc f", "?split -l 00 f", "?split -l + f", "?split -l - f", LS)
+case(S25, "?split -b 0 f", "?split -b x f", "?split -b -1 f", "?split -b 1c f", "?split -b '' f", "?split -b 1w f", "?split -b 1g f", "?split -b B f", "?split -b Ki f", "?split -b KK f", "?split -b 1bB f",
+     "?split -b '1K ' f", "?split -b 0K f", "?split -b 0b f", "?split --bytes=0 f", "?split --bytes=abc f", "?split -b 0x10 f", "?split -b iB f", "?split -b 1KiBx f", "?split -b ' K' f", "?split -b +K f", LS)
+case(S25, "?split -0 f", "?split -00 f", "?split -l5d f", "?split -a x f", "?split -a -1 f", "?split -a 5x f", "?split -a '' f", "?split -a 1k f", "?split -a -5x f", "?split -a 99999999999999999999 f",
+     "?split -a -99999999999999999999 f", "?split --suffix-length=x f", "?split -a -2000000000 f", LS)
+case(S25, "?split -l 5 -l 5 f | cat", "?split -l 5 -b 5 f | cat", "?split -b 5 -l 5 f | cat", "?split -5 -l 3 f | cat", "?split -l 3 -5 f | cat", "?split -b5 -3 f | cat", "?split -3 -b5 f | cat",
+     "?split -5l 3 f | cat", "?split --lines=3 --bytes=3 f | cat", LS)
+case(S25, "?split -z f | cat", "?split --foo f | cat", "?split -l | cat", "?split --lines | cat", "?split -b | cat", "?split -a | cat", "?split --verbose=1 f | cat", "?split --additional-suffix | cat",
+     "?split --help=1 | cat", "?split -ld 5 f | cat", "?split -dz f | cat", "?split --q f | cat", "?split --l 5 f | cat", "?split --lin 5 f | cat", "?split --n f | cat", "?split --nu f | cat",
+     "?split --h | cat", "?split --s f | cat", "?split --v f | cat", "?split --e f | cat", "?split --su f | cat", "?split --numeric-suffixes=1 --foo | cat")
+case(S25, "?split f p x | cat", "?split f p x y | cat", "?split -l 3 f p x | cat", "?split -- f p x | cat", "?split f p -- x | cat", LS)
+case(S25, "?split --additional-suffix=a/b f | cat", "?split --additional-suffix=/ f | cat", "?split --additional-suffix=a/ f | cat", "?split -l 3 --additional-suffix ./x f | cat", LS)
+case(S25, "?split --numeric-suffixes=100 f | cat", "?split --numeric-suffixes=x f | cat", "?split --numeric-suffixes=+5 f | cat", "?split --numeric-suffixes=' 5' f | cat", "?split --numeric-suffixes='5 ' f | cat",
+     "?split --numeric-suffixes=0x5 f | cat", "?split --numeric-suffixes=-1 f | cat", "?split --numeric-suffixes=1e2 f | cat", "?split --numeric-suffixes=5a f | cat",
+     "?split --numeric-suffixes=ff f | cat", "?split --numeric-suffixes=99999999999999999999 f | cat", "?split -a 3 --numeric-suffixes=1000 f | cat", "?split -a 1 --numeric-suffixes=10 f | cat", LS)
+case(S25, "?split --hex-suffixes=100 f | cat", "?split --hex-suffixes=x f | cat", "?split --hex-suffixes=+5 f | cat", "?split --hex-suffixes=F f | cat", "?split --hex-suffixes=0F f | cat",
+     "?split --hex-suffixes=0x5 f | cat", "?split --hex-suffixes=1g f | cat", "?split -a 3 --hex-suffixes=1000 f | cat", "?split -a 1 --hex-suffixes=10 f | cat", "?split --hex-suffixes=-1 f | cat",
+     "?split -d --hex-suffixes=ff f | cat", "?split -x --numeric-suffixes=ff f | cat", "?split --numeric-suffixes=5 -x f p", "echo p* | tr ' ' '\\n' | head -n 2", LS)
+# files
+case(S25, "?split nosuch", "?split -l 2 nosuch pre", "mkdir d", "?split d", "?split -l 2 d pre", "?split f nodir/x", "?split f d/x", "echo d/* | tr ' ' '\\n'", "?split --numeric-suffixes 5 f", LS)
+case("seq 1 30 > xaa", "?split -l 10 xaa", "echo * | tr ' ' '\\n'", "seq 1 30 > f", "split -l 10 f", "echo * | tr ' ' '\\n'", "?split -l 10 xab", "cat xaa | head -n 2", "?split -l 10 xab pre", "echo * | tr ' ' '\\n'", "?split -l 10 f xa", "echo * | tr ' ' '\\n'")
+case(S25, "split -l 10 f", "split -l 3 f", "wc -l x* | sed 's/^ *//' | tr -s ' '", "split -b 20 f", "wc -c x* | sed 's/^ *//' | tr -s ' '")
+
 
 def run_all():
     out, bad = [], []

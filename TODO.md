@@ -61,13 +61,6 @@ README says which, under "Programs on the disk"), found by the Makefile on
 its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
-**split** (`text/`). Cuts a big file into numbered pieces that `cat`
-puts back together. `split [-l N | -b SIZE] [-a LEN] [-d]
-[--additional-suffix=S] [FILE [PREFIX]]`: pieces `xaa`, `xab` and on
-(`x00` with `-d`), 1000 lines each by default; `-b` takes GNU's `K M`
-suffixes. Running out of suffixes is GNU's error. In the cases, check
-the pieces with `ls` and `cat x*`.
-
 **join** (`text/`). Puts together the lines of two sorted files that
 share a key, like looking things up in a table. `join [-i] [-t C] [-1 F]
 [-2 F] [-j F] [-a 1|2] [-v 1|2] [-e STR] [-o LIST|auto] [--check-order |
