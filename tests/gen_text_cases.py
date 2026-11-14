@@ -1118,6 +1118,40 @@ case("mkdir dir", "mkdir dir/sub", mk("dir/f1", 192), mk("dir/sub/f2", 1344), mk
      "du -a dir | grep /f | sort", "du -ah dir | grep /f | sort", "du -a dir/ | grep /f | sort", "du -a dir/sub | grep /f | sort",
      "du dir/sub/f2 dir/f1", "du -a | grep /f | sort", "du -a . | grep /f | sort", "du -ah ./dir | grep /f | sort")
 
+# ---------------------------------------------------------------- printf
+# (the directives, the numbers and the escapes are checked one by one against GNU in
+# tests/test_pfcore.c; these are the program: the arguments reaching the format,
+# standard output and standard error in order, the statuses. The program is GNU's
+# printf, run as printf by name. %q and the floating point conversions are not
+# in RingTail's printf: they are in qemu_test.py.)
+case("printf 'hello\\n'", "printf hello", "printf '%s\\n' abc", "printf '%s\\n' 'two words' three", "printf '[%s]\\n'", "printf '[%d]\\n'", "printf '[%c]\\n' | od -c",
+     "printf '%s %s\\n' a b c d e", "printf '%%\\n'", "printf '100%%\\n' x y", "printf 'a\\tb\\\\c\\n'", "printf '%s\\n' 'a\\tb'", "printf '%b\\n' 'a\\tb\\\\c'")
+case("printf '%d\\n' 1 -2 +3 0x1f 010 0b101 0XFF -0x10", "printf '%i|%u\\n' 5 7 -5 -7", "printf '%x %X %o\\n' 255 255 8 3054 3054 64", "printf '%#x %#X %#o\\n' 255 255 8", "printf '%#x|%#o\\n' 0 0",
+     "printf '%d\\n' 9223372036854775807 -9223372036854775808", "printf '%u\\n' 18446744073709551615 -1", "printf '%x\\n' -1", "printf '%d\\n' ''", "printf '%d %d\\n' 1")
+case("printf '[%5d]\\n' 42", "printf '[%-5d]\\n' 42", "printf '[%05d]\\n' 42 -42", "printf '[%+d]\\n' 42 -42 0", "printf '[% d]\\n' 42 -42", "printf '[%.5d]\\n' 42 -42", "printf '[%8.5d]\\n' 42 -42",
+     "printf '[%-8.5d]\\n' 42", "printf '[%08.5d]\\n' 42", "printf '[%.0d]\\n' 0 1", "printf '[%+.0d]\\n' 0", "printf '[%#8x]\\n' 255", "printf '[%#08x]\\n' 255", "printf '[%-#8o]\\n' 8")
+case("printf '[%s]\\n' abc", "printf '[%8s]\\n' abc", "printf '[%-8s]\\n' abc", "printf '[%.2s]\\n' abc", "printf '[%8.2s]\\n' abc", "printf '[%-8.2s]\\n' abc", "printf '[%.0s]\\n' abc", "printf '[%.s]\\n' abc",
+     "printf '[%c]\\n' abc", "printf '[%5c]\\n' abc", "printf '[%-5c]\\n' abc", "printf '[%c%c%c]\\n' a b c", "printf '[%5s]\\n' ''")
+case("printf '[%*d]\\n' 6 42", "printf '[%*d]\\n' -6 42", "printf '[%-*d]\\n' 6 42", "printf '[%.*d]\\n' 5 42", "printf '[%.*d]\\n' -5 42", "printf '[%*.*d]\\n' 8 5 42", "printf '[%*s]\\n' 6 ab", "printf '[%.*s]\\n' 1 abc",
+     "printf '[%*s]\\n' 3", "printf '[%*.*s]\\n' 6 2 abcdef")
+case("printf 'a\\x41b\\n'", "printf '\\x41\\x4a\\x4A\\n'", "printf '\\101\\60\\0601\\n'", "printf 'a\\0b' | od -c", "printf '\\e[0m' | od -c", "printf '\\a\\b\\f\\r\\v' | od -c", "printf 'one\\ntwo\\n'", "printf '\\\"q\\\"\\n'",
+     "printf '\\q\\z\\n'", "printf 'x\\cy\\n'", "printf 'x\\n\\cy'", "printf '%s\\cn\\n' abc def", "printf '\\u00e9\\n' | od -c", "printf '\\u0041\\U00000042\\n'", "printf '\\u20ac\\U0001F600\\n' | od -c")
+case("printf '%b\\n' 'a\\nb'", "printf '%b\\n' 'a\\0101b'", "printf '%b\\n' 'a\\101b'", "printf '%b\\n' 'a\\x41b'", "printf '%b|%b\\n' 'x\\cy' z", "printf '%b\\n' '\\\\' 'a\\tb' | od -c", "?printf '%5b|\\n' ab", "printf '%s\\n' 'a\\nb'",
+     "printf '%b' 'a\\0b' | od -c", "printf '%b\\n' 'tab\\there' '\\e[1m' | od -c")
+case("printf '%d\\n' \"'A\"", "printf '%d\\n' '\"A'", "printf '%d %d\\n' \"'a\" \"'ab\"", "printf '%x\\n' \"'a\"", "?printf '%d\\n' \"'\"", "printf '%c\\n' 65", "printf '%s\\n' \"'a\"")
+case("?printf '%d\\n' abc", "?printf '%d %d\\n' 1 2x 3", "?printf '%d\\n' 12abc", "?printf '%d\\n' 99999999999999999999", "?printf '%u\\n' 99999999999999999999", "?printf '%x\\n' -99999999999999999999",
+     "?printf '%d\\n' 0x", "?printf '%d\\n' 08", "?printf '%d\\n' ' 5'", "?printf '%d\\n' '5 '", "?printf '%d\\n' 1 abc 3")
+case("printf '%d\\n' \"'ab\"", "printf '%s\\n' a", "?printf '%d\\n' 'x'", "printf '%d%%\\n' 5", "printf '%s\\n'", "printf 'x%sy%sz\\n' 1", "printf '%s-%s\\n' a b c", "printf '%s\\n' a b c", "printf '\\n' extra", "printf 'no directive' a b c d",
+     "printf '%s,' a b c | od -c", "printf '%d %s\\n' 1 a 2 b 3")
+case("?printf '%y\\n' 1", "?printf 'a%'", "?printf '%'", "?printf '%5'", "?printf '%-'", "?printf '%l\\n' 1", "?printf '%hhd\\n' 5", "?printf '%ld|%lld|%jd|%zd|%td\\n' 1 2 3 4 5", "?printf '%+s\\n' a", "?printf '%#s\\n' a", "?printf '%0s\\n' a",
+     "?printf '%.3c\\n' a", "?printf '%0c\\n' a", "?printf '%#d\\n' 1", "?printf '%+x\\n' 1", "?printf '%-5%\\n'", "?printf '%5b\\n' a")
+case("?printf '\\x\\n'", "?printf '\\xg\\n'", "?printf 'a\\u12\\n'", "?printf '\\ud800\\n'", "?printf '\\uD800\\n'", "?printf '%b\\n' '\\x'", "?printf '%b\\n' '\\u12'", "printf 'ok\\n' x",
+     "?printf '%d\\n' x", "?printf '%d\\n' x 7", "?printf '%s %d\\n' a b c", "?printf '%y %d\\n' 1 2")
+case("?printf '[%*d]\\n' abc 5", "?printf '[%.*d]\\n' abc 5", "?printf '[%*d]\\n' 99999999999 5", "?printf '[%.*d]\\n' 99999999999 5", "?printf '[%*d]\\n' 2147483648 5", "?printf '[%*d]\\n' -2147483648 5", "?printf '[%*d]\\n' 2147483647 5",
+     "?printf '[%2147483647d]\\n' 5", "?printf '[%2147483648d]\\n' 5", "?printf '[%.2147483647d]\\n' 5", "?printf '[%.2147483648d]\\n' 5", "?printf '[%*.0s]\\n' -2147483648 abc",
+     "?printf 'a\\n[%2147483647s]\\nz\\n' x", "?printf 'a\\n[%2147483647s]\\nz\\c' x")
+case("?printf -- '%s\\n' a b", "?printf -- -", "?printf -- --", "?printf -- '-%s\\n' a", "?printf '-%s\\n' a b", "?printf -n", "?printf -e", "?printf '--%s\\n' a", "?printf -- -- a", "?printf '%s\\n' -- a --")
+
 # -------------------------------------------------------------- cal
 # The oracle is BSD's cal (Debian's ncal package), not util-linux's: the
 # layout, the Julian calendar up to September 1752 and the argument rules
@@ -1205,6 +1239,12 @@ def run_all():
             # du: GNU's numbers are for what a file holds, not for clusters; the
             # cases use files whose sizes come out the same (see the du section)
             pre = 'du() { command du --apparent-size "$@"; }; ' if re.search(r"(^|[ |;])du ", c) else ""
+            # printf and sha256: bash's own printf is a builtin, and GNU's sha256sum is
+            # not named sha256; exec -a gives the messages the name RingTail's tools use
+            if re.search(r"(^|[ |;(])printf( |$)", c.lstrip("?")):
+                pre += 'printf() ( exec -a printf /usr/bin/printf "$@" ); '
+            if re.search(r"(^|[ |;(])sha256( |$)", c.lstrip("?")):
+                pre += 'sha256() ( exec -a sha256 /usr/bin/sha256sum "$@" ); '
             p = subprocess.run(["bash", "-c", pre + c.lstrip("?")], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, env=dict(os.environ, LC_ALL="C"))
             if p.returncode and not may_fail:
                 bad.append(f"{c!r}: {p.stdout.decode('latin-1').strip()!r}")

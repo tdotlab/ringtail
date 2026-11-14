@@ -12,3 +12,4 @@ tests/test_sig
 tests/test_x509
 tests/test_b64
 tests/test_shasum
+tests/test_pfcore

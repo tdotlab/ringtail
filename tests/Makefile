@@ -3,7 +3,8 @@
 # that read bytes off the wire), the TCP engine (run against a
 # simulated network), the regular-expression engine grep uses (run
 # against GNU grep's answers), diff's core (against GNU diff's), base64's (against GNU base64's), the checksum-list
-# parser of sha256 -c (against GNU sha256sum's), the
+# parser of sha256 -c (against GNU sha256sum's), the core of printf (against
+# GNU printf's), the
 # cryptography (against the RFCs' and Project Wycheproof's vectors) and
 # the TLS client (against recorded conversations with a scripted
 # server and with OpenSSL), under the address and undefined-behaviour
@@ -28,6 +29,8 @@ B64_SRCS = test_b64.c ../src/programs/lib/b64.c
 
 SHASUM_SRCS = test_shasum.c ../src/programs/lib/shasum.c
 
+PFCORE_SRCS = test_pfcore.c ../src/programs/lib/pfcore.c
+
 # The cryptography is built -O2, as it is for the OS: the sanitizers
 # then check the code that ships, and the tests take seconds.
 CRYPTO_LIB = ../src/lib/sha256.c ../src/lib/chacha20.c ../src/programs/lib/chachapoly.c ../src/programs/lib/x25519.c ../src/programs/lib/aesgcm.c
@@ -43,7 +46,7 @@ SIG_LIB = ../src/programs/lib/sig.c ../src/programs/lib/sha512.c ../src/lib/sha2
 SIG_HDRS = ../src/programs/lib/sig.h ../src/programs/lib/sha512.h ../src/programs/lib/der.h
 X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 
-HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_crypto test_tls test_sig test_x509
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore test_crypto test_tls test_sig test_x509
 
 all: $(HOST_TESTS)
 
@@ -68,6 +71,9 @@ test_b64: $(B64_SRCS) ../src/programs/lib/b64.h b64_cases.h
 test_shasum: $(SHASUM_SRCS) ../src/programs/lib/shasum.h shasum_cases.h
 	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(SHASUM_SRCS)
 
+test_pfcore: $(PFCORE_SRCS) ../src/programs/lib/pfcore.h pfcore_cases.h
+	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(PFCORE_SRCS)
+
 test_crypto: test_crypto.c $(CRYPTO_LIB) $(CRYPTO_HDRS) crypto_cases.h
 	$(CC) $(CRYPTO_CFLAGS) -o $@ test_crypto.c $(CRYPTO_LIB)
 
@@ -88,6 +94,7 @@ run: $(HOST_TESTS)
 	./test_diff
 	./test_b64
 	./test_shasum
+	./test_pfcore
 	./test_crypto
 	./test_tls
 	./test_sig

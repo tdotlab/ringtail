@@ -2756,6 +2756,39 @@ def gnu_text_tests(m, t):
     run("rmdir shd")
 
 
+    # ---- v0.33.0: printf: what GNU's cannot show (usage errors, the options it has and has not, %q and the floating point conversions, which RingTail's does not do) ----
+    usage = "usage: printf FORMAT [ARG...]"
+    out, rc = st("printf")
+    t.check("printf with no operand: the message and the usage, status 2", out == "printf: missing operand\n" + usage and rc == 2, (out, rc))
+    out, rc = st("printf --")
+    t.check("and with only -- as well", out == "printf: missing operand\n" + usage and rc == 2, (out, rc))
+    out, rc = st("printf --help")
+    t.check("--help alone writes the usage, status 0", out == usage and rc == 0, (out, rc))
+    out, rc = st("printf --help x")
+    t.check("--help with another argument is a format", out == "--helpprintf: warning: ignoring excess arguments, starting with 'x'" and rc == 0, (out, rc))
+    out, rc = st("printf --version")
+    t.check("there is no --version: it is a format too", out == "--version" and rc == 0, (out, rc))
+    out, rc = st("printf -- '%s\\n' a")
+    t.check("-- ends the options, and only the first one", out == "a" and rc == 0, (out, rc))
+    out, rc = st("printf -- -- a")
+    t.check("a second -- is the format", out == "--printf: warning: ignoring excess arguments, starting with 'a'" and rc == 0, (out, rc))
+    out, rc = st("printf '%q\\n' a")
+    t.check("%q is said not to be there, status 1", out == "printf: %q: not supported" and rc == 1, (out, rc))
+    for conv in "aAeEfFgG":
+        out, rc = st(f"printf 'x%{conv}y\\n' 1")
+        t.check(f"%{conv} is said not to be there, status 1, after what came before it", out == f"xprintf: %{conv}: floating point is not supported" and rc == 1, (out, rc))
+    out, rc = st("printf 'x%8.3fy' 1")
+    t.check("a floating point directive is shown whole", out == "xprintf: %8.3f: floating point is not supported" and rc == 1, (out, rc))
+    out, rc = st("printf 'a%sb\\n' 1 2")
+    t.check("a good run is status 0", out == "a1b\na2b" and rc == 0, (out, rc))
+    out, rc = st("printf '%d\\n' 1 x")
+    t.check("a bad number is said, the run goes on, status 1", out == "1\nprintf: 'x': expected a numeric value\n0" and rc == 1, (out, rc))
+    out, rc = st("printf 'a\\cb\\n' | od -c | head -n 1")
+    t.check("\\c stops the format and the status stays 0", out.split() == ["0000000", "a"], out)
+    out, rc = st("printf '[%2147483647s]\\n' x")
+    t.check("a conversion too big to write is a write error at the end, status 1", out == "[]\nprintf: write error" and rc == 1, (out, rc))
+
+
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is
     checked against GNU grep by tests/test_regex.c) with its output and

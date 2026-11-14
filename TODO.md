@@ -61,17 +61,6 @@ README says which, under "Programs on the disk"), found by the Makefile on
 its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
-**printf** (`util/`). Prints exactly what you ask for, with no newline
-unless you put one, and lines up columns. `printf FORMAT [ARG...]`: `%s
-%b %c %d %i %u %o %x %X %%`, the flags `- + space # 0`, width and
-precision (`*` too), the escapes `echo -e` takes, and the format used
-again while arguments are left, as GNU does. Numbers are 64-bit, as
-GNU's; an argument that is not a number gives GNU's message and status 1,
-and the printing goes on. `'c` as a number is the character's code. For
-`%f %e %g`, check whether the library printf has floating point; if not,
-refuse them with a message and say so in the Limits, rather than write a
-float formatter here. It matters more once the shell has scripts.
-
 **split** (`text/`). Cuts a big file into numbered pieces that `cat`
 puts back together. `split [-l N | -b SIZE] [-a LEN] [-d]
 [--additional-suffix=S] [FILE [PREFIX]]`: pieces `xaa`, `xab` and on
