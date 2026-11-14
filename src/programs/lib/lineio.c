@@ -80,6 +80,10 @@ void lio_line_add(lio_line_t* l, const char* p, uint32_t n, const char* prog) {
 void lio_line_addc(lio_line_t* l, char c, const char* prog) { lio_line_add(l, &c, 1, prog); }
 
 int lio_getline(lio_in_t* in, lio_out_t* flush_first, lio_line_t* l) {
+    return lio_getline_delim(in, flush_first, l, '\n');
+}
+
+int lio_getline_delim(lio_in_t* in, lio_out_t* flush_first, lio_line_t* l, char delim) {
     l->n = 0;
     l->had_nl = 0;
     int any = 0;
@@ -93,7 +97,7 @@ int lio_getline(lio_in_t* in, lio_out_t* flush_first, lio_line_t* l) {
         const char* start = in->buf + in->pos;
         const char* end = in->buf + in->len;
         const char* p = start;
-        while (p < end && *p != '\n') p++;
+        while (p < end && *p != delim) p++;
         lio_line_add(l, start, (uint32_t)(p - start), flush_first ? flush_first->prog : "input");
         in->pos += (int)(p - start);
         if (p < end) {

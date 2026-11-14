@@ -2854,6 +2854,70 @@ def gnu_text_tests(m, t):
     run("cd ..")
     run("rm -r spl")                         # the tests after this one count the files and directories of the root
 
+    # ---- v0.34.0: join: what GNU's cannot show (usage errors are status 2 here, --version is not here, and the quoting of names in messages) ----
+    try_line = "Try 'join --help' for more information."
+    run("mkdir jn")
+    run("cd jn")
+    run("echo -e 'a 1\\nb 2' > f1")
+    run("echo -e 'a x\\nc y' > f2")
+    out, rc = st("join --version f1 f2")
+    t.check("join --version: not here, said so, status 2", out == "join: option '--version' is not supported" and rc == 2, str((out, rc)))
+    out, rc = st("join --help")
+    t.check("join --help writes the usage, status 0", out.startswith("usage: join [OPTION]... FILE1 FILE2\n") and rc == 0, str((out, rc)))
+    for c, msg in (("--foo f1 f2", "join: unrecognized option '--foo'"),
+                   ("-x f1 f2", "join: invalid option -- 'x'"),
+                   ("--he f1 f2", "join: option '--he' is ambiguous; possibilities: '--header' '--help'"),
+                   ("--header=1 f1 f2", "join: option '--header' doesn't allow an argument"),
+                   ("-e", "join: option requires an argument -- 'e'"),
+                   ("", "join: missing operand"),
+                   ("f1", "join: missing operand after 'f1'"),
+                   ("f1 f2 f1", "join: extra operand 'f1'"),
+                   ("f1 f2 'x y'", "join: extra operand 'x y'"),
+                   ("f1 f2 \"a'b\"", "join: extra operand \"a'b\"")):
+        out, rc = st("join " + c)
+        t.check(f"join {c}: said so, and the Try line, status 2", out == msg + "\n" + try_line and rc == 2, str((out, rc)))
+    for c, msg in (("-a f1 f2", "join: invalid field number: 'f1'"),
+                   ("-a 3 f1 f2", "join: invalid field number: '3'"),
+                   ("-1 0 f1 f2", "join: invalid field number: '0'"),
+                   ("-t ab f1 f2", "join: multi-character tab 'ab'"),
+                   ("-o 3.1 f1 f2", "join: invalid file number in field spec: '3.1'"),
+                   ("-o 1.x f1 f2", "join: invalid field number: 'x'"),
+                   ("-t a -t b f1 f2", "join: incompatible tabs"),
+                   ("-e a -e b f1 f2", "join: conflicting empty-field replacement strings"),
+                   ("f1 nosuch", "join: nosuch: no such file or directory"),
+                   ("'a b' f1", "join: 'a b': no such file or directory"),
+                   ("\"a'b\" f1", "join: \"a'b\": no such file or directory"),
+                   ("f1 .", "join: read error: is a directory")):
+        out, rc = st("join " + c)
+        t.check(f"join {c}: GNU's message and status 1", out == msg and rc == 1, str((out, rc)))
+    out, rc = st("echo a | join - -")
+    t.check("join will not read standard input twice", out == "join: both files cannot be standard input" and rc == 1, str((out, rc)))
+    run("echo -e 'b\\na' > u2")
+    out, rc = st("join --check-order u2 f1")
+    t.check("--check-order stops at the line out of order", out == "join: u2:2: is not sorted: a" and rc == 1, str((out, rc)))
+    out, rc = st("join --nocheck-order u2 f1")
+    t.check("--nocheck-order does not", out == "b 2" and rc == 0, str((out, rc)))
+    # NULs
+    run("echo -n -e 'a 1\\0b 2\\0' > z1")
+    out, rc = st("join -z z1 z1 | od -c | head -n 1")
+    t.check("-z ends the lines with a NUL and cuts them at NULs", out.split() == ["0000000", "a", "1", "1", "\\0", "b", "2", "2", "\\0"] and rc == 0, str((out, rc)))
+    # many lines, and a group that is a cross product
+    run("seq 1000000 1006000 > ja")
+    run("seq 1000000 2 1006000 > jb")
+    for c, n in (("join ja jb", "3001"), ("join -v1 ja jb", "3000"), ("join -a1 ja jb", "6001"), ("join -v2 ja jb", "0"), ("join -a1 -a2 -o 0 ja jb", "6001")):
+        out, rc = st(c + " | wc -l")
+        t.check(f"{c}: {n} lines", out.strip() == n and rc == 0, str((out, rc)))
+    run("yes a | head -n 100 > ya")
+    out, rc = st("join ya ya | wc -l")
+    t.check("a hundred lines on a key against a hundred is ten thousand lines", out.strip() == "10000" and rc == 0, str((out, rc)))
+    # a line longer than the read buffer
+    run("seq 1 1000 | tr '\\n' ' ' > plong")
+    n = int(run("wc -c plong").split()[0])
+    out, rc = st("join -t '' plong plong | wc -c")
+    t.check("a line longer than its buffer is one field with -t ''", out.strip() == str(n + 1) and rc == 0, str((out, rc)))
+    run("cd ..")
+    run("rm -r jn")                          # the tests after this one count the files and directories of the root
+
 
 def grepwc_tests(m, t):
     """v0.24.8: grep on real regular expressions (the engine itself is

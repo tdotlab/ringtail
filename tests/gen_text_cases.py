@@ -1317,6 +1317,116 @@ case(S25, "?split nosuch", "?split -l 2 nosuch pre", "mkdir d", "?split d", "?sp
 case("seq 1 30 > xaa", "?split -l 10 xaa", "echo * | tr ' ' '\\n'", "seq 1 30 > f", "split -l 10 f", "echo * | tr ' ' '\\n'", "?split -l 10 xab", "cat xaa | head -n 2", "?split -l 10 xab pre", "echo * | tr ' ' '\\n'", "?split -l 10 f xa", "echo * | tr ' ' '\\n'")
 case(S25, "split -l 10 f", "split -l 3 f", "wc -l x* | sed 's/^ *//' | tr -s ' '", "split -b 20 f", "wc -c x* | sed 's/^ *//' | tr -s ' '")
 
+# ---------------------------------------------------------------- join
+# (field numbers, -o items, the cutting of lines and the comparing of keys are checked one by one
+# against GNU in tests/test_jncore.c; these are the program: the pairing, the unpaired lines, the
+# order of the output, the option order tricks, the order check, the messages. A usage error is
+# status 1 for GNU and 2 here, so those cases end in | cat. --help and --version are in
+# qemu_test.py. A file name with a NUL cannot be typed, and -z output is read through tr.)
+JA = "echo -e 'a 1\\nb 2\\nc 3\\nd 4' > f1"
+JB = "echo -e 'a x\\nc y\\ne z' > f2"
+case(JA, JB, "join f1 f2", "join f2 f1", "join -a 1 f1 f2", "join -a 2 f1 f2", "join -a 1 -a 2 f1 f2", "join -a1 -a2 f1 f2", "join -v 1 f1 f2", "join -v 2 f1 f2", "join -v1 -v2 f1 f2", "join -v 1 -a 2 f1 f2",
+     "join -a 2 -v 1 f1 f2", "join -v2 -a1 f1 f2")
+case(JA, JB, "join -e X -a 1 -a 2 f1 f2", "join -e X -o 0,1.2,2.2 -a 1 -a 2 f1 f2", "join -o 2.2,0,1.2 f1 f2", "join -o 0 f1 f2", "join -o 1.1 f1 f2", "join -o 2.1,2.1,1.2,1.2 f1 f2",
+     "join -o 1.1,1.2,1.3,2.5 f1 f2", "join -e '' -o 1.1,1.2,1.3 -a1 f1 f2", "join -e - -o 1.3,0 -a1 -a2 f1 f2", "join -o '1.2 2.2' f1 f2", "join -o 1.2,2.2 -o 0 f1 f2")
+case(JA, JB, "join -o 1.2 2.2 f1 f2", "join -o 1.2 f1 f2", "join -o 1.2 -a 1 f1 f2", "join f1 -o 1.2 f2", "join f1 f2 -o 1.2", "join f1 -o 1.2 2.2 f2", "join -o 0 -o 1.2 f1 f2", "join -o 1.2,0 2.2 f1 f2",
+     "join -a 1 f1 -o 1.2 f2", "join -o 2.1 -j 1 f1 f2")
+case(JA, JB, "join -o auto f1 f2", "join -o auto -a1 -a2 f1 f2", "join -o auto -e X -a1 -a2 f1 f2", "echo -e 'a 1 2 3\\nb 5' > g1", "echo -e 'a x\\nb y z' > g2", "join -o auto g1 g2", "join -o auto -e - -a1 -a2 g1 g2",
+     "join -o auto g2 g1", "join -o auto -e - -a1 -a2 g2 g1", "join g1 g2", "join -e - g1 g2", "join -a1 -e - g1 g2", "join -o auto -o 0 g1 g2", "join -o 1.2 -o auto g1 g2")
+case("echo -e 'a 1 2 3' > g1", "echo -e 'a x y' > g2", "echo -n > e", "join -o auto g1 e", "join -o auto -a1 g1 e", "join -o auto -a1 -e X g1 e", "join -o auto -a2 -e X g1 e", "join -o auto -a2 -e X e g2",
+     "join -o auto -a1 -a2 -e X e e", "join -a1 -a2 e e", "join -a1 -a2 g1 e", "join -a1 -a2 e g2", "join -v1 g1 e", "join -v2 e g2", "join g1 e", "join e g2", "join e e")
+# keys in other places
+case("echo -e '1 a\\n2 b\\n3 c' > f1", "echo -e 'x 1\\ny 2\\nz 4' > f2", "join -1 1 -2 2 f1 f2", "join -1 2 -2 1 f1 f2", "join -2 2 f1 f2", "join -1 1 -2 2 -a 1 -a 2 f1 f2", "join -j 1 f1 f2", "join -j 2 f1 f2", "join -j1 2 f1 f2", "join -j2 2 f1 f2",
+     "join -2 2 -a1 f1 f2", "join -j 3 f1 f2", "join -j 3 -a 1 f1 f2", "join -j 3 -a 1 -a 2 -e X f1 f2", "join -o 0,1.1,2.1 -2 2 f1 f2", "join -1 3 -2 3 f1 f2", "join -v 1 -1 2 -2 1 f1 f2", "join -1 2 -2 2 f1 f2")
+case("echo -e 'a b c\\nd e f' > g1", "echo -e 'x b z\\ny e w' > g2", "join -j 2 g1 g2", "join -j2 2 g1 g2", "join -j1 2 g1 g2", "join -j1 g1 g2", "join -j2 g1 g2", "join -j1 -- g1 g2", "join -j 1 -j 1 g1 g2", "join -1 2 -2 2 -j 2 g1 g2",
+     "join -j 2 -1 2 g1 g2", "join -j 2 -2 2 g1 g2", "join -j1 2 -j 2 g1 g2", "join -j 2 -j1 2 g1 g2", "join -j1 2 -j2 2 g1 g2", "join -ij 2 g1 g2", "?join -ij2 2 g1 g2 | cat", "?join -jj g1 g2", "?join -j1x g1 g2", "join g1 -j1 2 g2", "?join g1 g2 -j1 2 | cat")
+# groups: every line with the same key pairs with every line of the other file
+case("echo -e 'a 1\\na 2\\nb 3\\nb 4\\nb 5\\nc 6' > f1", "echo -e 'a x\\na y\\nb z\\nd w' > f2", "join f1 f2", "join -a 1 f1 f2", "join -a 2 f1 f2", "join -a1 -a2 f1 f2", "join -v 1 f1 f2", "join -v 2 f1 f2", "join f2 f1", "join -o 1.2,2.2 f1 f2",
+     "join -v1 -v2 f1 f2", "join -e - -a1 -a2 -o 0,1.2,2.2 f1 f2")
+case("echo -e 'a 1\\na 2\\na 3' > f1", "echo -e 'a x\\na y\\na z' > f2", "join f1 f2", "join f1 f2 | wc -l", "join -v1 f1 f2", "join -a1 -a2 f1 f2 | wc -l", "join f1 f1", "join -o 1.2,2.2 f1 f2 | sort | uniq -c | sed 's/^ *//'")
+case("echo -e 'a 1\\na 2' > f1", "echo -e 'a x' > f2", "join f1 f2", "join f2 f1", "join -a1 f1 f2", "join -a2 f1 f2", "echo -e 'a 1\\nb 2\\nb 3' > f3", "echo -e 'b x\\nb y\\nc z' > f4", "join f3 f4", "join -a1 -a2 f3 f4", "join f4 f3", "join -v1 f3 f4", "join -v2 f3 f4")
+# blanks
+case("echo -e 'a  b\\t c' > f1", "echo -e '  a x\\t\\ty' > f2", "join f1 f2", "join -o 0,1.2,1.3,2.2,2.3 f1 f2", "echo -e 'a b  ' > h1", "echo -e 'a c ' > h2", "join h1 h2", "join -o 0,1.2,1.3,2.2,2.3 -e - h1 h2", "join -a1 -a2 -e - h1 h2",
+     "echo -e ' \\t ' > b1", "echo -e 'a b' > b2", "join b1 b2", "join -a1 -a2 b1 b2", "join -a1 -a2 -e - b1 b2", "join -j 2 b2 b2", "join -j 2 -o 0,1.1,2.1 b2 b2", "join -j 3 b2 b2", "join -j 3 -o 0,1.1,2.1 -e - b2 b2")
+case("echo -e 'a\\nb\\n\\nc' > f1", "echo -e 'a\\n\\nc\\nd' > f2", "?join f1 f2", "?join -a1 -a2 f1 f2", "?join -a1 -a2 -e - f1 f2", "join --nocheck-order -a1 -a2 f1 f2", "?join -v1 -v2 f1 f2", "?join --check-order f1 f2")
+case("echo -e '\\n\\n' > f1", "echo -e 'a\\n\\n' > f2", "?join f1 f2", "?join -a1 f1 f2", "?join -a1 -e - f1 f2", "?join -a1 -a2 -e - f1 f2", "?join -v1 f1 f2", "?join -v2 f1 f2", "?join -j 2 f1 f2", "?join -j 2 -a 1 -e - f1 f2")
+# -t
+case("echo -e 'a:1:x\\nb:2:y\\nc::z' > f1", "echo -e 'a:p\\nc:q\\nd:r' > f2", "join -t : f1 f2", "join -t: f1 f2", "join -t ':' -a1 -a2 f1 f2", "join -t : -o 0,1.2,1.3,2.2 -a1 -a2 -e - f1 f2", "?join -t : -1 2 -2 1 f1 f2", "join -t : -j 3 f1 f2",
+     "?join -t : -j 2 -a 1 f1 f2", "?join -t : -j 2 -a 1 -e '?' f1 f2", "join -t ':' -t ':' f1 f2", "join -t : -o auto -a1 -a2 -e - f1 f2", "join -t , f1 f2", "join -t , -a1 -a2 f1 f2", "join -t ' ' f1 f2", "join -t = -a1 f1 f2")
+case("echo -e 'a b:1\\nc d:2' > f1", "echo -e 'a b:x\\nc  d:y\\ne:z' > f2", "join -t : f1 f2", "join -t : -a1 -a2 f1 f2", "join -t ' ' f1 f2", "join -t ' ' -a1 -a2 f1 f2", "join f1 f2", "join -t a f1 f2")
+case("echo -e 'a\\tb\\tc\\nd\\te\\tf' > f1", "echo -e 'a\\tq\\nd\\tr\\tw' > f2", "join f1 f2", "join -j 2 f1 f2", "join -j 2 -a1 -a2 f1 f2 | od -c | head -n 5")
+case("echo -e 'a b\\nc d e\\nc d f\\nx' > f1", "echo -e 'a b\\nc d e\\nz' > f2", "join -t '' f1 f2", "join -t '' -a1 -a2 f1 f2", "join -t '' -v1 -v2 f1 f2", "join -t '' -o 0 f1 f2", "join -t '' -o 1.1,2.1 f1 f2", "join -t '' -o 1.2 -e - f1 f2",
+     "join -t '' -a1 -e X -o 1.2 f1 f2", "join -t '' -j 2 f1 f2", "join -t '' -j 2 -a1 -a2 f1 f2", "join -t '' -o auto f1 f2", "join -t '' -i f1 f2", "join -t '' --nocheck-order -a1 -a2 f1 f2")
+case("echo -e 'a\\0b\\0c' > f1", "echo -e 'a\\0x\\0y' > f2", "join -t '\\0' f1 f2 | od -c", "join -t '\\0' -a1 -a2 -j 2 f1 f2 | od -c", "join -t '\\0' -o 0,1.3,2.3 f1 f2 | od -c", "join -t '\\0' -t '\\0' f1 f2 | od -c", "?join -t '\\0' -t ' ' f1 f2", "?join -t '\\0' -t '' f1 f2")
+case("echo -e 'a,b' > f1", "?join -t ab f1 f1", "?join -t '' -t ' ' f1 f1", "?join -t ' ' -t '' f1 f1", "?join -t '\\t' f1 f1", "?join -t '\\\\0' f1 f1", "?join -t '\\1' f1 f1", "?join -t '\\00' f1 f1", "join -t , f1 f1", "?join -t , -t , -t , f1 f1", "?join -t , -t ';' f1 f1")
+# -i
+case("echo -e 'a 1\\nB 2\\nc 3\\nD 4' > f1", "echo -e 'A x\\nb y\\nC z\\nE w' > f2", "join -i f1 f2", "?join f1 f2", "join -i -a1 -a2 f1 f2", "join --ignore-case f1 f2", "join --ignore f1 f2", "join --i -a1 f1 f2", "join -i -o 0,1.1,2.1 f1 f2",
+     "join -ia1 -a2 f1 f2", "join -ii f1 f2", "join -i -v1 f1 f2", "echo -e 'Z 1\\n_ 2\\na 3' > f5", "echo -e 'A 1\\nz 2' > f6", "join -i --nocheck-order f5 f6", "join --nocheck-order f5 f6")
+# --header
+case("echo -e 'k v1\\na 1\\nb 2\\nc 3' > f1", "echo -e 'k v2\\na x\\nc y\\ne z' > f2", "join --header f1 f2", "join --header -a1 f1 f2", "join --header -a1 -a2 f1 f2", "join --header -v1 f1 f2", "join --header -o 0,1.2,2.2 f1 f2", "join f1 f2", "join --head f1 f2",
+     "join --header -o auto f1 f2", "join --header -j 2 f1 f2", "join --header -t ' ' f1 f2", "join --header --check-order f1 f2")
+case("echo -e 'h1 h2\\nb 2\\na 1' > f1", "echo -e 'x y\\na 1\\nb 2' > f2", "?join --header f1 f2", "?join --header --check-order f1 f2", "join --header --nocheck-order f1 f2", "?join --header --check-order f1 f2")
+case("echo -e 'k v1\\na 1' > f1", "echo -n > e", "join --header f1 e", "join --header e f1", "join --header e e", "join --header -a1 f1 e", "join --header -a2 e f1", "join --header -v1 f1 e", "join --header -v2 e f1", "join --header -o auto f1 e",
+     "echo -e 'only' > f3", "join --header f3 f1", "join --header f1 f3", "join --header -a1 -a2 f3 f1", "join --header -a1 -a2 f1 f3", "join --header f3 f3", "join --header -o 1.1,2.1 f3 f1", "join --header -j 2 f3 f1", "join -a1 -a2 --header e f3")
+# the order check
+case("echo -e 'b 1\\na 2\\nc 3\\nd 4' > f1", "echo -e 'a x\\nc y\\ne z' > f2", "?join f1 f2", "?join --check-order f1 f2", "join --nocheck-order f1 f2", "?join -a1 f1 f2", "?join -v1 f1 f2", "?join -a1 -a2 f2 f1", "?join f2 f1", "?join -i f1 f2")
+case("echo -e 'a 1\\nc 2\\nb 3\\nd 4\\nz 9\\ny 8' > f1", "echo -e 'a x\\nb y\\nc z\\nd w\\nz q' > f2", "?join f1 f2", "?join --check-order f1 f2", "?join -a1 f1 f2", "?join -v1 f1 f2", "join --nocheck-order f1 f2", "?join f2 f1", "?join -v 1 f2 f1")
+case("echo -e 'a 1\\nb 2\\nz 3\\nc 4\\nd 5' > f1", "echo -e 'a x\\nb y' > f2", "?join f1 f2", "?join --check-order f1 f2", "?join -a1 f1 f2", "join --nocheck-order -a1 f1 f2", "?join f2 f1", "?join -a2 f2 f1", "?join -v2 f2 f1")
+case("echo -e 'a 1\\nb 2\\nz 3\\nc 4\\nd 5' > f1", "echo -e 'a x\\nb y' > f2", "echo -e 'a x\\nb y\\nq q' > f3", "?join f1 f3", "?join -a1 f1 f3", "?join f3 f1", "?join -v1 f3 f1")
+case("echo -e 'a 1\\nb 2' > f1", "echo -e 'a x\\nc y\\nb z\\nd w\\ne v\\nd u' > f2", "?join f1 f2", "?join -a2 f1 f2", "?join --check-order f1 f2", "?join -a1 -a2 f1 f2", "?join f2 f1", "?join -a1 f2 f1", "?join -v1 f2 f1", "?join -v2 f2 f1")
+case("echo -e 'c 1\\nb 2\\na 3' > f1", "echo -e 'c x\\nb y\\na z' > f2", "?join f1 f2", "?join --check-order f1 f2", "?join -a1 f1 f2", "join --nocheck-order f1 f2", "?join -i f1 f2", "?join -v1 -v2 f1 f2")
+case("echo -e 'a 1\\nb 2\\nc 3\\nz 4\\ny 5\\nx 6' > f1", "echo -e 'a 1\\nb 2\\nc 3\\nz 4\\ny 5\\nx 6' > f2", "?join f1 f2", "?join -a1 f1 f2", "?join --check-order f1 f2", "join --nocheck-order f1 f2", "echo -e 'b 1\\na 2' > f3", "echo -e 'a 1\\nb 2' > f4", "?join f3 f4", "?join -a1 f3 f4", "?join -a2 f3 f4", "?join -v2 f3 f4")
+case("echo -e 'a 1\\nB 2\\nc 3' > f1", "echo -e 'a 1\\nB 2\\nc 3' > f2", "join f1 f2", "?join -i f1 f2", "join -i --nocheck-order f1 f2", "echo -e 'a 1\\nb 2\\nc 3' > f3", "join -i f1 f3", "?join f1 f3")
+case("echo -e 'a 3\\nb 2\\nc 1' > f1", "echo -e 'a 3\\nb 2\\nc 1' > f2", "join -1 2 -2 2 f1 f2", "?join -1 2 -2 2 -a1 f1 f2", "?join -j 2 -v1 f1 f2", "?join -j 2 -a1 -a2 f1 f2", "?join -j 2 --check-order f1 f2", "join -j 2 --nocheck-order f1 f2", "join f1 f2")
+# input from standard input, files without a final newline, ends
+case(JA, JB, "cat f1 | join - f2", "cat f2 | join f1 -", "join - f2 < f1", "join f1 - < f2", "?join - - < f1", "?join - - | cat", "cat f1 | join -a1 -e Z -o 0,1.2,2.2 - f2", "?join f1 f2 - | cat", "?join - f1 f2 | cat")
+case("echo -n -e 'a 1\\nb 2' > f1", "echo -n -e 'a x\\nb y' > f2", "echo -n 'a 1' > f3", "echo -n 'a' > f4", "join f1 f2", "join -a1 f1 f2", "join f3 f4", "join f3 f3", "join -a1 -a2 f4 f3", "join -o 1.2 f3 f4", "join -o 0,1.1,1.2,2.1 -e - f3 f4", "cat f1 | join -a 2 - f2")
+case("echo -n -e 'a 1\\nb' > f1", "echo -n -e 'a\\nb 2' > f2", "join f1 f2", "join -a1 -a2 f1 f2", "join -o auto f1 f2", "join -o auto -e - -a1 -a2 f1 f2")
+case("echo -e 'a 1' > f1", "echo -e 'a 2' > f2", "echo -e 'a 3' > f3", "?join f1 f2 f3 | cat", "?join f1 f2 f3 f4 | cat", "?join -a 1 f1 f2 f3 | cat", "?join f1 | cat", "?join | cat", "?join -a 1 | cat", "?join -a1 f1 | cat", "?join f1 -a1 | cat",
+     "?join f1 -a 1 | cat", "?join f1 f2 f3 -- f4 | cat", "?join -- f1 f2 f3 | cat", "?join -- f1 | cat", "?join f1 -- f2 | cat", "join -- f1 f2", "join f1 -- f2", "?join -a 1 -- f1 | cat", "?join -o 1.1 f1 | cat", "?join -j1 f1 | cat")
+case("echo -e 'a 1' > f1", "?join -x f1 f1 | cat", "?join -a | cat", "?join f1 f1 -a | cat", "?join -ax f1 f1 | cat", "?join --foo f1 f1 | cat", "?join --foo=1 f1 f1 | cat", "?join --h f1 f1 | cat", "?join --he f1 f1 | cat", "?join --header=1 f1 f1 | cat",
+     "?join --nocheck-order=1 f1 f1 | cat", "?join --c f1 f1", "?join --n f1 f1", "?join --z f1 f1 | od -c", "?join --zero f1 f1 | od -c", "?join --check f1 f1", "?join --nocheck f1 f1", "?join --ignore-c f1 f1", "?join --i f1 f1",
+     "?join -zz f1 f1 | od -c", "?join -iz f1 f1 | od -c", "?join - | cat", "?join -- | cat", "?join -a1x f1 f1 | cat", "?join -1 | cat", "?join -t | cat", "?join -e | cat", "?join -o | cat", "?join -v | cat", "?join -j | cat", "?join -2 | cat")
+case("echo -e 'a 1' > f1", "?join -1 0 f1 f1", "?join -1 x f1 f1", "?join -2 -1 f1 f1", "?join -2 '' f1 f1", "?join -j 0 f1 f1", "?join -j x f1 f1", "?join -j '' f1 f1", "?join -a 0 f1 f1", "?join -a 3 f1 f1", "?join -a x f1 f1", "?join -a '' f1 f1", "?join -a 1x f1 f1",
+     "?join -v 0 f1 f1", "?join -v 3 f1 f1", "?join -v '' f1 f1", "?join -1 1 -1 2 f1 f1", "?join -2 3 -2 4 f1 f1", "?join -j 1 -j 2 f1 f1", "?join -1 2 -j 1 f1 f1", "?join -j 2 -2 3 f1 f1", "?join -1 2 -2 2 -j 3 f1 f1", "?join -e x -e y f1 f1", "join -e x -e x f1 f1",
+     "?join -e '' -e x f1 f1", "?join -e x -e '' f1 f1", "join -e '' -e '' f1 f1", "?join -1 99999999999999999999 -2 1 f1 f1", "?join -1 9223372036854775807 -j 1 f1 f1", "?join -j 99999999999999999999 f1 f1", "?join -j 99999999999999999999 -1 99999999999999999998 f1 f1",
+     "join -j 99999999999999999999 f1 f1", "join -a1 -a2 -j 99999999999999999999 -e - f1 f1", "?join -1 -5 f1 f1", "join -1 +1 -2 ' 1' f1 f1", "?join -1 '1 ' f1 f1", "join -1 01 f1 f1", "?join -1 1.0 f1 f1")
+case("echo -e 'a 1' > f1", "?join -o 3.1 f1 f1", "?join -o 1.0 f1 f1", "?join -o 0.1 f1 f1", "?join -o a f1 f1", "?join -o '' f1 f1", "?join -o 1 f1 f1", "?join -o 1. f1 f1", "?join -o 2 f1 f1", "?join -o 0. f1 f1", "?join -o 1.1, f1 f1", "?join -o ,1.1 f1 f1", "?join -o 1.1,,2.1 f1 f1",
+     "?join -o '1.1 ' f1 f1", "?join -o ' 1.1' f1 f1", "?join -o '1.1  2.1' f1 f1", "?join -o 1.x f1 f1", "?join -o 1.1x f1 f1", "?join -o 1.-1 f1 f1", "?join -o 1.+1 f1 f1", "join -o 1.01 f1 f1", "?join -o 12.1 f1 f1", "?join -o 00 f1 f1", "?join -o auto,0 f1 f1", "?join -o Auto f1 f1",
+     "?join -o 1.99999999999999999999 f1 f1", "join -o 1.99999999999999999999 -e - f1 f1", "?join -o 0,1.1,2.99999999999999999999 f1 f1", "?join -o 1.1 f1 f1 -o a", "?join -o 1.1 -o 3 f1 f1", "?join f1 f1 -o 1.1 -o 3", "?join -o 1.1 3.1 f1 f1", "?join -o 1.1 f1 3.1 f1")
+case("echo -e 'a 1' > f1", "?join nosuch f1", "?join f1 nosuch", "?join nosuch nosuch2", "?join nosuch -", "?join - nosuch", "?join -a 1 nosuch f1", "?join '' f1", "?join f1 ''", "mkdir d", "?join d f1", "?join f1 d", "?join d d", "?join d nosuch", "?join nosuch d", "?join - d < f1", "?join d - < f1", "?join d/ f1")
+case("echo -e 'a 1\\nb 2' > f1", "mkdir d", "?join -a1 d f1", "echo -n > e", "?join e d", "?join d e", "?join -a2 e d", "?join --header d f1")
+# options after the files, bundled and attached values
+case(JA, JB, "join f1 f2 -a 1", "join f1 f2 -a1", "join f1 -a1 f2", "join -a1 -a2 -ie X f1 f2", "join -a1 -e- f1 f2", "join -e- -a1 -a2 -o 0,1.2,2.2 f1 f2", "join -a1 -v2 f1 f2", "join -a 1 -a 1 f1 f2", "join -v1 -v1 f1 f2", "join -o0 f1 f2", "join -o 0,1.2 f1 f2", "join -t: f1 f2",
+     "?join -t'' f1 f2", "join -izt: f1 f2 | od -c | head -n 2", "join -1 1 -2 1 f1 f2", "join -11 -21 f1 f2", "join -j1 -- f1 f2", "join -j1 f1 f2", "join -ea f1 f2", "?join -v1v2 f1 f2")
+# -z
+case("echo -n -e 'a 1\\0b 2\\0c 3\\0' > z1", "echo -n -e 'a x\\0c y\\0d z\\0' > z2", "join -z z1 z2 | tr '\\0' '\\n'", "join -z -a1 -a2 z1 z2 | tr '\\0' '\\n'", "join -z -v1 z1 z2 | tr '\\0' '\\n'", "join -z -o 0,2.2 z1 z2 | tr '\\0' '\\n'", "join --zero-terminated z1 z2 | tr '\\0' '\\n'",
+     "join -z z1 z2 | od -c | head -n 3", "join z1 z2 | od -c | head -n 3", "echo -n -e 'a 1\\0b 2' > z3", "join -z z3 z2 | od -c", "join -z -a1 z3 z2 | od -c")
+case("echo -n -e 'a b\\nc\\0d e\\nf\\0' > z1", "echo -n -e 'a b\\nx\\0d e\\ny\\0' > z2", "join -z z1 z2 | od -c", "join -z -t ' ' z1 z2 | od -c", "join -z -t '' z1 z2 | od -c", "join -z -j 2 z1 z2 | od -c", "join -z -j 3 -a1 -e - z1 z2 | od -c", "join -z -o auto z1 z2 | od -c",
+     "echo -n -e 'a\\nb\\0a\\nc\\0' > z3", "join -z -j 2 z3 z3 | od -c", "join -z -o 1.1,1.2,1.3,2.2 -e - z3 z3 | od -c")
+case("echo -n -e 'b 1\\0a 2\\0c 3\\0' > z1", "echo -n -e 'a x\\0c y\\0' > z2", "?join -z z1 z2 | od -c", "?join -z --check-order z1 z2 | od -c", "?join -z -a1 z1 z2 | od -c", "echo -n -e 'a\\nb 1\\0a 2\\0c 3\\0' > z3", "?join -z --check-order z3 z2 | od -c", "?join -z -a1 z3 z2 | od -c",
+     "echo -n -e 'a 1\\nb\\0a 2\\0' > z4", "?join -z -j 2 --check-order z4 z4 | od -c", "echo -e 'b 1\\0a 2\\n' | od -c | head -n 1")
+# bigger files: the buffers
+case("seq -w 1 400 | sed 's/$/ one/' > l1", "seq -w 3 3 400 | sed 's/$/ two/' > l2", "join l1 l2 | wc -l", "join -a1 l1 l2 | wc -l", "join -a2 l1 l2 | wc -l", "join -a1 -a2 l1 l2 | wc -l", "join -v1 l1 l2 | wc -l", "join -v2 l1 l2 | wc -l", "join l1 l2 | tail -n 2", "join -a1 l1 l2 | head -n 4", "join -v1 l1 l2 | tail -n 3",
+     "join l2 l1 | tail -n 2", "join -a1 -a2 l1 l2 | sed -n '399,401p'", "cat l1 | join - l2 | wc -l")
+case("seq 1 300 | sed 's/$/ x/' | sort > l1", "seq 100 2 500 | sed 's/$/ y/' | sort > l2", "join l1 l2 | wc -l", "join l1 l2 | head -n 3", "join -a1 -a2 l1 l2 | wc -l", "join -v1 l1 l2 | wc -l", "join -v2 l1 l2 | tail -n 2", "join -1 2 -2 2 l1 l2 | wc -l")
+case("seq 1 40 | tr '\\n' ' ' > w1", "echo >> w1", "seq 20 60 | tr '\\n' ' ' > w2", "echo >> w2", "join -j 5 w1 w2", "join -j 20 -o 0,1.40,2.1 w1 w2", "join -j 40 w1 w2", "join -j 40 -o 0,1.1,2.1,2.41 -e - w1 w2", "join -a1 -a2 -j 3 -o 0,1.40,2.40 -e - w1 w2", "join -o auto -a1 -a2 w1 w2 | wc -w", "join -a1 w1 w2 | wc -w")
+case("echo 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x' > f1",
+     "cat f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 > f2", "join f1 f2 | wc -l", "join f1 f2 | wc -c", "join -o 1.2,2.2 f2 f2 | wc -l", "join f2 f1 | wc -c")
+
+
+# -o 0 on a line with no partner is the join field of the file it came from
+case("echo -e 'x a\\ny b\\nz d' > f1", "echo -e 'a 1\\nc 2\\nd 3' > f2", "join -1 2 -2 1 -a2 -o 0,2.2,1.1 -e - f1 f2", "join -1 2 -2 1 -a1 -a2 -o 0,2.2,1.1 -e - f1 f2",
+     "join -1 2 -2 1 -v2 -o 0,2.2 f1 f2", "join -1 2 -2 1 -v1 -o 0,1.1 f1 f2", "join -1 2 -2 1 -a2 f1 f2")
+# the order warning prints the line only up to a NUL, as GNU does
+case("echo -n -e 'b 1\\na\\0y 2\\nc 3\\n' > n1", "echo -e 'a 1\\nc 3' > n2", "?join n1 n2", "?join --check-order n1 n2")
+
+# the tail of a file that has no partner left, with different join fields; the shapes -o can take
+case("echo -e 'x a\\ny b\\nz d\\nw e' > f1", "echo -e 'a 1' > f2", "join -1 2 -2 1 -a1 f1 f2", "join -1 2 -2 1 -v1 f1 f2", "join -1 2 -2 1 -a1 -o 0,1.1 -e - f1 f2",
+     "echo -e 'a x\\nb y' > g1", "echo -e 'a 1 2\\nb 3 4' > g2", "join -o 0 1.2 2.2 g1 g2", "?join -o 1.1 g1 g2 2.1 | cat", "?join -o 1.1 g1 2.1 g2 | cat", "join -o 0 -o 2.2 g1 g2", "join -o 1.2 -j 1 g1 g2",
+     "?join -o 1.1 -j 1 2.1 g1 g2 | cat")
+# names that are quoted in messages: a leading ~ or #, an apostrophe, and --=
+case("echo a > f1", "?join '~x' f1", "?join '#x' f1", "?join 'x~' f1", "?join -t \"a'b\" f1 f1", "?join f1 f1 '~a' | cat", "?join f1 f1 'a#b' | cat", "?join --=x f1 f1 | cat", "?join -t 'a\\b' f1 f1")
 
 def run_all():
     out, bad = [], []

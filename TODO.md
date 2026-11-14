@@ -61,13 +61,6 @@ README says which, under "Programs on the disk"), found by the Makefile on
 its own, with GNU-checked cases. The first sentence of each says what it
 is for.
 
-**join** (`text/`). Puts together the lines of two sorted files that
-share a key, like looking things up in a table. `join [-i] [-t C] [-1 F]
-[-2 F] [-j F] [-a 1|2] [-v 1|2] [-e STR] [-o LIST|auto] [--check-order |
---nocheck-order] [--header] FILE1 FILE2`. Fields are split at runs of
-blanks unless `-t`. The order warnings follow the same GNU rules as in
-`comm`: share that code if it can be shared.
-
 **factor** (`util/`). Breaks numbers into their primes. Small, and fun
 to watch. `factor [NUMBER...]`, or numbers from standard input, up to
 2^64-1, printed as GNU does (`12: 2 2 3`). Trial division is far too slow

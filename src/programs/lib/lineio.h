@@ -46,6 +46,9 @@ int lio_getc(lio_in_t* in, lio_out_t* flush_first);
 // after an error, in->err). A last line with no newline is returned with
 // had_nl 0.
 int lio_getline(lio_in_t* in, lio_out_t* flush_first, lio_line_t* l);
+// The same for lines that end in `delim` instead of a newline (had_nl then
+// says the line ended with `delim`).
+int lio_getline_delim(lio_in_t* in, lio_out_t* flush_first, lio_line_t* l, char delim);
 
 // Appends to a line, growing it. Exits when memory runs out.
 void lio_line_add(lio_line_t* l, const char* p, uint32_t n, const char* prog);

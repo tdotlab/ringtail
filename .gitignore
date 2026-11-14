@@ -14,3 +14,4 @@ tests/test_b64
 tests/test_shasum
 tests/test_pfcore
 tests/test_spcore
+tests/test_jncore
