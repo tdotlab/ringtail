@@ -12,8 +12,31 @@ Current version: **v0.28.0 "Time Will Tell"**. See PROGRESS.md for the history.
 
 ![RingTail booting in QEMU: the banner, an address from DHCP, the clock set over the network, then a few commands at the shell](docs/boot.png)
 
-A boot in QEMU, with the clock set by a time server; `run hello` is a program
-read off the FAT16 disk.
+A boot in QEMU. The address, the clock and the ping reply come from a small
+script that plays DHCP, DNS, NTP and a router for the test suite, so none of
+it is the real internet; `run hello` is a program read off the FAT16 disk.
+
+## A look around
+
+![gauge, the system monitor: bars for frames, heap and disk, and a table of the running tasks](docs/gauge.png)
+
+`run gauge` is a live system monitor: physical frames, heap and disk use as
+bars, and every task with its state and memory, refreshed each second.
+
+![Octavo, the text editor, with WELCOME.TXT open](docs/octavo.png)
+
+`run octavo WELCOME.TXT` opens the file that ships on the disk in Octavo, a
+port of the Win32 editor of the same name, with find, replace, undo and
+a status line.
+
+![kenoma, the desktop, with its About window open and the mouse pointer beside it](docs/desktop.png)
+
+`run kenoma` is the desktop: VGA mode 13h, a PS/2 mouse, a launcher with an icon
+for every program and a window you can click. Esc leaves.
+
+These pictures are taken from the real ISO by `tools/screenshots.py`, which
+boots it in QEMU, drives it the way the test suite does and saves what the
+screen shows. After a `make`, `python3 tools/screenshots.py` makes them again.
 
 ## Building and running
 
@@ -379,7 +402,8 @@ src/programs   user programs in folders, their C library (lib/: runtime, malloc,
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
   util         small tools for building command lines: echo, seq, factor, sleep, xargs, cal, hello and the like
-tools          mkdisk.py, the FAT16 image builder
+tools          mkdisk.py, the FAT16 image builder; screenshots.py, which takes the pictures above
+docs           the screenshots
 tests          host unit tests, the QEMU integration suite, test programs
 ```
 
