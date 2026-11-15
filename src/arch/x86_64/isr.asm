@@ -88,6 +88,7 @@ isr_common:
     cld
     mov rdi, rsp            ; regs_t* for the C handler
     call interrupt_dispatch
+isr_return:
     pop r15
     pop r14
     pop r13
@@ -105,6 +106,91 @@ isr_common:
     pop rax
     add rsp, 16             ; vector and error code
     iretq
+
+; The SYSCALL instruction, the usual way in for a system call. It saves
+; the return rip in rcx and rflags in r11, clears the flags in FMASK
+; (IF among them) and jumps here in ring 0, still on the user's stack.
+; The stub parks the user's rsp in the per-CPU block (gdt.c), switches
+; to the task's kernel stack, and builds the same frame an int 0x80
+; would have: so interrupt_dispatch, the scheduler and a kill all work
+; on it unchanged, and it can always leave by iretq.
+;
+; It leaves by SYSRET when it can, which is faster: rcx and r11 come
+; back as the return address and flags, so they are not preserved, and
+; the return address must be a canonical user address. On Intel a
+; SYSRET to a non-canonical one faults in ring 0, on the user's stack
+; (the hole several kernels had in 2012); those returns, and any frame
+; not headed back to user code, take the iretq.
+;
+; Until the stack switch, and again after the last instruction that
+; reads the frame, rsp is the user's. Interrupts are off then, but an
+; NMI or machine check is not stopped by that; they have their own
+; stacks (IST, gdt.c).
+
+CPU_USER_RSP equ 0          ; offsets in cpu_t, gdt.c
+CPU_KSTACK equ 8
+USER_DATA equ 0x1B          ; SEL_USER_DATA and SEL_USER_CODE, kernel.h
+USER_CODE equ 0x23
+FRAME_RIP equ 17*8          ; regs_t offsets, arch/regs.h
+FRAME_CS equ 18*8
+FRAME_RFLAGS equ 19*8
+FRAME_RSP equ 20*8
+
+global syscall_entry
+syscall_entry:
+    swapgs                  ; gs now points at this CPU's block
+    mov [gs:CPU_USER_RSP], rsp
+    mov rsp, [gs:CPU_KSTACK]
+    push USER_DATA          ; ss
+    push qword [gs:CPU_USER_RSP]
+    swapgs                  ; gs is the user's again: nothing after this uses it
+    push r11                ; rflags
+    push USER_CODE          ; cs
+    push rcx                ; rip
+    push 0                  ; error code
+    push 128                ; vector: SYSCALL_VECTOR, the same as int 0x80
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
+    call interrupt_dispatch
+    cli                     ; interrupt_dispatch returns with them off; make sure
+    mov rcx, [rsp + FRAME_RIP]
+    mov r11, rcx
+    shr r11, 47             ; a canonical user address has bits 47-63 clear
+    jnz isr_return
+    cmp qword [rsp + FRAME_CS], USER_CODE
+    jne isr_return
+    mov r11, [rsp + FRAME_RFLAGS]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    add rsp, 8              ; r11: the flags, already loaded
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    add rsp, 8              ; rcx: the return address, already loaded
+    pop rbx
+    pop rax
+    mov rsp, [rsp + FRAME_RSP - 15*8]
+    o64 sysret
 
 section .rodata
 global isr_stub_table

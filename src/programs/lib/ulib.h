@@ -8,13 +8,15 @@
 #include "ringtail/abi.h"
 #include "lib.h"  // string functions, snprintf, strerror, parse_uint
 
-// int 0x80 with the number in rax and the arguments in rdi, rsi and
-// rdx, as for a C call; the result comes back in rax. Arguments and
-// the result are register sized, so a pointer passes whole. The
-// kernel keeps every other register.
+// The syscall instruction, with the number in rax and the arguments in
+// rdi, rsi and rdx, as for a C call; the result comes back in rax.
+// Arguments and the result are register sized, so a pointer passes
+// whole. The CPU itself uses rcx and r11 (the return address and the
+// flags); the kernel keeps every other register. int 0x80 still works
+// the same way, and keeps rcx and r11 too.
 static inline long syscall3(long n, uintptr_t a, uintptr_t b, uintptr_t c) {
     long r;
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory");
+    __asm__ volatile("syscall" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "rcx", "r11", "memory");
     return r;
 }
 #define SC0(n) syscall3((n), 0, 0, 0)

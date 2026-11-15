@@ -18,9 +18,11 @@ static inline int regs_from_user(const regs_t* r) { return (r->cs & 3) == 3; }
 static inline uintptr_t regs_ip(const regs_t* r) { return r->rip; }
 static inline uintptr_t regs_fp(const regs_t* r) { return r->rbp; }
 
-// System calls (int 0x80): the number in rax, arguments in rdi, rsi
+// System calls (the syscall instruction, or int 0x80; isr.asm builds
+// the same frame for both): the number in rax, arguments in rdi, rsi
 // and rdx as for a C call, the result in rax. Every other register
-// comes back as it was.
+// comes back as it was, but for rcx and r11 after a syscall, which the
+// CPU uses for the return address and the flags.
 #define SYSCALL_NR(r)   ((r)->rax)
 #define SYSCALL_ARG0(r) ((r)->rdi)
 #define SYSCALL_ARG1(r) ((r)->rsi)

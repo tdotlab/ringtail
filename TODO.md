@@ -68,6 +68,13 @@ Every task ends the same way, or it is not done:
   come from the top of RAM, above 4 GB on a big machine, so a device
   that can only reach 32-bit addresses needs frames from a low pool,
   which does not exist yet.
+- QEMU's emulation (TCG) clears the direction flag on SYSCALL whatever
+  FMASK says, so no test under it notices if FMASK stops clearing DF;
+  `sysregs` catches it only on the `int 0x80` side (isr_common's `cld`).
+  And a register the kernel happens not to touch on a call's path comes
+  back right even if the exit stub forgets to restore it: getcwd leaves
+  r8 and r10 alone, so `sysregs` catches a missing `pop rsi` but not a
+  missing `pop r10`.
 - `make` does not rebuild objects when compiler flags change. After
   changing `KCFLAGS` (adding `-mcmodel=kernel`, say), delete
   `build/x86_64/k` first, or the link fails with relocations "truncated
@@ -215,13 +222,6 @@ whose address-space code walks one PDPT (`user_pdpt`, PML4 entry 0, so
 512 GB) and the user range inside it. Keep the first page, at least,
 unmapped. Every program is rebuilt anyway, so the link address can move.
 
-**SYSCALL/SYSRET instead of int 0x80.** Faster, and what 64-bit code
-expects. It needs the STAR/LSTAR/FMASK MSRs, a way to find the kernel
-stack on entry (swapgs and a per-CPU block, or a fixed slot while there is
-one CPU), and the check every kernel has to make before SYSRET: a
-non-canonical return address faults in ring 0 on Intel. Keep int 0x80
-working alongside, at least until every program is rebuilt.
-
 **factor on unsigned __int128.** `factorcore.c` builds each 128-bit
 product out of four 32-bit multiplications, because i386 had no 128-bit
 type. On x86_64 gcc has `unsigned __int128`, and one `mulq` gives the
@@ -238,7 +238,13 @@ would also replace VGA text, which UEFI machines may not have.
 APIC and IOAPIC are what SMP needs, and ACPI's tables are how you find
 them. SMP itself is the hard part: per-CPU data, locks that hold across
 CPUs, and a scheduler that knows there is more than one of them. It is
-listed again under Opus below for that reason.
+listed again under Opus below for that reason. What is per-CPU already,
+and so needs one per CPU then: the TSS (rsp0 and the three IST stacks)
+and `cpu_t` in gdt.c, which the SYSCALL entry finds through swapgs and
+KERNEL_GS_BASE. The kernel keeps gs at 0 outside that swapgs pair, so
+nothing else uses it yet; a `this_cpu` for the rest of the kernel
+means swapgs on every entry from ring 3, and the NMI path then has to
+work out which gs it got (Linux's "paranoid" entry).
 
 **AVX.** Programs get x87 and SSE, saved with `fxsave`. AVX needs `xsave`
 and a bigger save area, sized from CPUID.

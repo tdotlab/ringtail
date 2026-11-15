@@ -142,7 +142,9 @@ cases that were missing. It also reads every root in `disk/roots.pem`.
 over a serial socket. It uses `build/x86_64/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
 banner and runs every program, including the ones that are supposed to
-crash. It covers bad pointers handed to syscalls, stack growth and
+crash. It covers bad pointers handed to syscalls, every register
+after a `syscall` and an `int 0x80` (with NMIs arriving meanwhile, from
+the QEMU monitor), stack growth and
 overflow, malloc, Ctrl+C on foreground jobs, background jobs, raw
 terminal mode, ANSI output (read back from VGA memory through the QEMU
 monitor), an editing session in Octavo, file and directory commands,
@@ -232,8 +234,17 @@ alike. Opening `/dev/tty` (`DEV_TTY`) gives the terminal itself, read-only for
 keys or write-only for output, whatever standard input and output are
 redirected to; that is how `more` can wait for a key at the end of a pipe.
 
-System calls: `int 0x80`, with the number in rax, arguments in rdi, rsi
-and rdx (where a C call puts them), and the result in rax. A failed call returns a negative errno.
+System calls: the `syscall` instruction, with the number in rax,
+arguments in rdi, rsi and rdx (where a C call puts them), and the result
+in rax. The CPU uses rcx and r11 for the return address and the flags;
+every other register comes back as it was. `int 0x80` takes the same
+calls and keeps rcx and r11 too; it is about three times slower under
+QEMU's emulation (`sysregs time` measures both). Both build the same frame in the kernel, and a return takes
+`sysret` only when the address is a canonical user one (on Intel a
+`sysret` to any other faults in ring 0, on the user's stack). NMIs,
+double faults and machine checks have stacks of their own, since they
+can arrive in the few instructions where the entry still runs on the
+user's stack; an NMI is counted and logged, not fatal. A failed call returns a negative errno.
 Every user pointer is checked against the caller's page tables before the
 kernel touches it. The numbers and structures are in
 `src/include/ringtail/abi.h`, and the user-side wrappers are in

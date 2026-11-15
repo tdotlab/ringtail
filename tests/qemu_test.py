@@ -276,7 +276,7 @@ def tests(m, t):
     t.check("and the new shell works", "0.28.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
-                 "udptest", "tcptest", "rndtest"]:
+                 "udptest", "tcptest", "rndtest", "sysregs"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")
@@ -377,10 +377,32 @@ def tests(m, t):
     out = m.run("run gfxfault")
     t.check("a fault in graphics mode is reported", "task killed" in out, out)
     t.check("and the screen is back in text mode", m.screen_size() == (720, 400))
+    out = m.run("run sysregs tf")
+    t.check("a syscall with the trap flag set traps in the program, not the kernel",
+            re.search(r"sysregs: debug at rip=4[0-9a-f]{7} - task killed", out) and "PANIC" not in out, out)
     out = m.run("run hello")
     t.check("programs still run after all that", "Hello from disk!" in out, out)
     out = m.run("faults")
     t.check("faults were logged", out.count("): ") >= 4, out)
+
+    # NMIs have a stack of their own (the syscall entry and exit run on
+    # the user's for a few instructions), and are counted, not fatal.
+    # Some land in the program and some in the kernel; every call must
+    # still come back whole.
+    m.send("run sysregs loop 4\r")
+    m.expect(rb"sysregs loop 4\r?\n", 5)
+    start, sent = time.time(), 0
+    while time.time() - start < 3:
+        m.monitor_cmd("nmi")
+        sent += 1
+        time.sleep(0.05)
+    out = m.expect(PROMPT, 15)
+    t.check(f"{sent} NMIs while syscalls run: every register comes back", "sysregs: all" in out and
+            "FAIL" not in out and "PANIC" not in out and "killed" not in out, out)
+    out = m.run("faults")
+    logged = [int(n) for n in re.findall(r"NMI received \((\d+) since boot\), ignored", out)]
+    t.check("they are logged at 1, 2, 4, 8 and on, not one line each",
+            logged and logged == [1 << i for i in range(len(logged))] and logged[-1] * 2 > sent, out)
 
     # Ctrl+C stops the foreground program.
     m.send("run count 30\r")

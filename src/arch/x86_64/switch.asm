@@ -33,22 +33,26 @@ switch_to:                  ; rdi = save_sp, rsi = new_sp
     ret
 
 ; enter_user(ip, sp): drop to ring 3 for the first time. The iretq
-; frame carries the user code and stack selectors and RFLAGS with only
-; IF set, so the program starts with interrupts on and IOPL 0 (no port
-; access). General registers are cleared so no kernel values leak into
-; the program.
+; frame carries the user code and stack selectors (SEL_USER_CODE and
+; SEL_USER_DATA in kernel.h) and RFLAGS with only IF set, so the
+; program starts with interrupts on and IOPL 0 (no port access).
+; General registers are cleared so no kernel values leak into the
+; program.
+USER_DATA equ 0x1B
+USER_CODE equ 0x23
+
 global enter_user
 enter_user:                 ; rdi = ip, rsi = sp
-    mov ax, 0x23
+    mov ax, USER_DATA
     mov ds, ax
     mov es, ax
     xor eax, eax
     mov fs, ax
     mov gs, ax
-    push 0x23               ; SS
+    push USER_DATA          ; SS
     push rsi                ; RSP
     push 0x202              ; RFLAGS
-    push 0x1B               ; CS
+    push USER_CODE          ; CS
     push rdi                ; RIP
     xor ebx, ebx
     xor ecx, ecx

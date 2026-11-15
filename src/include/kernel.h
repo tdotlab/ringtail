@@ -12,8 +12,8 @@
 // Segment selectors, fixed by the GDT layout in gdt.c.
 #define SEL_KERNEL_CODE 0x08
 #define SEL_KERNEL_DATA 0x10
-#define SEL_USER_CODE   0x1B
-#define SEL_USER_DATA   0x23
+#define SEL_USER_DATA   0x1B  // before user code: SYSRET needs it so (gdt.c)
+#define SEL_USER_CODE   0x23
 #define SEL_TSS         0x28
 
 // Boot information, copied out of the multiboot structures before
@@ -39,8 +39,14 @@ extern char _kernel_start[], _ro_start[], _ro_end[], _kernel_end[];
 void panic(const char* fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 
 void gdt_init(void);
-// The kernel stack the CPU switches to on a trap from ring 3.
+// The kernel stack the CPU switches to on a trap or system call from
+// ring 3.
 void tss_set_kstack(uintptr_t top);
+// The TSS's interrupt stacks (gdt.c) and the vectors that use them
+// (cpu.c): traps that can arrive while rsp is not a kernel stack.
+#define IST_NMI 1
+#define IST_DOUBLE_FAULT 2
+#define IST_MACHINE_CHECK 3
 
 // Fault log: the last few fatal events, kept so a fault that happened
 // while the screen was in graphics mode can still be read afterwards.

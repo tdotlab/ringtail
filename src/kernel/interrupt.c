@@ -141,7 +141,28 @@ static void handle_irq(int irq) {
     outb(PIC1_CMD, PIC_EOI);
 }
 
+// NMIs come on a stack of their own (IST) and can interrupt anything,
+// a critical section included, so the handler only counts them; the
+// next ordinary interrupt logs them, when the count reaches a new
+// power of two, so a storm of them cannot push everything else out of
+// the fault log. An NMI on a PC is a hardware error report or a
+// watchdog, neither of them the running program's fault.
+static volatile uint32_t nmis_seen;
+static uint32_t nmis_logged;
+
 void interrupt_dispatch(regs_t* r) {
+    if (r->vector == 2) {
+        nmis_seen++;
+        return;  // no scheduling, no kill: not on this stack
+    }
+    uint32_t nmis = nmis_seen;
+    if ((nmis ^ nmis_logged) > nmis_logged) {  // a higher top bit than at the last log
+        nmis_logged = nmis;
+        faultlog_add("NMI received (%u since boot), ignored", (unsigned)nmis);
+    }
+    // A double fault or machine check, also on their own stacks, ends
+    // the system whichever ring it came from.
+    if (r->vector == 8 || r->vector == 18) kernel_exception(r);
     if (r->vector < 32) {
         if (regs_from_user(r)) user_exception(r);
         else kernel_exception(r);

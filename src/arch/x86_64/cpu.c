@@ -37,10 +37,20 @@ void idt_set_gate(int vec, uintptr_t handler, int dpl) {
 }
 
 void idt_install(void) {
+    // Traps that can arrive with rsp not on a kernel stack get a stack
+    // of their own (gdt.c says when).
+    idt[2].ist = IST_NMI;
+    idt[8].ist = IST_DOUBLE_FAULT;
+    idt[18].ist = IST_MACHINE_CHECK;
     idt_ptr.limit = sizeof(idt) - 1;
     idt_ptr.base = (uintptr_t)&idt;
     idt_load(&idt_ptr);
 }
+
+// The SYSCALL exit in isr.asm reads the frame at these offsets.
+_Static_assert(__builtin_offsetof(regs_t, rip) == 17 * 8 && __builtin_offsetof(regs_t, cs) == 18 * 8 &&
+               __builtin_offsetof(regs_t, rflags) == 19 * 8 && __builtin_offsetof(regs_t, rsp) == 20 * 8 &&
+               sizeof(regs_t) == 22 * 8, "isr.asm knows the frame layout");
 
 void dump_regs(const regs_t* r) {
     kprintf("  rax=%016lx rbx=%016lx rcx=%016lx\n", r->rax, r->rbx, r->rcx);
