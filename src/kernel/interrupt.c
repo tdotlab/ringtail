@@ -1,4 +1,5 @@
-// IDT setup, the PIC, and the single C entry point for every
+// IDT setup, the interrupt controller (the 8259 PICs, or the APICs
+// when ACPI describes them), and the single C entry point for every
 // interrupt, exception and system call.
 #include "kernel.h"
 #include "arch.h"
@@ -12,9 +13,13 @@
 
 static irq_handler_t irq_handlers[16];
 volatile int need_resched;
+// Set once the local and I/O APICs have taken over from the 8259s.
+static int apic_on;
+static const char* pic_why = "not set up yet";
 
 extern const uintptr_t isr_stub_table[48];
 extern const uintptr_t isr_syscall_stub;  // a word holding the stub's address
+extern const uintptr_t isr_spurious_stub;
 
 #define PIC1_CMD  0x20
 #define PIC1_DATA 0x21
@@ -52,8 +57,47 @@ static uint8_t pic_isr(uint16_t cmd_port) {
 void irq_register(int irq, irq_handler_t handler) {
     uint32_t f = irq_save();
     irq_handlers[irq] = handler;
-    pic_unmask(irq);
+    if (apic_on) apic_route(irq);
+    else pic_unmask(irq);
     irq_restore(f);
+}
+
+void irq_set_handler(int irq, irq_handler_t handler) {
+    uint32_t f = irq_save();
+    irq_handlers[irq] = handler;
+    irq_restore(f);
+}
+
+int irq_pending(int irq) {
+    if (apic_on) return apic_pending(IRQ_BASE + irq);
+    uint16_t cmd = irq < 8 ? PIC1_CMD : PIC2_CMD;
+    outb(cmd, 0x0A);  // OCW3: read the request register
+    return (inb(cmd) >> (irq & 7)) & 1;
+}
+
+void irq_controller_init(void) {
+    if (apic_init(&pic_why) < 0) return;
+    // Both 8259s masked for good, cascade included. They keep their
+    // vectors (32-47), so anything they might still raise lands
+    // somewhere harmless.
+    outb(PIC1_DATA, 0xFF);
+    outb(PIC2_DATA, 0xFF);
+    apic_on = 1;
+    for (int irq = 0; irq < 16; irq++)
+        if (irq_handlers[irq]) apic_route(irq);
+}
+
+int irq_uses_apic(void) { return apic_on; }
+
+const char* irq_controller(char* buf, uint32_t size) {
+    if (!apic_on) {
+        snprintf(buf, size, "8259 PIC (%s)", pic_why);
+    } else {
+        int n = apic_cpus();
+        if (n == 1) snprintf(buf, size, "local and I/O APIC, 1 CPU");
+        else snprintf(buf, size, "local and I/O APIC, %d CPUs (1 in use)", n);
+    }
+    return buf;
 }
 
 void idt_init(void) {
@@ -63,6 +107,7 @@ void idt_init(void) {
     // lands in ring 0 code. Every other gate is DPL 0, so a user
     // "int 14" faults with #GP instead of faking a page fault.
     idt_set_gate(SYSCALL_VECTOR, isr_syscall_stub, 3);
+    idt_set_gate(0xFF, isr_spurious_stub, 0);
     idt_install();
 }
 
@@ -126,6 +171,15 @@ static void user_exception(regs_t* r) {
 }
 
 static void handle_irq(int irq) {
+    if (apic_on) {
+        // The local APIC's spurious interrupts have a vector of their
+        // own (0xFF, a stub that only returns), so whatever is here is
+        // real.
+        random_event((uint32_t)irq);
+        if (irq_handlers[irq]) irq_handlers[irq]();
+        apic_eoi();
+        return;
+    }
     // A spurious IRQ 7 or 15 is a glitch on the line, not a real
     // request: the in-service bit is clear. It gets no handler, and
     // no EOI from the PIC that raised it (though a spurious 15 still

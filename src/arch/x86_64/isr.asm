@@ -60,7 +60,7 @@ ISR_NOERR 28
 ISR_ERR   29
 ISR_ERR   30
 ISR_NOERR 31
-; Hardware IRQs 0-15, remapped to vectors 32-47.
+; Hardware IRQs 0-15, on vectors 32-47 from the 8259s or the I/O APIC.
 %assign v 32
 %rep 16
 ISR_NOERR v
@@ -68,6 +68,13 @@ ISR_NOERR v
 %endrep
 ; System call.
 ISR_NOERR 128
+
+; The local APIC's spurious vector (0xFF): an interrupt that went away
+; between the APIC signalling it and the CPU taking it. Nothing is in
+; service, so there is no EOI to send and nothing else to do; it
+; touches no register, so it needs no frame.
+isr_spurious:
+    iretq
 
 isr_common:
     push rax
@@ -203,6 +210,9 @@ isr_stub_table:
 global isr_syscall_stub
 isr_syscall_stub:
     dq isr128
+global isr_spurious_stub
+isr_spurious_stub:
+    dq isr_spurious
 
 section .text
 

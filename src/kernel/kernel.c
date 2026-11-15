@@ -77,6 +77,8 @@ static void banner(void) {
     uint32_t frames, free_frames;
     frame_stats(&frames, &free_frames);
     kprintf("Memory: %u KB heap, %u KB for programs\n", h.total / 1024, free_frames * 4);
+    char buf[64];
+    kprintf("Interrupts: %s\n", irq_controller(buf, sizeof buf));
 }
 
 static void start_disk(void) {
@@ -108,6 +110,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     fpu_init();
     random_init();
     setup_memory();
+    irq_controller_init();  // the APICs' registers go through the page tables
     task_init();
     gfx_init_font();  // needs text mode, so before anything can switch
 
@@ -118,6 +121,8 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     else kprintf_color(COLOR_DIM, "Mouse: none\n");
     keyboard_init();
     timer_init();
+    char buf[64];
+    kprintf("Timer: %s\n", timer_source(buf, sizeof buf));
     serial_enable_input();
     start_disk();
     pci_init();

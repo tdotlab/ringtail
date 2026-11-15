@@ -23,6 +23,20 @@ void idt_init(void);
 // Install a handler and unmask the line. Handlers run with interrupts
 // off and must not block; the dispatcher sends the EOI.
 void irq_register(int irq, irq_handler_t handler);
+// Install a handler for vector IRQ_BASE + irq and unmask nothing: for
+// an interrupt raised on that vector by something other than the
+// board's line (the local APIC's timer, standing in for the PIT).
+void irq_set_handler(int irq, irq_handler_t handler);
+// Whether the line is asking for an interrupt not yet taken (with
+// interrupts off).
+int irq_pending(int irq);
+// Moves from the 8259s to the APICs if ACPI describes them. After
+// paging_init, which the APICs' registers are mapped with; idt_init
+// set up the 8259s, which stay in use otherwise.
+void irq_controller_init(void);
+int irq_uses_apic(void);
+// "local and I/O APIC, 4 CPUs (1 in use)", or "8259 PIC" and why.
+const char* irq_controller(char* buf, uint32_t size);
 
 // Set by anything that makes another task runnable; the dispatcher
 // reschedules on the way out of the interrupt.

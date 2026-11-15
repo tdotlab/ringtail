@@ -6,9 +6,15 @@
 #include "ringtail/abi.h"  // rtc_time_t
 #include "lib.h"           // sbuf_t
 
-// ---- PIT timer ----
+// ---- The tick (timer.c) ----
+// 100 Hz from the local APIC's timer when the APIC is in use, from the
+// PIT's channel 0 otherwise. The PIT runs either way: it is the
+// reference the APIC timer is measured against, and stopwatch_ms
+// counts its wrap-arounds.
 #define TIMER_HZ 100
 void timer_init(void);
+// "local APIC, 1000 MHz bus" and the like, for the banner.
+const char* timer_source(char* buf, uint32_t size);
 uint32_t timer_ticks(void);
 // The same count without the wrap after 497 days, for deadlines that
 // can be that far off (DHCP leases).
@@ -30,6 +36,61 @@ typedef struct {
 } stopwatch_t;
 void stopwatch_start(stopwatch_t* w);
 uint32_t stopwatch_ms(stopwatch_t* w);
+
+// ---- ACPI tables (acpi.c): the MADT, nothing that needs AML ----
+#define MADT_MAX_CPUS      64
+#define MADT_MAX_IOAPICS   8
+#define MADT_MAX_OVERRIDES 16
+#define MADT_MAX_NMIS      8
+// Interrupt source override flags: polarity in bits 0-1, trigger mode
+// in bits 2-3. 0 means "as the bus has it" (ISA: edge, active high).
+#define MADT_POLARITY_HIGH 1
+#define MADT_POLARITY_LOW  3
+#define MADT_TRIGGER_EDGE  1
+#define MADT_TRIGGER_LEVEL 3
+typedef struct {
+    uint8_t revision;     // the RSDP's: 0 for ACPI 1.0, 2 from 2.0 on
+    char oem[7];
+    uint64_t lapic_phys;
+    uint32_t flags;       // bit 0: the machine has 8259s as well
+    int cpus;             // enabled processors with an 8-bit APIC ID
+    struct { uint8_t acpi_id, apic_id; } cpu[MADT_MAX_CPUS];
+    int x2apic_cpus;      // enabled ones listed only with a 32-bit ID
+    int ioapics;
+    struct { uint8_t id; uint32_t phys, gsi_base; } ioapic[MADT_MAX_IOAPICS];
+    // ISA interrupts not wired to the GSI of the same number, or not
+    // edge triggered and active high.
+    int overrides;
+    struct { uint8_t irq; uint32_t gsi; uint16_t flags; } override[MADT_MAX_OVERRIDES];
+    // Local APIC pins wired to NMI; acpi_id 0xFF means every processor.
+    int nmis;
+    struct { uint8_t acpi_id, lint; uint16_t flags; } nmi[MADT_MAX_NMIS];
+} madt_t;
+// Finds the RSDP and reads the MADT. Needs the device window (after
+// paging_init). 0, or -ENOENT when there are no tables or no MADT.
+int acpi_init(void);
+const madt_t* acpi_madt(void);  // 0 without one
+
+// ---- Local and I/O APICs (apic.c) ----
+// Takes over from the 8259s when the MADT describes the APICs: enables
+// this CPU's local APIC (spurious vector 0xFF, LINT1 as NMI), masks
+// every I/O APIC input, and leaves the 8259s for the caller to mask.
+// 0, or -ENOENT (-ENOMEM when the device window is full) with *why
+// saying what was missing.
+int apic_init(const char** why);
+// Unmask ISA interrupt irq (0-15) on vector IRQ_BASE + irq, using the
+// MADT's overrides for its GSI, polarity and trigger mode.
+void apic_route(int irq);
+void apic_eoi(void);
+// Whether vector is requested but not yet taken (interrupts off).
+int apic_pending(int vector);
+uint32_t apic_id(void);
+int apic_cpus(void);            // processors the MADT lists
+// The local APIC's timer, counting down at the bus clock divided by 16.
+void apic_timer_oneshot(uint32_t count);
+void apic_timer_periodic(uint32_t count, int vector);
+void apic_timer_stop(void);
+uint32_t apic_timer_count(void);
 
 // ---- Real-time clock (CMOS) ----
 void rtc_read(rtc_time_t* t);

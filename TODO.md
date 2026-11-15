@@ -75,6 +75,21 @@ Every task ends the same way, or it is not done:
   back right even if the exit stub forgets to restore it: getcwd leaves
   r8 and r10 alone, so `sysregs` catches a missing `pop rsi` but not a
   missing `pop r10`.
+- QEMU cannot tell some interrupt bugs apart. Its I/O APIC ignores the
+  polarity bit, the e1000 can never lose an edge (reading ICR clears
+  every cause and drops the line), and SeaBIOS hands over ACPI 1.0
+  tables, so routing IRQ 11 active low or edge triggered passes the
+  suite, and so would a broken XSDT path. The MADT's GSI override for
+  IRQ 0 is never used either: the tick comes from the local APIC timer,
+  and the PIT's input stays masked. Check those by reading the code
+  against the MADT and the 82093AA datasheet, not by a green run.
+- `timer_micros` adds a tick when the tick's interrupt is pending but
+  not taken (the counter has already gone round). That only happens
+  with interrupts off across a tick, which no test arranges, so the
+  suite passes with the check removed, on the PIC and the APIC alike.
+- A QEMU test's work directory must keep its socket paths under 108
+  bytes (`serial.sock` inside it): a deep scratch directory makes QEMU
+  refuse to start. Pass a relative path.
 - `make` does not rebuild objects when compiler flags change. After
   changing `KCFLAGS` (adding `-mcmodel=kernel`, say), delete
   `build/x86_64/k` first, or the link fails with relocations "truncated
@@ -234,17 +249,37 @@ machines boot UEFI. Multiboot2 through GRUB's EFI build is the small step;
 a loader of our own (or Limine) is the big one. The framebuffer from UEFI
 would also replace VGA text, which UEFI machines may not have.
 
-**APIC, ACPI and SMP.** The 8259 PIC and the PIT are the old way; the local
-APIC and IOAPIC are what SMP needs, and ACPI's tables are how you find
-them. SMP itself is the hard part: per-CPU data, locks that hold across
-CPUs, and a scheduler that knows there is more than one of them. It is
-listed again under Opus below for that reason. What is per-CPU already,
-and so needs one per CPU then: the TSS (rsp0 and the three IST stacks)
-and `cpu_t` in gdt.c, which the SYSCALL entry finds through swapgs and
-KERNEL_GS_BASE. The kernel keeps gs at 0 outside that swapgs pair, so
-nothing else uses it yet; a `this_cpu` for the rest of the kernel
-means swapgs on every entry from ring 3, and the NMI path then has to
-work out which gs it got (Linux's "paranoid" entry).
+**SMP.** The boot CPU takes its interrupts from the local and I/O APICs
+the ACPI MADT describes (`src/drivers/acpi.c`, `apic.c`), and its tick
+from the local APIC timer; the MADT's list of processors is counted and
+the banner says how many there are. The others are never started. That
+needs the INIT-SIPI-SIPI sequence and a real-mode trampoline below 1 MB
+to bring each one up to long mode; then per-CPU data, locks that hold
+across CPUs, and a scheduler that knows there is more than one of them.
+It is listed again under Opus below for that reason. What is per-CPU
+already, and so needs one per CPU then: the TSS (rsp0 and the three IST
+stacks) and `cpu_t` in gdt.c, which the SYSCALL entry finds through
+swapgs and KERNEL_GS_BASE; and the local APIC with its timer, set up
+for the boot CPU only (`apic_init`, `timer_init`'s calibration). The
+kernel keeps gs at 0 outside that swapgs pair, so nothing else uses it
+yet; a `this_cpu` for the rest of the kernel means swapgs on every entry
+from ring 3, and the NMI path then has to work out which gs it got
+(Linux's "paranoid" entry).
+
+**PCI interrupts on real boards.** A PCI device's interrupt is taken
+from its interrupt line register, an ISA IRQ, and routed to the I/O APIC
+input of that number, with the MADT's override or else the ELCR saying
+how it triggers. That holds on QEMU's pc and q35, which wire PCI
+interrupts to the ISA inputs too. Many real boards wire them only to
+inputs 16 and up, which only the DSDT's `_PRT` says, in AML. MSI, where
+the card has it, needs no routing at all and is the cheaper way out for
+the network card.
+
+**ACPI power-off.** `machine_poweroff` writes QEMU's and the other
+emulators' fixed ports. The FADT has the real PM1a control port; the
+sleep type for S5 is in the DSDT's `\_S5_` package, which can be found
+by searching the AML bytes without an interpreter, as many hobby
+kernels do.
 
 **AVX.** Programs get x87 and SSE, saved with `fxsave`. AVX needs `xsave`
 and a bigger save area, sized from CPUID.

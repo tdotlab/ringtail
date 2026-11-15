@@ -40,7 +40,8 @@ class Machine:
     # e1000 on its user network, where 10.0.2.2 is the gateway.
     # drive: the whole -drive value, to put a slow or failing disk under
     # the guest; by default the disk image as it is.
-    def __init__(self, iso, disk, workdir, cpu=None, mem=64, machine=None, net=(), drive=None):
+    # extra: any other QEMU arguments.
+    def __init__(self, iso, disk, workdir, cpu=None, mem=64, machine=None, net=(), drive=None, extra=()):
         self.dir = workdir
         self.serial_path = os.path.join(workdir, "serial.sock")
         self.monitor_path = os.path.join(workdir, "monitor.sock")
@@ -49,7 +50,7 @@ class Machine:
              "-drive", drive or f"file={disk},format=raw,if=ide,index=0",
              "-boot", "d", "-m", str(mem), "-display", "none",
              *(["-cpu", cpu] if cpu else []), *(["-machine", machine] if machine else []),
-             *net,
+             *net, *extra,
              "-chardev", f"socket,id=ser,path={self.serial_path},server=on,wait=on",
              "-serial", "chardev:ser",
              "-monitor", f"unix:{self.monitor_path},server=on,wait=off",
@@ -234,10 +235,34 @@ def plain(out):
     return re.sub(r"\x1b\[[0-9;]*m", "", out).replace("\r\n", "\n").strip()
 
 
+def tick_rate_ok(m, seconds=3):
+    """Whether the guest's tick count keeps up with the host over a few seconds (within 5%)."""
+    def ticks():
+        start = time.time()
+        got = re.search(r"\((\d+) ticks at 100 Hz\)", m.run("uptime"))
+        return int(got.group(1)) if got else None, (start + time.time()) / 2
+    t0, h0 = ticks()
+    time.sleep(seconds)
+    t1, h1 = ticks()
+    return t0 is not None and t1 is not None and abs((t1 - t0) / 100 / (h1 - h0) - 1) < 0.05
+
+
+def card_interrupts(net_out):
+    got = re.search(r", irq \d+ \((\d+) interrupts\)", net_out)
+    return int(got.group(1)) if got else -1
+
+
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
     t.check("boots to the shell", "RingTail OS v0.28.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
+    # QEMU's pc machine has ACPI tables with an MADT, one I/O APIC, and
+    # a local APIC timer that counts at 1 GHz.
+    t.check("takes its interrupts from the APICs the MADT describes",
+            "\nInterrupts: local and I/O APIC, 1 CPU\n" in boot, boot)
+    mhz = re.search(r"\nTimer: local APIC, (\d+\.\d) MHz bus\n", boot)
+    t.check("and ticks from the local APIC timer, measured against the PIT to within 1%",
+            mhz and 990 <= float(mhz.group(1)) <= 1010, boot)
     # The release's name is in the README's "Current version" line; the
     # banner must say the same (it said an old one for four releases).
     readme = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "README.md")).read()
@@ -264,6 +289,7 @@ def tests(m, t):
     out = m.run("sleep 1")
     took = time.time() - start
     t.check("sleep 1 takes about a second", 0.8 < took < 3, "%.2f s: %s" % (took, out))
+    t.check("the tick keeps time with the host's clock", tick_rate_ok(m), "")
     out = m.run("sleep 99999")
     t.check("sleep rejects an hour and more", "usage" in out, out)
     out = m.run('echo "two   spaces"')
@@ -304,12 +330,20 @@ def tests(m, t):
     t.check("ping 10.0.2.2 gets three replies", out.count("bytes from 10.0.2.2") == 3 and
             "3 sent, 3 received, 0% lost, round trip min/avg/max" in out and "[exit status" not in out, out)
     t.check("each with its ttl and round trip", re.search(r"64 bytes from 10\.0\.2\.2: seq=1 ttl=\d+ time=\d+\.\d{3} ms", out), out)
+    # The round trips come from timer_micros, which reads the tick's
+    # counter between ticks: a slip there shows as a negative or a
+    # 10 ms-out time.
+    rtts = [float(x) for x in re.findall(r" time=(\d+\.\d+) ms", out)]
+    t.check("and the round trips are sane", len(rtts) == 3 and all(0 < r < 10 for r in rtts), out)
     out = m.run("ping -c 1 -s 1472 10.0.2.2")
     t.check("the biggest ping that fits a frame", "1480 bytes from 10.0.2.2" in out, out)
     out = m.run("ping -c 1 -s 0 10.0.2.2")
     t.check("and an empty one", "8 bytes from 10.0.2.2" in out, out)
     out = plain(m.run("net"))
     t.check("net shows the card", "e1000 82540EM (8086:100e) at 00:03.0, irq 11" in out and "link up" in out, out)
+    # Without its interrupt the card would still work, polled once a
+    # second, so the count is what says the I/O APIC routed IRQ 11 right.
+    t.check("and the interrupts it raised", card_interrupts(out) >= 5, out)
     t.check("the address", "Address:  10.0.2.15/24, gateway 10.0.2.2\n" in out, out)
     t.check("where it came from and for how long", re.search(r"DHCP:     from 10\.0\.2\.2, lease 2[34] h \d+ m left", out), out)
     t.check("and the DNS server", "DNS:      10.0.2.3\n" in out, out)
@@ -3826,6 +3860,47 @@ def netconf_tests(m, t):
             "DHCP:     from 10.0.2.2" in out and "DNS:      10.0.2.3\n" in out, out)
 
 
+def interrupt_boots(iso, disk, work, t):
+    """Machines whose interrupts come some other way: no ACPI tables, no
+    local APIC (both back to the 8259s and the PIT), four CPUs, and the
+    q35 chipset, whose MADT and interrupt wiring differ from the pc's
+    (it has no IDE controller of its own, so it gets a PIIX one)."""
+    def ide_on_q35(img):
+        return dict(machine="q35", drive=f"file={img},format=raw,if=none,id=d0",
+                    extra=["-device", "piix3-ide,id=pide", "-device", "ide-hd,drive=d0,bus=pide.0",
+                           "-nic", "user,model=e1000"])
+    for name, banner, timer, opts in [
+            ("acpi=off", "Interrupts: 8259 PIC (no ACPI MADT)", "Timer: PIT\n",
+             lambda img: dict(machine="pc,acpi=off")),
+            ("no APIC", "Interrupts: 8259 PIC (no local APIC)", "Timer: PIT\n",
+             lambda img: dict(cpu="qemu64,-apic")),
+            ("4 CPUs", "Interrupts: local and I/O APIC, 4 CPUs (1 in use)", "Timer: local APIC, ",
+             lambda img: dict(extra=["-smp", "4"])),
+            ("q35", "Interrupts: local and I/O APIC, 1 CPU", "Timer: local APIC, ", ide_on_q35)]:
+        sub = os.path.join(work, "irq-" + name.replace(" ", "-").replace("=", "-"))
+        os.mkdir(sub)
+        img = os.path.join(sub, "disk.img")
+        shutil.copy(disk, img)
+        vm = Machine(iso, img, sub, **opts(img))
+        try:
+            boot = plain(vm.expect(PROMPT, 30))
+            t.check(f"[{name}] boots and says how it takes interrupts", banner + "\n" in boot and timer in boot, boot)
+            out = plain(vm.run("ping -c 3 10.0.2.2", timeout=20))
+            t.check(f"[{name}] the network card works", "3 received" in out, out)
+            out = plain(vm.run("net"))
+            t.check(f"[{name}] by its interrupts", card_interrupts(out) >= 5, out)
+            t.check(f"[{name}] the tick keeps time", tick_rate_ok(vm, 2), "")
+            out = plain(vm.run("run hello"))
+            t.check(f"[{name}] and a program runs", "Hello from disk!" in out, out)
+        except (TimeoutError, EOFError) as e:
+            t.check(f"[{name}] session finished", False, str(e))
+        finally:
+            vm.qemu.kill()
+            vm.qemu.wait()
+            with open(os.path.join(sub, "serial.log"), "wb") as f:
+                f.write(vm.log)
+
+
 def short_boots(iso, disk, work, t):
     """The other e1000 models QEMU has, and a machine with no card at all."""
     for model, banner, script in [
@@ -4078,6 +4153,7 @@ def main():
                 f.write(pm.log)
 
     short_boots(args.iso, args.disk, work, t)
+    interrupt_boots(args.iso, args.disk, work, t)
     disk_tests(args.iso, args.disk, work, t)
     memory_tests(args.iso, args.disk, work, t)
 

@@ -148,7 +148,8 @@ the QEMU monitor), stack growth and
 overflow, malloc, Ctrl+C on foreground jobs, background jobs, raw
 terminal mode, ANSI output (read back from VGA memory through the QEMU
 monitor), an editing session in Octavo, file and directory commands,
-the timer rate,
+the timer rate (against the host's clock), the network card's
+interrupts,
 the switch into graphics mode and back, reboot persistence and poweroff,
 and the network through QEMU's user network: DHCP at boot, `ping`,
 loopback, UDP and TCP sockets (`udptest`, `tcptest`), the random number
@@ -186,8 +187,9 @@ unreachable for closed ports, the search domain and a second DNS server,
 the guest's own pings answered, timed out, refused by a router or
 damaged, and 4000 frames of garbage. Short boots check the other two
 e1000 models and a machine with no card, a slow disk and a failing one
-(QEMU's I/O throttling and its blkdebug driver), and machines with 2 GB
-and 6 GB of RAM. Pass `--keep` to keep the serial log and the disk.
+(QEMU's I/O throttling and its blkdebug driver), machines with 2 GB
+and 6 GB of RAM, and machines whose interrupts come another way: no ACPI
+tables, no local APIC, four CPUs, and the q35 chipset. Pass `--keep` to keep the serial log and the disk.
 
 ## Design in brief
 
@@ -208,7 +210,20 @@ from the top of RAM down, and a frame is first written when it is handed
 out, so a 6 GB machine boots as fast as a 64 MB one. A program's heap is the break above its image, moved with
 `sbrk`; the C runtime has malloc, calloc, realloc and free on top.
 
-Tasks: a round-robin, preemptive scheduler runs on the 100 Hz PIT. The
+Interrupts: ACPI's MADT, found through the RSDP in the BIOS area, says
+where the local and I/O APICs are and how the ISA interrupts are wired
+to them. The kernel then masks the two 8259s for good, routes each
+interrupt a driver asks for to the I/O APIC input the MADT names (with
+its polarity and trigger mode, or, for a PCI card on an ISA IRQ, level
+and active low when the chipset's ELCR says so), and takes its tick from
+the local APIC's timer, measured against the PIT at boot (QEMU's comes
+out at 1000 MHz). Without an MADT or a local APIC it stays on the 8259s
+and the PIT. The banner says which, and how many CPUs the MADT lists;
+only the first is used. There is no AML interpreter, so PCI interrupt
+routing (`_PRT`) is not read: a PCI card's interrupt is taken from its
+line register, which is right on QEMU but not on every real board.
+
+Tasks: a round-robin, preemptive scheduler runs on the 100 Hz tick. The
 kernel's own tasks (idle, init) and user programs are scheduled the same
 way. init gives DHCP its chance, runs `sntp -b` once if the network is
 up, then starts SAKLAS from the disk, hands it the terminal, and starts a
@@ -301,8 +316,8 @@ stack never runs in interrupt context. ARP learns neighbours from requests aimed
 second apart, before giving up; IPv4 checks lengths and checksums and
 drops fragments; ICMP answers echo requests (not broadcast ones) and
 matches replies and routers' unreachable messages to the `ping` syscall
-waiting for them. Round trips are timed in microseconds from the PIT's
-counter. Anything sent to 127/8 or the machine's own address goes round
+waiting for them. Round trips are timed in microseconds from the tick's
+counter (the local APIC timer's, or the PIT's). Anything sent to 127/8 or the machine's own address goes round
 through the net task without touching the card.
 
 UDP sockets are file descriptors (`socket`, `bind`, `sendto`,
@@ -417,7 +432,8 @@ src/arch       what differs between machines, one folder each (x86_64): the mult
                page tables, the saved register frame and FPU state (include/arch/)
 src/kernel     kernel_main, interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
 src/mm         heap, physical frames and checked user copies
-src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000
+src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000,
+               ACPI tables and the APICs
 src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
 src/lib        string and printf subset, SHA-256, ChaCha20 and calendar dates, shared by the kernel and programs
