@@ -82,7 +82,7 @@ static const char* const exception_names[32] = {
 // addresses can be looked up with addr2line or nm.
 static void backtrace(uintptr_t fp) {
     kprintf("  backtrace:");
-    for (int i = 0; i < 12 && fp >= (uintptr_t)_kernel_start && fp < RAM_IDENTITY_LIMIT; i++) {
+    for (int i = 0; i < 12 && !(fp & 7) && kernel_mapped(fp) && kernel_mapped(fp + 8); i++) {
         const uintptr_t* frame = (const uintptr_t*)fp;
         kprintf(" %08lx", (unsigned long)frame[1]);
         if (frame[0] <= fp) break;

@@ -2,8 +2,9 @@
 // VirtualBox and VMware all emulate. Legacy descriptors, one receive
 // and one transmit ring, no offloads. The registers are memory mapped
 // (BAR 0) into the kernel's device window; descriptors and buffers are
-// frames, whose physical and virtual addresses are the same, so they
-// can be handed to the card as they are.
+// frames, which the kernel reaches through the direct map and the card
+// by their physical addresses, 64-bit ones (RDBAH, TDBAH and the
+// descriptors' addr), so they may lie above 4 GB.
 #include "kernel.h"
 #include "arch.h"
 #include "interrupt.h"

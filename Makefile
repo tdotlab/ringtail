@@ -15,8 +15,10 @@ ifeq ($(ARCH),x86_64)
 CROSS := x86_64-elf-gcc
 ARCH_CFLAGS :=
 # The kernel takes interrupts on the stack it is running on, so the
-# 128 bytes below rsp are not free for it to use.
-KARCH_CFLAGS := -mno-red-zone
+# 128 bytes below rsp are not free for it to use. It is linked in the
+# top 2 GB of the address space (linker.ld), which is what
+# -mcmodel=kernel lets the compiler assume.
+KARCH_CFLAGS := -mno-red-zone -mcmodel=kernel
 UARCH_CFLAGS :=
 # Without this the linker aligns segments in the file to 2 MB, which
 # moves the multiboot header out of the first 8 KB, where GRUB looks.

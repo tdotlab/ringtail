@@ -53,8 +53,8 @@ Every task ends the same way, or it is not done:
   given date. Put the clock back afterwards (the `cal` block shows how).
 - Hardware waits are timed by the clock, not by counting polls. The ATA
   driver once gave the drive 2 million polls, about 0.1 s under QEMU,
-  and a slow fsync on the host turned into a failed write about once
-  in four full test runs. The disk is read before interrupts are on, so
+  and a slow fsync on the host turned into a failed write in one full
+  test run. The disk is read before interrupts are on, so
   such waits use `stopwatch_ms`, which keeps time without the timer
   interrupt. The disk tests in the QEMU suite slow the disk and inject
   errors to keep this honest.
@@ -62,6 +62,16 @@ Every task ends the same way, or it is not done:
   a test that suspends a request (blkdebug `break`) and lets the driver
   time out and reset freezes QEMU itself. Make a drive look hung with a
   throttle slower than the timeout instead.
+- The kernel is linked at -2 GB and reaches RAM through the direct map,
+  so a physical address is never a pointer: go through `phys_to_virt`
+  (nothing is mapped below 1 GB, so forgetting faults at once). Frames
+  come from the top of RAM, above 4 GB on a big machine, so a device
+  that can only reach 32-bit addresses needs frames from a low pool,
+  which does not exist yet.
+- `make` does not rebuild objects when compiler flags change. After
+  changing `KCFLAGS` (adding `-mcmodel=kernel`, say), delete
+  `build/x86_64/k` first, or the link fails with relocations "truncated
+  to fit" against objects built the old way.
 - `make test` takes about ten minutes. Run it in the background and wait
   on its log.
 - The machine is x86_64 now. The kernel is built with `-mno-red-zone`
@@ -193,20 +203,17 @@ RingTail went from i386 to x86_64 after v0.28.0, and i386 was dropped
 once the whole suite passed on x86_64 (to bring it back, revert the commit
 "drop i386: x86_64 is the only target"; the port before it built both).
 Everything below was left out of that move on purpose, to keep it to one
-change at a time. The memory layout is still the 32-bit one, which is why
-the first two go together.
+change at a time. The kernel has since moved to the top half, with a
+direct map of all of RAM (so RAM above 1 GB, and above 4 GB, is used),
+but programs still get the 32-bit range, 1 GB to 3 GB.
 
-**A higher-half kernel.** The kernel runs in the low 1 GB it identity-maps
-and programs get 1 GB to 3 GB. Moving the kernel to the top of the address
-space (0xFFFFFFFF80000000 for its image, a direct map of all RAM below
-that) gives programs the whole lower half and is how every 64-bit kernel
-does it. It touches the linker script, the boot page tables, `phys_to_virt`
-and everything that assumed an address below 4 GB is physical.
-
-**RAM above 1 GB.** `frames_init` and `setup_memory` stop at
-`RAM_IDENTITY_LIMIT`, so a machine with 8 GB uses one. With a direct map
-from the item above, the limit goes away; the frame counts in `kinfo` are
-`uint32_t` frames, which is fine up to 16 TB.
+**Programs in the whole lower half.** The kernel no longer uses any of
+the lower half, so programs could have up to 128 TB instead of 2 GB: a
+heap that grows past 3 GB, a bigger stack, room for mmap later. It is
+`USER_BASE`/`USER_TOP` in mm.h and `src/programs/user.ld`, plus paging.c,
+whose address-space code walks one PDPT (`user_pdpt`, PML4 entry 0, so
+512 GB) and the user range inside it. Keep the first page, at least,
+unmapped. Every program is rebuilt anyway, so the link address can move.
 
 **SYSCALL/SYSRET instead of int 0x80.** Faster, and what 64-bit code
 expects. It needs the STAR/LSTAR/FMASK MSRs, a way to find the kernel

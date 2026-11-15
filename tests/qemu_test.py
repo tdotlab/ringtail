@@ -3942,6 +3942,45 @@ sector = "{hello}"
           ("cat after.txt WELCOME.TXT", "after the bad sector\nWelcome to RingTail.", 10)])
 
 
+def memory_tests(iso, disk, work, t):
+    """Machines with more RAM than the 64 MB the rest of the suite uses.
+    The kernel once reached RAM through an identity map of the first
+    1 GB and ignored the rest. Now it maps all of RAM, and hands out
+    frames from the top down, so on the 6 GB machine (3 GB of it above
+    4 GB, where QEMU puts RAM past its PCI hole) every program, pipe and
+    network buffer after boot lives above 4 GB."""
+    for mb in (2048, 6144):
+        name = f"{mb // 1024} GB"
+        sub = os.path.join(work, f"mem{mb}")
+        os.mkdir(sub)
+        img = os.path.join(sub, "disk.img")
+        shutil.copy(disk, img)
+        vm = Machine(iso, img, sub, mem=mb)
+        try:
+            start = time.time()
+            out = plain(vm.expect(PROMPT, 60))
+            took = time.time() - start
+            m = re.search(r"(\d+) KB for programs", out)
+            kb = int(m.group(1)) if m else 0
+            t.check(f"[{name}] all of RAM is for programs", kb > mb * 1024 * 95 // 100, out)
+            t.check(f"[{name}] boots as fast as a small machine", took < 30, f"{took:.1f} s")
+            for cmd, want in [("run hello", "Hello from disk!"),
+                              ("echo one two three | wc -w", "3"),
+                              ("echo high > high.txt", ""),
+                              ("cat high.txt", "high"),
+                              ("ping -c 1 10.0.2.2", "1 received"),
+                              ("mem", "Frames:")]:
+                got = plain(vm.run(cmd, timeout=20))
+                t.check(f"[{name}] {cmd}", want in got, got)
+        except (TimeoutError, EOFError) as e:
+            t.check(f"[{name}] session finished", False, str(e))
+        finally:
+            vm.qemu.kill()
+            vm.qemu.wait()
+            with open(os.path.join(sub, "serial.log"), "wb") as f:
+                f.write(vm.log)
+
+
 def main():
     global QEMU
     ap = argparse.ArgumentParser()
@@ -4018,6 +4057,7 @@ def main():
 
     short_boots(args.iso, args.disk, work, t)
     disk_tests(args.iso, args.disk, work, t)
+    memory_tests(args.iso, args.disk, work, t)
 
     print(f"\n{t.passed} passed, {len(t.failed)} failed")
     print(f"serial log: {os.path.join(work, 'serial.log')}")

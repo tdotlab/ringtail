@@ -39,7 +39,9 @@ static void read_boot_info(uint32_t mbi) {
 }
 
 // The heap goes right after the kernel image, in the RAM region the
-// kernel was loaded into; frames get everything else.
+// kernel was loaded into; frames get everything else. Until paging_init
+// has mapped all of RAM, the kernel reaches only the first 4 GB
+// (BOOT_MAP_LIMIT), so the heap stays below that.
 static void setup_memory(void) {
     uintptr_t heap_start = ALIGN_UP(virt_to_phys(_kernel_end), PAGE_SIZE);
     uint64_t usable = 0, region_end = 0, ram_top = 0;
@@ -48,12 +50,12 @@ static void setup_memory(void) {
         if (e->type != 1) continue;
         uint64_t hi = e->base + e->len;
         usable += e->len;
-        if (hi > ram_top && e->base < RAM_IDENTITY_LIMIT) ram_top = hi;
+        if (hi > ram_top) ram_top = hi;
         if (e->base <= heap_start && hi > heap_start) region_end = hi;
     }
     if (!region_end) panic("no usable RAM after the kernel image");
-    if (ram_top > RAM_IDENTITY_LIMIT) ram_top = RAM_IDENTITY_LIMIT;
-    if (region_end > RAM_IDENTITY_LIMIT) region_end = RAM_IDENTITY_LIMIT;
+    if (ram_top > DIRECT_MAP_SIZE) ram_top = DIRECT_MAP_SIZE;
+    if (region_end > BOOT_MAP_LIMIT) region_end = BOOT_MAP_LIMIT;
 
     uint64_t want = usable / 8;
     if (want < 1024 * 1024) want = 1024 * 1024;
@@ -62,8 +64,9 @@ static void setup_memory(void) {
     uint32_t size = (uint32_t)(want < room ? want : room);
     if (size < 256 * 1024) panic("only %u KB of RAM after the kernel", size / 1024);
     heap_init(phys_to_virt(heap_start), size);
-    frames_init(heap_start + size);
+    frames_init(heap_start + size, (uintptr_t)ram_top);
     paging_init((uintptr_t)ram_top);
+    frames_mapped();
 }
 
 static void banner(void) {

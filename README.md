@@ -183,19 +183,27 @@ broadcasts, short headers), UDP echoed by a guest program and port
 unreachable for closed ports, the search domain and a second DNS server,
 the guest's own pings answered, timed out, refused by a router or
 damaged, and 4000 frames of garbage. Short boots check the other two
-e1000 models and a machine with no card. Pass `--keep` to keep the
-serial log and the disk.
+e1000 models and a machine with no card, a slow disk and a failing one
+(QEMU's I/O throttling and its blkdebug driver), and machines with 2 GB
+and 6 GB of RAM. Pass `--keep` to keep the serial log and the disk.
 
 ## Design in brief
 
 Memory: the CPU runs in long mode with 4-level page tables. The kernel
-identity-maps the first 1 GB for itself, supervisor only, with its code
-and read-only data write-protected and nothing but its code executable;
-SMEP stops it from running a program's pages. Each program gets the
-range from 1 GB to 3 GB, and nothing it can write is executable. Its image is mapped from the ELF segments
+lives in the top half of every address space, supervisor only: its image
+at -2 GB, where it is linked, with its code and read-only data
+write-protected and nothing but its code executable, and all of RAM
+mapped at 0xFFFF800000000000, never executable, which is how it reaches
+page tables, frames and its heap. SMEP stops it from running a program's
+pages. The lower half is the program's. It gets the range from 1 GB to
+3 GB, and nothing it can write is executable; below 1 GB nothing is
+mapped, so a null pointer faults in the kernel too. A program's image is mapped from the ELF segments
 with their real permissions. The stack sits at the top and grows on
 demand up to 1 MB, with an unmapped guard gap below it. The kernel heap
-and the physical frame pool are sized from the Multiboot memory map. A program's heap is the break above its image, moved with
+and the physical frame pool are sized from the Multiboot memory map, and
+all of RAM is used, above 4 GB too (up to 512 GB). Frames are handed out
+from the top of RAM down, and a frame is first written when it is handed
+out, so a 6 GB machine boots as fast as a 64 MB one. A program's heap is the break above its image, moved with
 `sbrk`; the C runtime has malloc, calloc, realloc and free on top.
 
 Tasks: a round-robin, preemptive scheduler runs on the 100 Hz PIT. The

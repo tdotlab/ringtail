@@ -27,36 +27,57 @@ typedef struct {
 void heap_get_stats(heap_stats_t* s);
 
 // ---- Physical memory as the kernel sees it ----
-// The kernel reaches RAM through a mapping of physical memory: today
-// the identity map of the first gigabyte, so these change nothing.
-// Every place that turns a physical address into a pointer, or a
-// pointer into an address a device will use, goes through them, so
-// the mapping can move (to the top of a 64-bit address space) without
-// hunting for the places that assumed it.
-static inline void* phys_to_virt(uintptr_t phys) { return (void*)phys; }
-static inline uintptr_t virt_to_phys(const void* p) { return (uintptr_t)p; }
+// The kernel lives in the top half of every address space (the layout
+// is under Paging below). It reaches RAM through the direct map, a
+// mapping of all of physical memory at DIRECT_MAP, and its own image
+// through the mapping at KERNEL_VMA it is linked for. Every place that
+// turns a physical address into a pointer, or a pointer into an
+// address a device will use, goes through these two.
+#define KERNEL_VMA      0xFFFFFFFF80000000ull
+#define DIRECT_MAP      0xFFFF800000000000ull
+// One PML4 entry's worth; RAM above this is left unused.
+#define DIRECT_MAP_SIZE (512ull << 30)
+// What the boot page tables map at DIRECT_MAP, until paging_init has
+// mapped the rest.
+#define BOOT_MAP_LIMIT  0x100000000ull
+
+static inline void* phys_to_virt(uintptr_t phys) { return (void*)(phys + DIRECT_MAP); }
+// For a pointer into the direct map or into the kernel image.
+static inline uintptr_t virt_to_phys(const void* p) {
+    uintptr_t v = (uintptr_t)p;
+    return v >= KERNEL_VMA ? v - KERNEL_VMA : v - DIRECT_MAP;
+}
 
 // ---- Physical frames (frame.c) ----
-// Hand every usable frame above 1 MB to the allocator, except the
-// kernel image and everything up to reserved_end (the heap).
-void frames_init(uintptr_t reserved_end);
+// Hand every usable frame above 1 MB and below limit to the allocator,
+// except the kernel image and everything up to reserved_end (the
+// heap). Until frames_mapped is called, frames come from the bottom of
+// RAM, which the boot page tables reach; after it, from the top.
+void frames_init(uintptr_t reserved_end, uintptr_t limit);
+// The direct map now covers every frame (paging_init has run).
+void frames_mapped(void);
 // Returns a zeroed 4 KB frame, or 0 when memory is exhausted.
-// Frames below RAM_IDENTITY_LIMIT only, so the kernel can always
-// reach a frame through phys_to_virt.
 uintptr_t frame_alloc(void);
 void frame_free(uintptr_t phys);
 void frame_stats(uint32_t* total, uint32_t* free);
 
 // ---- Paging (arch/<arch>/paging.c) ----
-// Layout of every address space:
-//   0 - 4 KB      not mapped, so null pointers fault
-//   4 KB - 1 GB   kernel: identity-mapped RAM, supervisor only,
-//                 kernel code and read-only data write-protected
-//   1 GB - 3 GB   user: program image, then a 1 MB stack region
-//                 just below 3 GB that grows on demand
-//   3 GB - +4 MB  device registers (mmio_map): kernel only, uncached
-//   the rest      not mapped
-#define RAM_IDENTITY_LIMIT 0x40000000u
+// Layout of every address space (48-bit virtual addresses, so the
+// lower half ends at 128 TB and the upper half starts at -128 TB):
+//   0 - 1 GB       not mapped, so null pointers, and physical
+//                  addresses used as pointers, fault
+//   1 GB - 3 GB    user: program image, then a 1 MB stack region
+//                  just below 3 GB that grows on demand
+//   the rest of the lower half   not mapped
+//   DIRECT_MAP     all RAM, and the first 4 MB whatever is there:
+//                  kernel only, never executable, the kernel image's
+//                  text and read-only data read-only here too
+//   KERNEL_VMA + 1 MB   the kernel image (-2 GB): text executable and
+//                  read-only, read-only data, then data and .bss
+//   MMIO_WINDOW    device registers (mmio_map, -1 GB): kernel only,
+//                  uncached
+// The upper half is the same in every address space (as_create copies
+// its PML4 entries, and the tables under them never change places).
 #define USER_BASE        0x40000000u
 #define USER_TOP         0xC0000000u
 #define USER_STACK_TOP   USER_TOP
@@ -74,14 +95,19 @@ typedef uintptr_t pte_t;
 #define PTE_PS       0x080
 #define PTE_GLOBAL   0x100
 
+// Builds the kernel's tables, with the direct map up to ram_top, and
+// switches to them.
 void paging_init(uintptr_t ram_top);
 uintptr_t kernel_pd(void);
+// Whether va is mapped in the kernel's half, for code that must not
+// fault (the panic backtrace).
+int kernel_mapped(uintptr_t va);
 
 // Device registers. Kernel only, uncached, mapped at boot before any
 // program starts (the window's page table is shared by every address
 // space). Returns the virtual address of phys, or 0 when the window
 // (MMIO_WINDOW_SIZE in all) is full.
-#define MMIO_WINDOW      0xC0000000u
+#define MMIO_WINDOW      0xFFFFFFFFC0000000ull
 #define MMIO_WINDOW_SIZE 0x00400000u
 void* mmio_map(uintptr_t phys, uint32_t size);
 
