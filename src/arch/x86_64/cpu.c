@@ -47,6 +47,8 @@ void idt_install(void) {
     idt_load(&idt_ptr);
 }
 
+void idt_load_here(void) { idt_load(&idt_ptr); }
+
 // The SYSCALL exit in isr.asm reads the frame at these offsets.
 _Static_assert(__builtin_offsetof(regs_t, rip) == 17 * 8 && __builtin_offsetof(regs_t, cs) == 18 * 8 &&
                __builtin_offsetof(regs_t, rflags) == 19 * 8 && __builtin_offsetof(regs_t, rsp) == 20 * 8 &&

@@ -123,6 +123,8 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     timer_init();
     char buf[64];
     kprintf("Timer: %s\n", timer_source(buf, sizeof buf));
+    smp_init();
+    kprintf("CPUs: %s\n", smp_describe(buf, sizeof buf));
     serial_enable_input();
     start_disk();
     pci_init();

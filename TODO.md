@@ -90,6 +90,10 @@ Every task ends the same way, or it is not done:
 - A QEMU test's work directory must keep its socket paths under 108
   bytes (`serial.sock` inside it): a deep scratch directory makes QEMU
   refuse to start. Pass a relative path.
+- A CPU that faults before it has loaded the IDT, in the trampoline or
+  early in `ap_main`, triple-faults, and QEMU resets the whole machine:
+  a startup bug shows as the banner printed over and over, not as a
+  CPU missing from the count.
 - `make` does not rebuild objects when compiler flags change. After
   changing `KCFLAGS` (adding `-mcmodel=kernel`, say), delete
   `build/x86_64/k` first, or the link fails with relocations "truncated
@@ -249,22 +253,30 @@ machines boot UEFI. Multiboot2 through GRUB's EFI build is the small step;
 a loader of our own (or Limine) is the big one. The framebuffer from UEFI
 would also replace VGA text, which UEFI machines may not have.
 
-**SMP.** The boot CPU takes its interrupts from the local and I/O APICs
-the ACPI MADT describes (`src/drivers/acpi.c`, `apic.c`), and its tick
-from the local APIC timer; the MADT's list of processors is counted and
-the banner says how many there are. The others are never started. That
-needs the INIT-SIPI-SIPI sequence and a real-mode trampoline below 1 MB
-to bring each one up to long mode; then per-CPU data, locks that hold
-across CPUs, and a scheduler that knows there is more than one of them.
-It is listed again under Opus below for that reason. What is per-CPU
-already, and so needs one per CPU then: the TSS (rsp0 and the three IST
-stacks) and `cpu_t` in gdt.c, which the SYSCALL entry finds through
-swapgs and KERNEL_GS_BASE; and the local APIC with its timer, set up
-for the boot CPU only (`apic_init`, `timer_init`'s calibration). The
-kernel keeps gs at 0 outside that swapgs pair, so nothing else uses it
-yet; a `this_cpu` for the rest of the kernel means swapgs on every entry
-from ring 3, and the NMI path then has to work out which gs it got
-(Linux's "paranoid" entry).
+**SMP.** The other CPUs are started (`src/arch/x86_64/smp.c`,
+`trampoline.asm`) and each sets up its own GDT, TSS, IST stacks,
+SYSCALL MSRs and local APIC, then halts with interrupts off. Tasks run
+on the boot CPU only. What running them everywhere needs:
+- A `current` per CPU. The kernel keeps gs at 0 outside the SYSCALL
+  entry's swapgs pair, so the way there is swapgs on every entry from
+  ring 3 and gs holding the CPU's block in the kernel; the NMI, #DF and
+  #MC entries then have to work out which gs they got (Linux's
+  "paranoid" entry: read MSR GS_BASE), and `current` has to be read in
+  one gs-relative instruction, since a task preempted between two could
+  resume on another CPU.
+- Locks across CPUs. Every critical section is `irq_save` (63 of them),
+  which excludes nothing on another CPU. A big kernel lock, held
+  whenever a CPU runs kernel code and dropped in ring 3 and in the idle
+  halt, keeps them all correct at once; finer locks can come later.
+- The scheduler: an idle task per CPU, a tick per CPU (the local APIC
+  timer, with the boot CPU's calibration), `need_resched` per CPU, and
+  the tick count kept by one CPU only.
+- Nothing may wait, holding the lock, for something another CPU must
+  do: every device interrupt goes to the boot CPU, which would spin on
+  the lock forever.
+Device interrupts can stay on the boot CPU. No TLB shootdowns are
+needed so far: kernel mappings are only ever added, and an address
+space is freed only once its task is dead and off every CPU.
 
 **PCI interrupts on real boards.** A PCI device's interrupt is taken
 from its interrupt line register, an ISA IRQ, and routed to the I/O APIC

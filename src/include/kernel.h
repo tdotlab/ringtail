@@ -38,7 +38,14 @@ extern char _kernel_start[], _ro_start[], _ro_end[], _kernel_end[];
 
 void panic(const char* fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 
+// The most processors the kernel will start, the boot CPU included.
+#define MAX_CPUS 64
+
+// The boot CPU's GDT, TSS and SYSCALL setup (gdt.c), and another
+// CPU's (index 1 and up), with its three interrupt stacks in
+// ist_stacks (IST_STACKS_SIZE bytes, 16-byte aligned).
 void gdt_init(void);
+void gdt_init_cpu(int index, void* ist_stacks);
 // The kernel stack the CPU switches to on a trap or system call from
 // ring 3.
 void tss_set_kstack(uintptr_t top);
@@ -47,6 +54,17 @@ void tss_set_kstack(uintptr_t top);
 #define IST_NMI 1
 #define IST_DOUBLE_FAULT 2
 #define IST_MACHINE_CHECK 3
+#define IST_STACK_SIZE 8192
+#define IST_STACKS_SIZE (3 * IST_STACK_SIZE)
+
+// The other processors (smp.c): started after the timer, which times
+// the startup sequence, with interrupts still off. Each one sets
+// itself up (GDT, TSS, interrupts, FPU, its local APIC) and then
+// waits, halted; tasks run on the boot CPU only, so far.
+void smp_init(void);
+int smp_cpus(void);  // processors running, the boot CPU included
+// "4 started, tasks run on 1" and the like, for the banner.
+const char* smp_describe(char* buf, uint32_t size);
 
 // Fault log: the last few fatal events, kept so a fault that happened
 // while the screen was in graphics mode can still be read afterwards.

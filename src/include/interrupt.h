@@ -35,7 +35,7 @@ int irq_pending(int irq);
 // set up the 8259s, which stay in use otherwise.
 void irq_controller_init(void);
 int irq_uses_apic(void);
-// "local and I/O APIC, 4 CPUs (1 in use)", or "8259 PIC" and why.
+// "local and I/O APIC", or "8259 PIC" and why.
 const char* irq_controller(char* buf, uint32_t size);
 
 // Set by anything that makes another task runnable; the dispatcher
@@ -46,9 +46,11 @@ void interrupt_dispatch(regs_t* r);
 
 // The machine's part (arch/<arch>/cpu.c): a gate that runs handler in
 // ring 0 with interrupts off, which code at privilege dpl may call
-// with int; loading the table; and printing a frame.
+// with int; loading the table (on the boot CPU, then on each of the
+// others: they share it); and printing a frame.
 void idt_set_gate(int vec, uintptr_t handler, int dpl);
 void idt_install(void);
+void idt_load_here(void);
 void dump_regs(const regs_t* r);
 
 #endif

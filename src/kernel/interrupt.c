@@ -90,13 +90,8 @@ void irq_controller_init(void) {
 int irq_uses_apic(void) { return apic_on; }
 
 const char* irq_controller(char* buf, uint32_t size) {
-    if (!apic_on) {
-        snprintf(buf, size, "8259 PIC (%s)", pic_why);
-    } else {
-        int n = apic_cpus();
-        if (n == 1) snprintf(buf, size, "local and I/O APIC, 1 CPU");
-        else snprintf(buf, size, "local and I/O APIC, %d CPUs (1 in use)", n);
-    }
+    if (apic_on) snprintf(buf, size, "local and I/O APIC");
+    else snprintf(buf, size, "8259 PIC (%s)", pic_why);
     return buf;
 }
 
@@ -206,7 +201,7 @@ static uint32_t nmis_logged;
 
 void interrupt_dispatch(regs_t* r) {
     if (r->vector == 2) {
-        nmis_seen++;
+        __atomic_fetch_add(&nmis_seen, 1, __ATOMIC_RELAXED);  // any CPU may take one
         return;  // no scheduling, no kill: not on this stack
     }
     uint32_t nmis = nmis_seen;

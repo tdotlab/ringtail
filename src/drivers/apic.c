@@ -1,7 +1,9 @@
 // The local APIC (one per CPU: its interrupts, its timer, the EOI) and
 // the I/O APICs (the board's interrupt lines, each routed to a vector
-// and a CPU), as the ACPI MADT describes them. Only the boot CPU is
-// set up; every routed interrupt goes to it.
+// and a CPU), as the ACPI MADT describes them. Every routed interrupt
+// goes to the boot CPU; the others' local APICs are set up as they
+// start (smp.c), and the boot CPU starts them with interprocessor
+// interrupts.
 #include "kernel.h"
 #include "arch.h"
 #include "lib.h"
@@ -21,6 +23,8 @@
 #define LAPIC_SVR         0x0F0
 #define LAPIC_IRR         0x200  // 8 registers of 32 bits, 16 bytes apart
 #define LAPIC_ESR         0x280
+#define LAPIC_ICR_LOW     0x300  // writing it sends the interrupt
+#define LAPIC_ICR_HIGH    0x310  // the destination's APIC ID in bits 24-31
 #define LAPIC_LVT_TIMER   0x320
 #define LAPIC_LVT_LINT0   0x350
 #define LAPIC_LVT_LINT1   0x360
@@ -36,6 +40,10 @@
 #define LVT_ACTIVE_LOW    (1u << 13)
 #define LVT_LEVEL         (1u << 15)
 #define TIMER_DIV_16      0x3
+#define ICR_INIT          (5u << 8)   // delivery modes
+#define ICR_STARTUP       (6u << 8)
+#define ICR_PENDING       (1u << 12)  // delivery status: not yet accepted
+#define ICR_ASSERT        (1u << 14)
 
 // I/O APIC: an index register and a data window.
 #define IOAPIC_REGSEL     0x00
@@ -79,10 +87,10 @@ int apic_cpus(void) { return madt ? madt->cpus + madt->x2apic_cpus : 1; }
 // Local APIC pin wiring for NMI, from the MADT entries for this CPU or
 // for every CPU. Without any, LINT1 is NMI, as on the PC since the MP
 // specification's virtual wire mode.
-static void set_nmi_pins(void) {
+static void set_nmi_pins(uint32_t id) {
     int acpi_id = -1;
     for (int i = 0; i < madt->cpus; i++)
-        if (madt->cpu[i].apic_id == bsp_id) acpi_id = madt->cpu[i].acpi_id;
+        if (madt->cpu[i].apic_id == id) acpi_id = madt->cpu[i].acpi_id;
     uint32_t lint[2] = { LVT_MASKED, LVT_NMI };
     int listed = 0;
     for (int i = 0; i < madt->nmis; i++) {
@@ -99,6 +107,8 @@ static void set_nmi_pins(void) {
     lapic_write(LAPIC_LVT_LINT0, lint[0]);
     lapic_write(LAPIC_LVT_LINT1, lint[1]);
 }
+
+static void local_init(void);
 
 int apic_init(const char** why) {
     uint32_t a, b, c, d;
@@ -134,15 +144,49 @@ int apic_init(const char** why) {
             ioapic_write(ioapics[i].regs, IOAPIC_REDIR + 2 * pin + 1, 0);
         }
 
+    local_init();
+    return 0;
+}
+
+// This CPU's own APIC: timer and error interrupts masked, the NMI pins
+// wired, and the spurious vector set, which also switches it on.
+static void local_init(void) {
     lapic_write(LAPIC_TPR, 0);  // accept every priority
     lapic_write(LAPIC_LVT_TIMER, LVT_MASKED);
     lapic_write(LAPIC_LVT_ERROR, LVT_MASKED);
-    set_nmi_pins();
+    set_nmi_pins(apic_id());
     lapic_write(LAPIC_ESR, 0);  // writes clear it; two, as some parts want
     lapic_write(LAPIC_ESR, 0);
     lapic_write(LAPIC_SVR, SVR_ENABLE | SPURIOUS_VECTOR);
     lapic_write(LAPIC_EOI, 0);  // anything left in service from the firmware
-    return 0;
+}
+
+// Each CPU's APIC sits at the same physical address, which reaches its
+// own; the firmware put them all at the boot CPU's base, as the MADT
+// says, so the one mapping serves every CPU.
+void apic_init_cpu(void) {
+    wrmsr(MSR_APIC_BASE, rdmsr(MSR_APIC_BASE) | APIC_BASE_ENABLE);
+    local_init();
+}
+
+uint32_t apic_bsp_id(void) { return bsp_id; }
+
+// An interprocessor interrupt to one CPU, waiting (a millisecond or so
+// at most) until its APIC has taken it.
+static int send_ipi(uint32_t id, uint32_t low) {
+    lapic_write(LAPIC_ICR_HIGH, id << 24);
+    lapic_write(LAPIC_ICR_LOW, low);
+    for (int i = 0; i < 100000; i++) {
+        if (!(lapic_read(LAPIC_ICR_LOW) & ICR_PENDING)) return 0;
+        cpu_relax();
+    }
+    return -EIO;
+}
+
+int apic_send_init(uint32_t id) { return send_ipi(id, ICR_INIT | ICR_ASSERT); }
+
+int apic_send_startup(uint32_t id, uint32_t page) {
+    return send_ipi(id, ICR_STARTUP | ICR_ASSERT | (page & 0xFF));
 }
 
 // The 8259s' edge/level control registers: the firmware sets the bit

@@ -84,8 +84,17 @@ void apic_route(int irq);
 void apic_eoi(void);
 // Whether vector is requested but not yet taken (interrupts off).
 int apic_pending(int vector);
-uint32_t apic_id(void);
+uint32_t apic_id(void);        // this CPU's
+uint32_t apic_bsp_id(void);
 int apic_cpus(void);            // processors the MADT lists
+// Another CPU's local APIC, set up as apic_init set up the boot CPU's
+// (run on that CPU, once it has started).
+void apic_init_cpu(void);
+// Starting another CPU: INIT resets it to wait for a startup IPI,
+// which sets it running in real mode at physical address page << 12.
+// 0, or -EIO if its APIC never took the interrupt.
+int apic_send_init(uint32_t id);
+int apic_send_startup(uint32_t id, uint32_t page);
 // The local APIC's timer, counting down at the bus clock divided by 16.
 void apic_timer_oneshot(uint32_t count);
 void apic_timer_periodic(uint32_t count, int vector);

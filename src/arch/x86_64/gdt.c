@@ -32,7 +32,7 @@ typedef struct {
 // alone, so the entry reaches this block through gs, after swapgs
 // (KERNEL_GS_BASE points here), parks the user's rsp in it and loads
 // the kernel stack from it. The offsets are CPU_USER_RSP and
-// CPU_KSTACK in isr.asm. One CPU for now.
+// CPU_KSTACK in isr.asm.
 typedef struct {
     uint64_t user_rsp;
     uint64_t kstack;
@@ -40,19 +40,25 @@ typedef struct {
 _Static_assert(__builtin_offsetof(cpu_t, user_rsp) == 0 && __builtin_offsetof(cpu_t, kstack) == 8,
                "isr.asm knows these offsets");
 
-// Five 8-byte descriptors, then the TSS's, which takes two slots.
-static uint64_t gdt[7];
-static gdt_ptr_t gdt_ptr;
-static tss_t tss;
-static cpu_t cpu0;
+// Every CPU has its own GDT, since loading the task register marks the
+// TSS's descriptor busy, and its own TSS and interrupt stacks, since
+// two CPUs can take a trap at once. Index 0 is the boot CPU.
+typedef struct {
+    cpu_t cpu;
+    // Five 8-byte descriptors, then the TSS's, which takes two slots.
+    uint64_t gdt[7];
+    gdt_ptr_t gdt_ptr;
+    tss_t tss;
+} percpu_t;
+static percpu_t cpus[MAX_CPUS];
 
 // Stacks for the traps that may arrive when the stack cannot be
 // trusted (IST_* in kernel.h): an NMI or a machine check in the few
 // instructions where the SYSCALL entry or exit runs in ring 0 on the
 // user's rsp, and a double fault, which is often a kernel stack gone
-// bad. The CPU switches to these whatever the ring.
-#define IST_STACK_SIZE 8192
-static uint8_t ist_stacks[3][IST_STACK_SIZE] __attribute__((aligned(16)));
+// bad. The CPU switches to these whatever the ring. The boot CPU's are
+// here; the others' come from the heap (smp.c).
+static uint8_t bsp_ist_stacks[IST_STACKS_SIZE] __attribute__((aligned(16)));
 
 extern void gdt_load(gdt_ptr_t* p);
 extern void syscall_entry(void);
@@ -70,7 +76,7 @@ static uint64_t segment(uint8_t access, uint8_t flags) {
     return 0xFFFFull | (uint64_t)access << 40 | 0xFull << 48 | (uint64_t)flags << 52;
 }
 
-static void syscall_init(void) {
+static void syscall_init(cpu_t* cpu) {
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
     // SYSCALL takes CS from STAR[47:32] and SS from 8 past it: 0x08 and
     // 0x10. SYSRET takes SS from STAR[63:48] + 8 and CS from + 16, both
@@ -85,31 +91,38 @@ static void syscall_init(void) {
     // gs is 0 everywhere but inside the entry's swapgs pair; programs
     // cannot change its base (no FSGSBASE, no wrmsr in ring 3).
     wrmsr(MSR_GS_BASE, 0);
-    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)&cpu0);
+    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
 }
 
-void gdt_init(void) {
+void gdt_init_cpu(int index, void* ist_stacks) {
+    percpu_t* c = &cpus[index];
+    uint64_t* gdt = c->gdt;
     gdt[0] = 0;
     gdt[1] = segment(0x9A, 0xA);  // 0x08 kernel code, 64-bit
     gdt[2] = segment(0x92, 0xC);  // 0x10 kernel data
     gdt[3] = segment(0xF2, 0xC);  // 0x18 user data (DPL 3), selector 0x1B
     gdt[4] = segment(0xFA, 0xA);  // 0x20 user code, 64-bit (DPL 3), selector 0x23
-    memset(&tss, 0, sizeof(tss));
+    tss_t* tss = &c->tss;
+    memset(tss, 0, sizeof(*tss));
     // An I/O bitmap offset past the segment limit means there is no
     // bitmap, so with IOPL 0 every port access from ring 3 faults.
-    tss.iomap_base = sizeof(tss);
-    for (int i = 0; i < 3; i++) tss.ist[i] = (uintptr_t)ist_stacks[i] + IST_STACK_SIZE;  // IST1-3
-    uint64_t base = (uintptr_t)&tss, limit = sizeof(tss) - 1;
+    tss->iomap_base = sizeof(*tss);
+    uint8_t* ist = ist_stacks;
+    for (int i = 0; i < 3; i++) tss->ist[i] = (uintptr_t)ist + (uintptr_t)(i + 1) * IST_STACK_SIZE;  // IST1-3
+    uint64_t base = (uintptr_t)tss, limit = sizeof(*tss) - 1;
     gdt[5] = (limit & 0xFFFF) | (base & 0xFFFFFF) << 16 | 0x89ull << 40 | (limit >> 16 & 0xF) << 48 |
              (base >> 24 & 0xFF) << 56;   // 0x28 TSS, available
     gdt[6] = base >> 32;
-    gdt_ptr.limit = sizeof(gdt) - 1;
-    gdt_ptr.base = (uintptr_t)&gdt;
-    gdt_load(&gdt_ptr);
-    syscall_init();
+    c->gdt_ptr.limit = sizeof(c->gdt) - 1;
+    c->gdt_ptr.base = (uintptr_t)gdt;
+    gdt_load(&c->gdt_ptr);
+    syscall_init(&c->cpu);
 }
 
+void gdt_init(void) { gdt_init_cpu(0, bsp_ist_stacks); }
+
+// Only the boot CPU runs tasks so far.
 void tss_set_kstack(uintptr_t top) {
-    tss.rsp0 = top;
-    cpu0.kstack = top;
+    cpus[0].tss.rsp0 = top;
+    cpus[0].cpu.kstack = top;
 }

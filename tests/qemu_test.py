@@ -259,7 +259,7 @@ def tests(m, t):
     # QEMU's pc machine has ACPI tables with an MADT, one I/O APIC, and
     # a local APIC timer that counts at 1 GHz.
     t.check("takes its interrupts from the APICs the MADT describes",
-            "\nInterrupts: local and I/O APIC, 1 CPU\n" in boot, boot)
+            "\nInterrupts: local and I/O APIC\n" in boot and "\nCPUs: 1\n" in boot, boot)
     mhz = re.search(r"\nTimer: local APIC, (\d+\.\d) MHz bus\n", boot)
     t.check("and ticks from the local APIC timer, measured against the PIT to within 1%",
             mhz and 990 <= float(mhz.group(1)) <= 1010, boot)
@@ -3861,22 +3861,24 @@ def netconf_tests(m, t):
 
 
 def interrupt_boots(iso, disk, work, t):
-    """Machines whose interrupts come some other way: no ACPI tables, no
-    local APIC (both back to the 8259s and the PIT), four CPUs, and the
-    q35 chipset, whose MADT and interrupt wiring differ from the pc's
-    (it has no IDE controller of its own, so it gets a PIIX one)."""
+    """Machines whose interrupts come some other way: no ACPI tables
+    (with two CPUs, which then cannot be found), no local APIC (both
+    back to the 8259s and the PIT), four CPUs, and the q35 chipset with
+    two, whose MADT and interrupt wiring differ from the pc's (it has
+    no IDE controller of its own, so it gets a PIIX one)."""
     def ide_on_q35(img):
         return dict(machine="q35", drive=f"file={img},format=raw,if=none,id=d0",
                     extra=["-device", "piix3-ide,id=pide", "-device", "ide-hd,drive=d0,bus=pide.0",
                            "-nic", "user,model=e1000"])
-    for name, banner, timer, opts in [
-            ("acpi=off", "Interrupts: 8259 PIC (no ACPI MADT)", "Timer: PIT\n",
-             lambda img: dict(machine="pc,acpi=off")),
-            ("no APIC", "Interrupts: 8259 PIC (no local APIC)", "Timer: PIT\n",
+    for name, banner, timer, cpus, opts in [
+            ("acpi=off", "Interrupts: 8259 PIC (no ACPI MADT)", "Timer: PIT\n", "CPUs: 1",
+             lambda img: dict(machine="pc,acpi=off", extra=["-smp", "2"])),
+            ("no APIC", "Interrupts: 8259 PIC (no local APIC)", "Timer: PIT\n", "CPUs: 1",
              lambda img: dict(cpu="qemu64,-apic")),
-            ("4 CPUs", "Interrupts: local and I/O APIC, 4 CPUs (1 in use)", "Timer: local APIC, ",
+            ("4 CPUs", "Interrupts: local and I/O APIC", "Timer: local APIC, ", "CPUs: 4 started, tasks run on 1",
              lambda img: dict(extra=["-smp", "4"])),
-            ("q35", "Interrupts: local and I/O APIC, 1 CPU", "Timer: local APIC, ", ide_on_q35)]:
+            ("q35", "Interrupts: local and I/O APIC", "Timer: local APIC, ", "CPUs: 2 started, tasks run on 1",
+             lambda img: dict(ide_on_q35(img), extra=ide_on_q35(img)["extra"] + ["-smp", "2"]))]:
         sub = os.path.join(work, "irq-" + name.replace(" ", "-").replace("=", "-"))
         os.mkdir(sub)
         img = os.path.join(sub, "disk.img")
@@ -3885,6 +3887,7 @@ def interrupt_boots(iso, disk, work, t):
         try:
             boot = plain(vm.expect(PROMPT, 30))
             t.check(f"[{name}] boots and says how it takes interrupts", banner + "\n" in boot and timer in boot, boot)
+            t.check(f"[{name}] and how many CPUs it started", "\n" + cpus + "\n" in boot, boot)
             out = plain(vm.run("ping -c 3 10.0.2.2", timeout=20))
             t.check(f"[{name}] the network card works", "3 received" in out, out)
             out = plain(vm.run("net"))

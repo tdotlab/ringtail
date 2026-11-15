@@ -189,7 +189,7 @@ damaged, and 4000 frames of garbage. Short boots check the other two
 e1000 models and a machine with no card, a slow disk and a failing one
 (QEMU's I/O throttling and its blkdebug driver), machines with 2 GB
 and 6 GB of RAM, and machines whose interrupts come another way: no ACPI
-tables, no local APIC, four CPUs, and the q35 chipset. Pass `--keep` to keep the serial log and the disk.
+tables, no local APIC, four CPUs, and the q35 chipset with two. Pass `--keep` to keep the serial log and the disk.
 
 ## Design in brief
 
@@ -218,10 +218,19 @@ its polarity and trigger mode, or, for a PCI card on an ISA IRQ, level
 and active low when the chipset's ELCR says so), and takes its tick from
 the local APIC's timer, measured against the PIT at boot (QEMU's comes
 out at 1000 MHz). Without an MADT or a local APIC it stays on the 8259s
-and the PIT. The banner says which, and how many CPUs the MADT lists;
-only the first is used. There is no AML interpreter, so PCI interrupt
+and the PIT. The banner says which. There is no AML interpreter, so PCI interrupt
 routing (`_PRT`) is not read: a PCI card's interrupt is taken from its
 line register, which is right on QEMU but not on every real board.
+
+CPUs: the boot CPU starts the others the MADT lists, one at a time,
+with an INIT and two startup IPIs. Each begins in real mode in a
+trampoline copied below 1 MB, which takes it to 64-bit mode on page
+tables made for it; it then loads its own GDT, TSS and interrupt
+stacks, the shared IDT, the kernel's page tables, and sets up its FPU
+and local APIC. Then it waits, halted: tasks still run on the boot CPU
+only, since the kernel's critical sections are interrupts-off on one
+CPU and lock nothing against another. The banner says how many
+started.
 
 Tasks: a round-robin, preemptive scheduler runs on the 100 Hz tick. The
 kernel's own tasks (idle, init) and user programs are scheduled the same
@@ -429,7 +438,8 @@ roots are Mozilla's, as the ca-certificates package ships them, in
 ```
 src/arch       what differs between machines, one folder each (x86_64): the multiboot
                entry, linker script, GDT and TSS, IDT gates and interrupt entry, task switch,
-               page tables, the saved register frame and FPU state (include/arch/)
+               page tables, starting the other CPUs (smp.c, trampoline.asm), the saved
+               register frame and FPU state (include/arch/)
 src/kernel     kernel_main, interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
 src/mm         heap, physical frames and checked user copies
 src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000,
