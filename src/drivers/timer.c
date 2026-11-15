@@ -51,3 +51,29 @@ uint32_t timer_micros(void) {
     if (pending && done < PIT_DIVISOR / 2) t++;
     return t * (1000000u / TIMER_HZ) + done * (1000000u / TIMER_HZ) / PIT_DIVISOR;
 }
+
+static uint32_t pit_count(void) {
+    uint32_t f = irq_save();  // the latch and both reads in one piece
+    outb(PIT_CMD, 0x00);
+    uint32_t count = inb(PIT_CH0);
+    count |= (uint32_t)inb(PIT_CH0) << 8;
+    irq_restore(f);
+    return count;
+}
+
+void stopwatch_start(stopwatch_t* w) {
+    w->start_ticks = ticks;
+    w->last_count = pit_count();
+    w->wraps = 0;
+}
+
+uint32_t stopwatch_ms(stopwatch_t* w) {
+    // Mode 2 counts down and reloads, so a count above the last one
+    // seen means it went round (at least once) in between.
+    uint32_t count = pit_count();
+    if (count > w->last_count) w->wraps++;
+    w->last_count = count;
+    uint32_t t = ticks - w->start_ticks;
+    if (w->wraps > t) t = w->wraps;
+    return t * (1000u / TIMER_HZ);
+}

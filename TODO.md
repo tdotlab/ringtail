@@ -51,6 +51,17 @@ Every task ends the same way, or it is not done:
   against the wrong one (the `cal` section does).
 - `rtcset` in `tests/programs` sets the clock for a test that needs a
   given date. Put the clock back afterwards (the `cal` block shows how).
+- Hardware waits are timed by the clock, not by counting polls. The ATA
+  driver once gave the drive 2 million polls, about 0.1 s under QEMU,
+  and a slow fsync on the host turned into a failed write about once
+  in four full test runs. The disk is read before interrupts are on, so
+  such waits use `stopwatch_ms`, which keeps time without the timer
+  interrupt. The disk tests in the QEMU suite slow the disk and inject
+  errors to keep this honest.
+- QEMU's IDE reset cancels an in-flight PIO request synchronously, so
+  a test that suspends a request (blkdebug `break`) and lets the driver
+  time out and reset freezes QEMU itself. Make a drive look hung with a
+  throttle slower than the timeout instead.
 - `make test` takes about ten minutes. Run it in the background and wait
   on its log.
 - The machine is x86_64 now. The kernel is built with `-mno-red-zone`

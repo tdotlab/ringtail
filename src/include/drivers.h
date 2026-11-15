@@ -17,6 +17,19 @@ uint64_t timer_ticks64(void);
 // own counter. Wraps after about 71 minutes, so only differences mean
 // anything.
 uint32_t timer_micros(void);
+// A clock for busy waits that also runs with interrupts off (the disk is
+// read before they come on at boot). It counts the PIT counter's
+// wrap-arounds the caller sees while it polls, and takes the tick count
+// when that is larger. Both can only miss time, never invent it, so a
+// wait timed by it may run long but never ends early. Poll at least once
+// per tick (10 ms) for it to keep time with interrupts off.
+typedef struct {
+    uint32_t start_ticks;
+    uint32_t last_count;
+    uint32_t wraps;
+} stopwatch_t;
+void stopwatch_start(stopwatch_t* w);
+uint32_t stopwatch_ms(stopwatch_t* w);
 
 // ---- Real-time clock (CMOS) ----
 void rtc_read(rtc_time_t* t);

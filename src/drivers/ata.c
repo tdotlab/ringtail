@@ -1,10 +1,18 @@
 // ATA disk, primary channel master, polled PIO with LBA28.
 //
 // Polling, not interrupts: nIEN is set so the drive never raises
-// IRQ 14. Every wait has a timeout, and status is read in the order
-// the spec wants: wait for BSY to clear, then look at ERR/DF, then
-// DRQ. Callers (the filesystem) serialise access with their own
-// lock, so the controller never sees two commands at once.
+// IRQ 14. Every wait has a timeout in real time, and status is read in
+// the order the spec wants: wait for BSY to clear, then look at ERR/DF,
+// then DRQ. A command that fails or never finishes is followed by a
+// software reset, so the next one does not land on a drive still busy
+// with it, and is tried again: reads, writes of whole sectors and
+// FLUSH are all safe to repeat. A drive that stays busy through every
+// try is taken as gone, like Linux taking a device offline, and every
+// later command fails at once: otherwise each of the several commands
+// in one file write would wait out its own tries. One that answers
+// with an error (a bad sector) is still there and stays in use. Callers (the filesystem) serialise
+// access with their own lock, so the controller never sees two
+// commands at once.
 #include "kernel.h"
 #include "arch.h"
 #include "drivers.h"
@@ -31,9 +39,17 @@
 #define CMD_FLUSH    0xE7
 #define CMD_IDENTIFY 0xEC
 
-#define TIMEOUT 2000000
+// How long the drive may stay busy before it counts as hung. ATA sets
+// no bound; Linux gives most commands 30 s, and a disk spinning up from
+// standby takes several. This was once 2 million polls, about 0.1 s
+// under QEMU, and one slow fsync on the host made a write fail.
+#define TIMEOUT_MS 30000
+#define TRIES 3
+#define CTRL_NIEN 0x02
+#define CTRL_SRST 0x04
 
 static int present;
+static int gone;  // stopped answering: see the top of the file
 static uint32_t sectors;
 
 // Reading the alternate status four times takes the 400 ns the drive
@@ -42,24 +58,54 @@ static void delay400(void) {
     for (int i = 0; i < 4; i++) (void)inb(ATA_CTRL);
 }
 
-static int wait_ready(void) {
-    for (int i = 0; i < TIMEOUT; i++) {
+// Waits until BSY clears, then: -EIO on ERR or DF, 0 if DRQ is set or
+// not wanted, else keeps waiting. -ETIMEDOUT when time runs out. The clock
+// is read every 256 polls: often enough to see each 10 ms tick with
+// interrupts off, rarely enough to keep the loop tight.
+static int wait_status(int want_drq) {
+    stopwatch_t w;
+    stopwatch_start(&w);
+    for (uint32_t i = 1;; i++) {
         uint8_t s = inb(ATA_CTRL);
-        if (s & ST_BSY) continue;
-        if (s & (ST_ERR | ST_DF)) return -EIO;
-        return 0;
+        if (!(s & ST_BSY)) {
+            if (s & (ST_ERR | ST_DF)) return -EIO;
+            if (!want_drq || (s & ST_DRQ)) return 0;
+        }
+        if (i % 256 == 0 && stopwatch_ms(&w) >= TIMEOUT_MS) return -ETIMEDOUT;
     }
-    return -EIO;
 }
 
-static int wait_drq(void) {
-    for (int i = 0; i < TIMEOUT; i++) {
-        uint8_t s = inb(ATA_CTRL);
-        if (s & ST_BSY) continue;
-        if (s & (ST_ERR | ST_DF)) return -EIO;
-        if (s & ST_DRQ) return 0;
+static int wait_ready(void) { return wait_status(0); }
+static int wait_drq(void) { return wait_status(1); }
+
+// BSY clear, whatever the other bits say.
+static int wait_not_busy(uint32_t ms) {
+    stopwatch_t w;
+    stopwatch_start(&w);
+    for (uint32_t i = 1;; i++) {
+        if (!(inb(ATA_CTRL) & ST_BSY)) return 0;
+        if (i % 256 == 0 && stopwatch_ms(&w) >= ms) return -EIO;
     }
-    return -EIO;
+}
+
+static void pause_ms(uint32_t ms) {
+    stopwatch_t w;
+    stopwatch_start(&w);
+    for (uint32_t i = 1;; i++) {
+        (void)inb(ATA_CTRL);
+        if (i % 256 == 0 && stopwatch_ms(&w) >= ms) return;
+    }
+}
+
+// Software reset of the channel. SRST is held for well over the 5 us
+// the spec asks, then the drive gets 2 ms (here a tick or two) before
+// its status means anything, then as long as any command to finish.
+static void reset(void) {
+    outb(ATA_CTRL, CTRL_SRST | CTRL_NIEN);
+    for (int i = 0; i < 64; i++) (void)inb(ATA_CTRL);
+    outb(ATA_CTRL, CTRL_NIEN);
+    pause_ms(10);
+    (void)wait_not_busy(TIMEOUT_MS);
 }
 
 static void issue(uint8_t cmd, uint32_t lba, uint8_t count) {
@@ -85,7 +131,7 @@ int ata_init(void) {
     delay400();
     uint8_t s = inb(ATA_STATUS);
     if (s == 0 || s == 0xFF) return -ENOENT;     // nothing on the bus
-    for (int i = 0; i < TIMEOUT && (inb(ATA_CTRL) & ST_BSY); i++) { }
+    (void)wait_not_busy(TIMEOUT_MS);
     if (inb(ATA_LBA1) || inb(ATA_LBA2)) return -ENOENT;  // ATAPI or SATA, not ATA
     if (wait_drq()) return -EIO;
     uint16_t id[256];
@@ -100,51 +146,68 @@ int ata_present(void) { return present; }
 uint32_t ata_sectors(void) { return sectors; }
 
 static int check_range(uint32_t lba, uint32_t count) {
-    if (!present) return -EIO;
+    if (!present || gone) return -EIO;
     if (count == 0 || lba >= sectors || count > sectors - lba) return -EIO;
     if (lba + count > 0x10000000) return -EIO;  // LBA28 limit
     return 0;
 }
 
-int ata_read(uint32_t lba, uint32_t count, void* buf) {
-    if (check_range(lba, count)) return -EIO;
-    uint16_t* p = buf;
-    while (count) {
-        uint32_t n = count > 256 ? 256 : count;
-        issue(CMD_READ, lba, (uint8_t)(n & 0xFF));  // 0 means 256
-        for (uint32_t s = 0; s < n; s++) {
-            if (wait_drq()) return -EIO;
+// One command of 1 to 256 sectors, data moved by PIO.
+static int pio(uint8_t cmd, uint32_t lba, uint32_t n, uint16_t* p) {
+    issue(cmd, lba, (uint8_t)(n & 0xFF));  // 0 means 256
+    for (uint32_t s = 0; s < n; s++) {
+        int r = wait_drq();
+        if (r) return r;
+        if (cmd == CMD_READ) {
             uint32_t words = 256;
             __asm__ volatile("rep insw" : "+D"(p), "+c"(words) : "d"(ATA_DATA) : "memory");
+        } else {
+            for (int i = 0; i < 256; i++) outw(ATA_DATA, *p++);
         }
+    }
+    // A write is not done when the last word is in: the drive is busy
+    // until the sectors are stored (under QEMU, a write to the host file).
+    return cmd == CMD_WRITE ? wait_ready() : 0;
+}
+
+static int transfer(uint8_t cmd, uint32_t lba, uint32_t count, uint16_t* p) {
+    if (check_range(lba, count)) return -EIO;
+    while (count) {
+        uint32_t n = count > 256 ? 256 : count;
+        int r = -EIO;
+        for (int t = 0; t < TRIES && r; t++) {
+            if (t) reset();
+            r = pio(cmd, lba, n, p);
+        }
+        if (r == -ETIMEDOUT) gone = 1;
+        if (r) return -EIO;
         lba += n;
         count -= n;
+        p += n * 256;
     }
     return 0;
+}
+
+int ata_read(uint32_t lba, uint32_t count, void* buf) {
+    return transfer(CMD_READ, lba, count, buf);
 }
 
 int ata_write(uint32_t lba, uint32_t count, const void* buf) {
-    if (check_range(lba, count)) return -EIO;
-    const uint16_t* p = buf;
-    while (count) {
-        uint32_t n = count > 256 ? 256 : count;
-        issue(CMD_WRITE, lba, (uint8_t)(n & 0xFF));
-        for (uint32_t s = 0; s < n; s++) {
-            if (wait_drq()) return -EIO;
-            for (int i = 0; i < 256; i++) outw(ATA_DATA, *p++);
-        }
-        if (wait_ready()) return -EIO;
-        lba += n;
-        count -= n;
-    }
-    return 0;
+    // pio only reads through the pointer for a write.
+    return transfer(CMD_WRITE, lba, count, (uint16_t*)(uintptr_t)buf);
 }
 
 int ata_flush(void) {
-    if (!present) return -EIO;
-    outb(ATA_DRIVE, 0xE0);
-    delay400();
-    outb(ATA_CMD, CMD_FLUSH);
-    delay400();
-    return wait_ready();
+    if (!present || gone) return -EIO;
+    int r = -EIO;
+    for (int t = 0; t < TRIES && r; t++) {
+        if (t) reset();
+        outb(ATA_DRIVE, 0xE0);
+        delay400();
+        outb(ATA_CMD, CMD_FLUSH);
+        delay400();
+        r = wait_ready();
+    }
+    if (r == -ETIMEDOUT) gone = 1;
+    return r ? -EIO : 0;
 }

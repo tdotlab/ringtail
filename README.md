@@ -260,6 +260,13 @@ File data is always written before the metadata that points at it.
 Replacing a file builds the new contents in fresh clusters before
 switching the directory entry, so a failure leaves the old file intact;
 programs get that through the `save` syscall.
+The disk itself is driven by polled PIO. Every wait has a 30-second
+limit in real time, and a command that fails or times out is followed
+by a reset of the channel and tried again, up to three times. A drive
+that stays busy through all three is taken as gone, and from then on
+the disk returns errors at once instead of making each operation wait
+again; a drive that answers with an error, such as a bad sector, stays
+in use.
 Rename moves the entry (and a directory's `..`), so an open file stays
 open through it, and a directory cannot be moved inside itself. An open
 file cannot be deleted, and a directory that is some task's

@@ -13,6 +13,7 @@ import argparse
 import datetime
 import os
 import re
+import struct
 import select
 import shutil
 import socket
@@ -37,13 +38,15 @@ QEMU = "qemu-system-x86_64"
 class Machine:
     # net: QEMU arguments for the network card; by default QEMU gives an
     # e1000 on its user network, where 10.0.2.2 is the gateway.
-    def __init__(self, iso, disk, workdir, cpu=None, mem=64, machine=None, net=()):
+    # drive: the whole -drive value, to put a slow or failing disk under
+    # the guest; by default the disk image as it is.
+    def __init__(self, iso, disk, workdir, cpu=None, mem=64, machine=None, net=(), drive=None):
         self.dir = workdir
         self.serial_path = os.path.join(workdir, "serial.sock")
         self.monitor_path = os.path.join(workdir, "monitor.sock")
         self.qemu = subprocess.Popen(
             [QEMU, "-cdrom", iso,
-             "-drive", f"file={disk},format=raw,if=ide,index=0",
+             "-drive", drive or f"file={disk},format=raw,if=ide,index=0",
              "-boot", "d", "-m", str(mem), "-display", "none",
              *(["-cpu", cpu] if cpu else []), *(["-machine", machine] if machine else []),
              *net,
@@ -3833,6 +3836,112 @@ def short_boots(iso, disk, work, t):
                 f.write(vm.log)
 
 
+def _first_lba(img, name83):
+    """The first sector of a file in the root directory of a FAT16 image."""
+    with open(img, "rb") as f:
+        bs = f.read(512)
+        bps, spc, reserved, nfats, rootents = struct.unpack_from("<HBHBH", bs, 11)
+        fat_sectors = struct.unpack_from("<H", bs, 22)[0]
+        root = reserved + nfats * fat_sectors
+        data = root + (rootents * 32 + bps - 1) // bps
+        f.seek(root * bps)
+        for _ in range(rootents):
+            e = f.read(32)
+            if e[:11] == name83.encode():
+                return data + (struct.unpack_from("<H", e, 26)[0] - 2) * spc
+    raise KeyError(name83)
+
+
+def disk_tests(iso, disk, work, t):
+    """The disk driver against a slow disk and a failing one. The QEMU disk
+    is a file on the host, and a slow fsync there once made a write fail:
+    the driver gave the drive about 0.1 s and then reported an error."""
+    def boot(name, drive, during_boot=None, script=()):
+        sub = os.path.join(work, name)
+        os.mkdir(sub)
+        img = os.path.join(sub, "disk.img")
+        shutil.copy(disk, img)
+        vm = Machine(iso, img, sub, drive=drive(img, sub))
+        try:
+            if during_boot:
+                during_boot(vm)
+            out = vm.expect(PROMPT, 60)
+            t.check(f"[{name}] boots with the disk mounted", "Disk: 16 MB FAT16" in out, out)
+            for cmd, want, limit in script:
+                start = time.time()
+                out = plain(vm.run(cmd, timeout=60))
+                took = time.time() - start
+                t.check(f"[{name}] {cmd}", want in out and took < limit, f"{out!r} after {took:.1f} s")
+        except (TimeoutError, EOFError) as e:
+            t.check(f"[{name}] session finished", False, str(e))
+        finally:
+            vm.qemu.kill()
+            vm.qemu.wait()
+            with open(os.path.join(sub, "serial.log"), "wb") as f:
+                f.write(vm.log)
+
+    # Every read takes 0.25 s while the filesystem mounts, which it does
+    # with interrupts off, so the driver's clock cannot be the timer's
+    # tick count. Then reads go back to full speed (a slow boot loads
+    # the shell a sector at a time) and every write takes 0.25 s.
+    def slow_mount(vm):
+        vm.expect(rb"Mouse:", 30)
+        time.sleep(1.5)
+        vm.monitor_cmd("block_set_io_throttle hd 0 0 0 0 0 4")
+    boot("slow disk",
+         lambda img, sub: f"file={img},format=raw,if=ide,index=0,id=hd,"
+                          "throttling.iops-read=4,throttling.iops-write=4",
+         slow_mount,
+         [("echo slow and steady > slow.txt", "", 30),
+          ("cat slow.txt", "slow and steady", 10),
+          ("cp slow.txt copy.txt", "", 30),
+          ("cat copy.txt", "slow and steady", 10)])
+
+    # One failure each of a read, a write and a flush, which a reset and
+    # a second try get past, and a sector that never reads, which has to
+    # come back as an error, at once, without spoiling what comes after.
+    hello = _first_lba(disk, "HELLO      ")
+    welcome = _first_lba(disk, "WELCOME TXT")
+
+    def flaky(img, sub):
+        conf = os.path.join(sub, "blkdebug.conf")
+        with open(conf, "w") as f:
+            f.write(f'''[inject-error]
+event = "read_aio"
+iotype = "read"
+errno = "5"
+sector = "{welcome}"
+once = "on"
+
+[inject-error]
+event = "write_aio"
+iotype = "write"
+errno = "5"
+once = "on"
+
+[inject-error]
+event = "flush_to_disk"
+iotype = "flush"
+errno = "5"
+once = "on"
+
+[inject-error]
+event = "read_aio"
+iotype = "read"
+errno = "5"
+sector = "{hello}"
+''')
+        return (f"if=ide,index=0,format=raw,file.driver=blkdebug,"
+                f"file.config={conf},file.image.filename={img}")
+    boot("flaky disk", flaky, None,
+         [("cat WELCOME.TXT", "Welcome to RingTail.", 10),
+          ("echo written once > once.txt", "", 10),
+          ("cat once.txt", "written once", 10),
+          ("run hello", "hello: I/O error", 10),
+          ("echo after the bad sector > after.txt", "", 10),
+          ("cat after.txt WELCOME.TXT", "after the bad sector\nWelcome to RingTail.", 10)])
+
+
 def main():
     global QEMU
     ap = argparse.ArgumentParser()
@@ -3908,6 +4017,7 @@ def main():
                 f.write(pm.log)
 
     short_boots(args.iso, args.disk, work, t)
+    disk_tests(args.iso, args.disk, work, t)
 
     print(f"\n{t.passed} passed, {len(t.failed)} failed")
     print(f"serial log: {os.path.join(work, 'serial.log')}")
