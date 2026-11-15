@@ -257,9 +257,10 @@ def tests(m, t):
     t.check("boots to the shell", "RingTail OS v0.28.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
     # QEMU's pc machine has ACPI tables with an MADT, one I/O APIC, and
-    # a local APIC timer that counts at 1 GHz.
+    # a local APIC timer that counts at 1 GHz. This one has two CPUs, so
+    # everything below runs with tasks on both.
     t.check("takes its interrupts from the APICs the MADT describes",
-            "\nInterrupts: local and I/O APIC\n" in boot and "\nCPUs: 1\n" in boot, boot)
+            "\nInterrupts: local and I/O APIC\n" in boot and "\nCPUs: 2\n" in boot, boot)
     mhz = re.search(r"\nTimer: local APIC, (\d+\.\d) MHz bus\n", boot)
     t.check("and ticks from the local APIC timer, measured against the PIT to within 1%",
             mhz and 990 <= float(mhz.group(1)) <= 1010, boot)
@@ -434,9 +435,14 @@ def tests(m, t):
     t.check(f"{sent} NMIs while syscalls run: every register comes back", "sysregs: all" in out and
             "FAIL" not in out and "PANIC" not in out and "killed" not in out, out)
     out = m.run("faults")
+    # QEMU's nmi command sends one to every CPU, and the count is checked
+    # at the next ordinary interrupt, so with two the count can pass a
+    # power of two by one before it is logged: 1 or 2, then 2 or 3, ...
     logged = [int(n) for n in re.findall(r"NMI received \((\d+) since boot\), ignored", out)]
+    bits = [n.bit_length() for n in logged]
     t.check("they are logged at 1, 2, 4, 8 and on, not one line each",
-            logged and logged == [1 << i for i in range(len(logged))] and logged[-1] * 2 > sent, out)
+            logged and bits[0] <= 2 and bits == list(range(bits[0], bits[0] + len(bits))) and
+            logged[-1] * 2 > sent, out)
 
     # Ctrl+C stops the foreground program.
     m.send("run count 30\r")
@@ -3692,14 +3698,14 @@ def _rows(m):
 
 def text_tests(m, t):
     """head, tail and more, on 30 lines of help (all of it, then its first
-    eight lines again) and a few small files."""
+    seven lines again) and a few small files."""
     def run(c, timeout=20):  # output as it is, indentation included
         return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
 
     # help leaves its three footer lines off when it is redirected, so
     # the file is the reference, not what help prints on the screen.
     t.check("help > h.txt (setting up)", run("help > h.txt") == "")
-    t.check("help | head -n 8 >> h.txt (setting up)", run("help | head -n 8 >> h.txt") == "")
+    t.check("help | head -n 7 >> h.txt (setting up)", run("help | head -n 7 >> h.txt") == "")
     text = run("cat h.txt")
     lines = text.split("\n")
     full = text + "\n"
@@ -3860,6 +3866,39 @@ def netconf_tests(m, t):
             "DHCP:     from 10.0.2.2" in out and "DNS:      10.0.2.3\n" in out, out)
 
 
+def parallel_checks(vm, t, name):
+    """Three programs that never give up the CPU, next to the shell: with
+    four CPUs each gets one, so all four run at once, and the shell
+    answers as if they were not there. Then they are killed from the
+    shell's CPU while they run on the others."""
+    jobs = []
+    for _ in range(3):
+        out = plain(vm.run("run spin &"))
+        got = re.search(r"\[(\d+)\] started", out)
+        if got:
+            jobs.append(got.group(1))
+    t.check(f"[{name}] three spinners start", len(jobs) == 3, out)
+    vm.run("sleep 1")
+    out = plain(vm.run("cpus"))
+    rows = re.findall(r"^\s*(\d+)\s+\d+\s+(\d+)\s+\d+\s+(\S+)\s*$", out, re.M)
+    t.check(f"[{name}] cpus lists a spinner on each of three CPUs, the shell on the fourth",
+            sorted(r[2] for r in rows) == ["saklas", "spin", "spin", "spin"], out)
+    t.check(f"[{name}] and every CPU takes its own timer ticks", len(rows) == 4 and all(int(r[1]) > 50 for r in rows), out)
+    out = plain(vm.run("tasks"))
+    t.check(f"[{name}] all four are running at the same moment",
+            len(re.findall(r"\buser\s+running\b", out)) == 4, out)
+    start = time.time()
+    out = plain(vm.run("uptime"))
+    t.check(f"[{name}] the shell stays quick", "Up " in out and time.time() - start < 2, out)
+    killed = [plain(vm.run("kill " + j)) for j in jobs]
+    t.check(f"[{name}] each spinner is killed on the CPU it runs on", all("Killed task" in k for k in killed), "\n".join(killed))
+    vm.run("sleep 1")
+    out = plain(vm.run("tasks"))
+    t.check(f"[{name}] and none is left", "spin" not in out, out)
+    out = plain(vm.run("cpus"))
+    t.check(f"[{name}] the other CPUs go back to idle", "spin" not in out and out.count("idle") == 3, out)
+
+
 def interrupt_boots(iso, disk, work, t):
     """Machines whose interrupts come some other way: no ACPI tables
     (with two CPUs, which then cannot be found), no local APIC (both
@@ -3875,9 +3914,9 @@ def interrupt_boots(iso, disk, work, t):
              lambda img: dict(machine="pc,acpi=off", extra=["-smp", "2"])),
             ("no APIC", "Interrupts: 8259 PIC (no local APIC)", "Timer: PIT\n", "CPUs: 1",
              lambda img: dict(cpu="qemu64,-apic")),
-            ("4 CPUs", "Interrupts: local and I/O APIC", "Timer: local APIC, ", "CPUs: 4 started, tasks run on 1",
+            ("4 CPUs", "Interrupts: local and I/O APIC", "Timer: local APIC, ", "CPUs: 4",
              lambda img: dict(extra=["-smp", "4"])),
-            ("q35", "Interrupts: local and I/O APIC", "Timer: local APIC, ", "CPUs: 2 started, tasks run on 1",
+            ("q35", "Interrupts: local and I/O APIC", "Timer: local APIC, ", "CPUs: 2",
              lambda img: dict(ide_on_q35(img), extra=ide_on_q35(img)["extra"] + ["-smp", "2"]))]:
         sub = os.path.join(work, "irq-" + name.replace(" ", "-").replace("=", "-"))
         os.mkdir(sub)
@@ -3895,6 +3934,8 @@ def interrupt_boots(iso, disk, work, t):
             t.check(f"[{name}] the tick keeps time", tick_rate_ok(vm, 2), "")
             out = plain(vm.run("run hello"))
             t.check(f"[{name}] and a program runs", "Hello from disk!" in out, out)
+            if name == "4 CPUs":
+                parallel_checks(vm, t, name)
         except (TimeoutError, EOFError) as e:
             t.check(f"[{name}] session finished", False, str(e))
         finally:
@@ -4102,7 +4143,7 @@ def main():
             f.write("written by mtools\n")
         HOST_FILE = subprocess.run(["mcopy", "-i", disk, src, "::From the host, with love.txt"]).returncode == 0
     t = Runner()
-    m = Machine(args.iso, disk, work)
+    m = Machine(args.iso, disk, work, extra=["-smp", "2"])
     try:
         tests(m, t)
     except (TimeoutError, EOFError) as e:

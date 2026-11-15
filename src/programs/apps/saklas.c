@@ -363,6 +363,7 @@ static void cmd_help(cmd_t* c);
 static void cmd_clear(cmd_t* c) { (void)c; print("\x1b[2J\x1b[H"); }
 static void cmd_version(cmd_t* c) { (void)c; show_kinfo(KINFO_VERSION); }
 static void cmd_tasks(cmd_t* c) { (void)c; show_kinfo(KINFO_TASKS); }
+static void cmd_cpus(cmd_t* c) { (void)c; show_kinfo(KINFO_CPUS); }
 static void cmd_faults(cmd_t* c) { (void)c; show_kinfo(KINFO_FAULTS); }
 static void cmd_mem(cmd_t* c) { (void)c; show_kinfo(KINFO_MEM); }
 static void cmd_heap(cmd_t* c) { (void)c; show_kinfo(KINFO_HEAP); }
@@ -517,6 +518,7 @@ static const builtin_t builtins[] = {
     { "run", 1, "<prog> [args] [&]", "run a program (or just type its name)", 0 },
     { "tasks", 0, "", "list tasks", cmd_tasks },
     { "kill", 1, "<id>", "stop a task", cmd_kill },
+    { "cpus", 0, "", "the processors and what each one runs", cmd_cpus },
     { "faults", 0, "", "recent faults", cmd_faults },
     { "mem", 0, "", "memory summary", cmd_mem },
     { "heap", 0, "", "kernel heap details", cmd_heap },

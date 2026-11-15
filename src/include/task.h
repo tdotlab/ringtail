@@ -10,6 +10,7 @@
 #include "lib.h"
 #include "ringtail/abi.h"
 #include "arch/fpu.h"
+#include "arch/percpu.h"
 
 typedef enum {
     TASK_READY,
@@ -33,6 +34,7 @@ typedef struct task {
     int parent;
     task_state_t state;
     int user;
+    int is_idle;           // a CPU's idle task: never in the run queue, never exits
     volatile int killed;
     int exit_status;
     int joiners;           // tasks waiting in task_join; keeps the corpse around
@@ -53,9 +55,14 @@ typedef struct task {
     struct task* next;
 } task_t;
 
-extern task_t* current;
+// The running task, on this CPU (arch/percpu.h).
+#define current ((task_t*)this_cpu_task())
 
 void task_init(void);
+// Another CPU's idle task, which its first code becomes (smp.c), and
+// how it starts being one: on that CPU, with interrupts off.
+task_t* task_idle_create(int cpu, uintptr_t stack_top);
+void task_idle_enter(task_t* idle);
 void fpu_init(void);
 // Lay out a new task's kernel stack, which ends at top, so switch_to
 // pops a zeroed frame and returns into entry. Returns the saved stack

@@ -12,7 +12,6 @@
 #include "ringtail/abi.h"
 
 static irq_handler_t irq_handlers[16];
-volatile int need_resched;
 // Set once the local and I/O APICs have taken over from the 8259s.
 static int apic_on;
 static const char* pic_why = "not set up yet";
@@ -20,6 +19,7 @@ static const char* pic_why = "not set up yet";
 extern const uintptr_t isr_stub_table[48];
 extern const uintptr_t isr_syscall_stub;  // a word holding the stub's address
 extern const uintptr_t isr_spurious_stub;
+extern const uintptr_t isr_resched_stub;
 
 #define PIC1_CMD  0x20
 #define PIC1_DATA 0x21
@@ -103,7 +103,53 @@ void idt_init(void) {
     // "int 14" faults with #GP instead of faking a page fault.
     idt_set_gate(SYSCALL_VECTOR, isr_syscall_stub, 3);
     idt_set_gate(0xFF, isr_spurious_stub, 0);
+    idt_set_gate(RESCHED_VECTOR, isr_resched_stub, 0);
     idt_install();
+}
+
+// ---- One CPU in the kernel at a time ----
+//
+// The kernel was written for one CPU, and its critical sections only
+// shut out interrupts (irq_save), which does nothing about another CPU.
+// So a CPU holds this lock whenever it runs kernel code: programs run
+// in parallel, in ring 3, and the kernel runs on one CPU at a time.
+// The lock belongs to the CPU, not the task: a task that blocks or is
+// preempted hands it to the next one on that CPU, and a CPU lets go of
+// it only to go back to ring 3 (here, and task_trampoline) or to halt
+// in its idle loop. Interrupts stay off while a CPU waits for it, and
+// no CPU holding it ever waits for another CPU, so it cannot deadlock.
+static volatile int lock_owner = -1;  // a CPU index
+
+int kernel_locked_here(void) { return lock_owner == this_cpu()->index; }
+
+int kernel_trylock(void) {
+    int none = -1;
+    return __atomic_compare_exchange_n(&lock_owner, &none, this_cpu()->index, 0, __ATOMIC_ACQUIRE,
+                                       __ATOMIC_RELAXED);
+}
+
+void kernel_lock(void) {
+    while (!kernel_trylock())
+        while (__atomic_load_n(&lock_owner, __ATOMIC_RELAXED) != -1) cpu_relax();
+}
+
+void kernel_unlock(void) { __atomic_store_n(&lock_owner, -1, __ATOMIC_RELEASE); }
+
+// A panic stops the other CPUs with an NMI, so they cannot go on
+// changing what it is about to print; the first CPU to panic is the
+// one that reports.
+static volatile int panic_cpu = -1;
+
+static void __attribute__((noreturn)) halt_forever(void) {
+    for (;;) { cli(); hlt(); }
+}
+
+static void stop_others(void) {
+    int me = this_cpu()->index, none = -1;
+    if (!__atomic_compare_exchange_n(&panic_cpu, &none, me, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) &&
+        none != me)
+        halt_forever();  // another CPU is reporting its own
+    if (apic_on && smp_cpus() > 1) apic_nmi_others();
 }
 
 static const char* const exception_names[32] = {
@@ -132,6 +178,7 @@ static void backtrace(uintptr_t fp) {
 }
 
 static void kernel_exception(regs_t* r) {
+    stop_others();
     console_panic_mode();
     gfx_emergency_text();
     kprintf_color(COLOR_ERROR, "\nKERNEL PANIC: %s (exception %u)",
@@ -143,7 +190,7 @@ static void kernel_exception(regs_t* r) {
     faultlog_add("kernel: %s at " REGS_IP_NAME "=%08lx cr2=%08lx", exception_names[r->vector],
                  (unsigned long)regs_ip(r), (unsigned long)read_cr2());
     kprintf_color(COLOR_ERROR, "System halted.\n");
-    for (;;) { cli(); hlt(); }
+    halt_forever();
 }
 
 static void user_exception(regs_t* r) {
@@ -195,34 +242,68 @@ static void handle_irq(int irq) {
 // next ordinary interrupt logs them, when the count reaches a new
 // power of two, so a storm of them cannot push everything else out of
 // the fault log. An NMI on a PC is a hardware error report or a
-// watchdog, neither of them the running program's fault.
+// watchdog, neither of them the running program's fault; or another
+// CPU's panic.
 static volatile uint32_t nmis_seen;
 static uint32_t nmis_logged;
 
+static void handle_nmi(void) {
+    if (panic_cpu >= 0 && panic_cpu != this_cpu()->index) halt_forever();
+    __atomic_fetch_add(&nmis_seen, 1, __ATOMIC_RELAXED);  // any CPU may take one
+}
+
 void interrupt_dispatch(regs_t* r) {
     if (r->vector == 2) {
-        __atomic_fetch_add(&nmis_seen, 1, __ATOMIC_RELAXED);  // any CPU may take one
+        handle_nmi();
         return;  // no scheduling, no kill: not on this stack
     }
-    uint32_t nmis = nmis_seen;
-    if ((nmis ^ nmis_logged) > nmis_logged) {  // a higher top bit than at the last log
-        nmis_logged = nmis;
-        faultlog_add("NMI received (%u since boot), ignored", (unsigned)nmis);
-    }
-    // A double fault or machine check, also on their own stacks, ends
-    // the system whichever ring it came from.
-    if (r->vector == 8 || r->vector == 18) kernel_exception(r);
-    if (r->vector < 32) {
-        if (regs_from_user(r)) user_exception(r);
-        else kernel_exception(r);
-    } else if (r->vector < 48) {
-        handle_irq((int)r->vector - IRQ_BASE);
-    } else if (r->vector == SYSCALL_VECTOR) {
-        // System calls run with interrupts on: they may block, and
-        // the timer must be able to preempt a long one.
-        sti();
-        syscall_handle(r);
-        cli();
+    int took = 0;  // the lock, on the way in: it is let go on the way out
+    if (apic_on && r->vector == IRQ_BASE + IRQ_TIMER) {
+        // Each CPU's own timer, which touches only that CPU's block
+        // (timer.c), so it needs the lock only to switch tasks; and if
+        // another CPU has it, this one keeps running what it runs, and
+        // tries again at the next interrupt.
+        irq_handlers[IRQ_TIMER]();
+        apic_eoi();
+        if (!need_resched) return;
+        if (!kernel_locked_here()) {
+            if (!kernel_trylock()) return;
+            took = 1;
+        }
+    } else if (r->vector == RESCHED_VECTOR) {
+        // Another CPU, which has the lock, has a task ready for this
+        // one: wait for the lock, then look.
+        apic_eoi();
+        need_resched = 1;
+        if (!kernel_locked_here()) {
+            kernel_lock();
+            took = 1;
+        }
+    } else {
+        if (!kernel_locked_here()) {
+            kernel_lock();
+            took = 1;
+        }
+        uint32_t nmis = nmis_seen;
+        if ((nmis ^ nmis_logged) > nmis_logged) {  // a higher top bit than at the last log
+            nmis_logged = nmis;
+            faultlog_add("NMI received (%u since boot), ignored", (unsigned)nmis);
+        }
+        // A double fault or machine check, also on their own stacks, ends
+        // the system whichever ring it came from.
+        if (r->vector == 8 || r->vector == 18) kernel_exception(r);
+        if (r->vector < 32) {
+            if (regs_from_user(r)) user_exception(r);
+            else kernel_exception(r);
+        } else if (r->vector < 48) {
+            handle_irq((int)r->vector - IRQ_BASE);
+        } else if (r->vector == SYSCALL_VECTOR) {
+            // System calls run with interrupts on: they may block, and
+            // the timer must be able to preempt a long one.
+            sti();
+            syscall_handle(r);
+            cli();
+        }
     }
     if (need_resched) {
         need_resched = 0;
@@ -234,10 +315,16 @@ void interrupt_dispatch(regs_t* r) {
         sti();
         task_exit(EXIT_KILLED);
     }
+    // took is this frame's, on this task's stack, so it holds after a
+    // switch: a frame that came in without the lock goes back where
+    // the lock is not held, ring 3 or an idle loop, whichever CPU it
+    // leaves from.
+    if (took) kernel_unlock();
 }
 
 void panic(const char* fmt, ...) {
     cli();
+    stop_others();
     console_panic_mode();
     gfx_emergency_text();
     char buf[256];
@@ -248,5 +335,5 @@ void panic(const char* fmt, ...) {
     kprintf_color(COLOR_ERROR, "\nKERNEL PANIC: %s\n", buf);
     backtrace((uintptr_t)__builtin_frame_address(0));
     kprintf_color(COLOR_ERROR, "System halted.\n");
-    for (;;) { cli(); hlt(); }
+    halt_forever();
 }

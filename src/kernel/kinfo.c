@@ -62,6 +62,9 @@ int kinfo_format(int what, sbuf_t* sb) {
     case KINFO_PCI:
         pci_format(sb);
         return 0;
+    case KINFO_CPUS:
+        smp_format(sb);
+        return 0;
     }
     return -EINVAL;
 }

@@ -40,10 +40,12 @@
 #define LVT_ACTIVE_LOW    (1u << 13)
 #define LVT_LEVEL         (1u << 15)
 #define TIMER_DIV_16      0x3
-#define ICR_INIT          (5u << 8)   // delivery modes
+#define ICR_NMI           (4u << 8)   // delivery modes; 0 is fixed, on a vector
+#define ICR_INIT          (5u << 8)
 #define ICR_STARTUP       (6u << 8)
 #define ICR_PENDING       (1u << 12)  // delivery status: not yet accepted
 #define ICR_ASSERT        (1u << 14)
+#define ICR_ALL_BUT_SELF  (3u << 18)  // a shorthand for the destination
 
 // I/O APIC: an index register and a data window.
 #define IOAPIC_REGSEL     0x00
@@ -188,6 +190,12 @@ int apic_send_init(uint32_t id) { return send_ipi(id, ICR_INIT | ICR_ASSERT); }
 int apic_send_startup(uint32_t id, uint32_t page) {
     return send_ipi(id, ICR_STARTUP | ICR_ASSERT | (page & 0xFF));
 }
+
+// An NMI to every CPU but this one, through the ICR's shorthand (no
+// ID needed): a panic stops the others with it.
+void apic_nmi_others(void) { send_ipi(0, ICR_NMI | ICR_ASSERT | ICR_ALL_BUT_SELF); }
+
+int apic_send_ipi(uint32_t id, int vector) { return send_ipi(id, ICR_ASSERT | (uint32_t)vector); }
 
 // The 8259s' edge/level control registers: the firmware sets the bit
 // for each ISA IRQ it gave to a PCI device, which shares its line and

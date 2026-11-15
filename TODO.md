@@ -83,10 +83,11 @@ Every task ends the same way, or it is not done:
   IRQ 0 is never used either: the tick comes from the local APIC timer,
   and the PIT's input stays masked. Check those by reading the code
   against the MADT and the 82093AA datasheet, not by a green run.
-- `timer_micros` adds a tick when the tick's interrupt is pending but
-  not taken (the counter has already gone round). That only happens
-  with interrupts off across a tick, which no test arranges, so the
-  suite passes with the check removed, on the PIC and the APIC alike.
+- On the PIT (no APIC, so no TSC timekeeping), `timer_micros` adds a
+  tick when the tick's interrupt is pending but not taken (the counter
+  has already gone round). That only happens with interrupts off
+  across a tick, which no test arranges, so the suite passes with the
+  check removed.
 - A QEMU test's work directory must keep its socket paths under 108
   bytes (`serial.sock` inside it): a deep scratch directory makes QEMU
   refuse to start. Pass a relative path.
@@ -253,30 +254,30 @@ machines boot UEFI. Multiboot2 through GRUB's EFI build is the small step;
 a loader of our own (or Limine) is the big one. The framebuffer from UEFI
 would also replace VGA text, which UEFI machines may not have.
 
-**SMP.** The other CPUs are started (`src/arch/x86_64/smp.c`,
-`trampoline.asm`) and each sets up its own GDT, TSS, IST stacks,
-SYSCALL MSRs and local APIC, then halts with interrupts off. Tasks run
-on the boot CPU only. What running them everywhere needs:
-- A `current` per CPU. The kernel keeps gs at 0 outside the SYSCALL
-  entry's swapgs pair, so the way there is swapgs on every entry from
-  ring 3 and gs holding the CPU's block in the kernel; the NMI, #DF and
-  #MC entries then have to work out which gs they got (Linux's
-  "paranoid" entry: read MSR GS_BASE), and `current` has to be read in
-  one gs-relative instruction, since a task preempted between two could
-  resume on another CPU.
-- Locks across CPUs. Every critical section is `irq_save` (63 of them),
-  which excludes nothing on another CPU. A big kernel lock, held
-  whenever a CPU runs kernel code and dropped in ring 3 and in the idle
-  halt, keeps them all correct at once; finer locks can come later.
-- The scheduler: an idle task per CPU, a tick per CPU (the local APIC
-  timer, with the boot CPU's calibration), `need_resched` per CPU, and
-  the tick count kept by one CPU only.
-- Nothing may wait, holding the lock, for something another CPU must
-  do: every device interrupt goes to the boot CPU, which would spin on
-  the lock forever.
-Device interrupts can stay on the boot CPU. No TLB shootdowns are
-needed so far: kernel mappings are only ever added, and an address
-space is freed only once its task is dead and off every CPU.
+**SMP, past the big lock.** Tasks run on every CPU, under one kernel
+lock (`kernel_lock`, `src/kernel/interrupt.c`): a CPU holds it whenever
+it runs kernel code and lets go on the way to ring 3 and in its idle
+halt. So two CPUs never run kernel code at once, and a task that spends
+its time in syscalls gains nothing from the second CPU. What is left:
+- Finer locks. Every critical section is still `irq_save` (63 of them),
+  correct only because the big lock is held around it. Splitting it
+  means a spinlock per subsystem (the scheduler's lists, the heap, the
+  frame pool, the VFS, the network stack), each taken with interrupts
+  off, and a lock order; the scheduler and the heap first, since every
+  syscall touches them.
+- Device interrupts all go to the boot CPU. Spreading them (the I/O
+  APIC's destination field per input) needs nothing new, but buys
+  nothing until the kernel itself runs in parallel.
+- No CPU affinity, and no migration cost: the round robin hands the
+  next ready task to whichever CPU asks, so a task hops between CPUs.
+- The TSC is trusted to run at a constant rate and to read the same on
+  every CPU, as on QEMU and any CPU with an invariant TSC (CPUID
+  80000007h EDX bit 8, not checked). Without one, SMP should be refused
+  or the tick count kept by one CPU.
+- TLB shootdowns are still not needed: kernel mappings are only ever
+  added, and an address space is freed only once its task is dead and
+  off every CPU. The first `munmap` of a page another CPU may have
+  cached, in a process with threads, changes that.
 
 **PCI interrupts on real boards.** A PCI device's interrupt is taken
 from its interrupt line register, an ISA IRQ, and routed to the I/O APIC
@@ -338,6 +339,6 @@ shared, which means the kernel or a daemon, and TTLs against a clock that
 them, slewing instead of stepping, NTS. Each is a trust and design call.
 
 **A graphics mode past 13h** (Bochs VBE framebuffer), **signals**,
-**fork/exec**, **SMP**, **IPv6**, and **TLS session resumption**: each one
+**fork/exec**, **finer kernel locks**, **IPv6**, and **TLS session resumption**: each one
 reaches into the scheduler, memory, the syscall interface or the protocol
 state machine, where a quiet mistake costs days.

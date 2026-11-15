@@ -9,6 +9,7 @@
 // regs_t, the frame, with regs_from_user, regs_ip, regs_fp and the
 // SYSCALL_* accessors for the system call registers.
 #include "arch/regs.h"
+#include "arch/percpu.h"
 
 #define IRQ_BASE      32
 #define IRQ_TIMER     0
@@ -16,6 +17,8 @@
 #define IRQ_SERIAL1   4
 #define IRQ_MOUSE     12
 #define SYSCALL_VECTOR 0x80
+// From one CPU to another, idle one: there is a task ready (smp.c).
+#define RESCHED_VECTOR 0xF0
 
 typedef void (*irq_handler_t)(void);
 
@@ -38,9 +41,17 @@ int irq_uses_apic(void);
 // "local and I/O APIC", or "8259 PIC" and why.
 const char* irq_controller(char* buf, uint32_t size);
 
-// Set by anything that makes another task runnable; the dispatcher
-// reschedules on the way out of the interrupt.
-extern volatile int need_resched;
+// Set by anything that makes another task runnable, for this CPU
+// (with interrupts off); the dispatcher reschedules on the way out of
+// the interrupt.
+#define need_resched (this_cpu()->resched)
+
+// The lock a CPU holds while it runs kernel code (interrupt.c), all
+// with interrupts off. kernel_trylock is 1 if it got it.
+void kernel_lock(void);
+int kernel_trylock(void);
+void kernel_unlock(void);
+int kernel_locked_here(void);
 
 void interrupt_dispatch(regs_t* r);
 

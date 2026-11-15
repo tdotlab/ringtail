@@ -58,13 +58,18 @@ void tss_set_kstack(uintptr_t top);
 #define IST_STACKS_SIZE (3 * IST_STACK_SIZE)
 
 // The other processors (smp.c): started after the timer, which times
-// the startup sequence, with interrupts still off. Each one sets
-// itself up (GDT, TSS, interrupts, FPU, its local APIC) and then
-// waits, halted; tasks run on the boot CPU only, so far.
+// the startup sequence and keeps the time for all of them, with
+// interrupts still off. Each one sets itself up (GDT, TSS, interrupts,
+// FPU, its local APIC and timer) and becomes an idle task, which runs
+// tasks from its first tick once the boot CPU lets go of the kernel
+// lock.
 void smp_init(void);
 int smp_cpus(void);  // processors running, the boot CPU included
-// "4 started, tasks run on 1" and the like, for the banner.
+// "4", or "1 of 4 started" and why, for the banner.
 const char* smp_describe(char* buf, uint32_t size);
+void smp_format(sbuf_t* sb);  // KINFO_CPUS
+// Wake an idle CPU, if there is one, to run a task just made ready.
+void smp_kick_idle(void);
 
 // Fault log: the last few fatal events, kept so a fault that happened
 // while the screen was in graphics mode can still be read afterwards.

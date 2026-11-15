@@ -9,19 +9,22 @@
 // ---- The tick (timer.c) ----
 // 100 Hz from the local APIC's timer when the APIC is in use, from the
 // PIT's channel 0 otherwise. The PIT runs either way: it is the
-// reference the APIC timer is measured against, and stopwatch_ms
-// counts its wrap-arounds.
+// reference the APIC timer and the TSC are measured against, and
+// stopwatch_ms counts its wrap-arounds. With the APICs the count of
+// ticks, and the time in microseconds, come from the TSC.
 #define TIMER_HZ 100
 void timer_init(void);
+void timer_init_cpu(void);    // on each other CPU, as it starts
+uint64_t timer_tsc_hz(void);  // 0 unless the TSC keeps the time
 // "local APIC, 1000 MHz bus" and the like, for the banner.
 const char* timer_source(char* buf, uint32_t size);
 uint32_t timer_ticks(void);
 // The same count without the wrap after 497 days, for deadlines that
 // can be that far off (DHCP leases).
 uint64_t timer_ticks64(void);
-// Time since boot in microseconds, from the tick count and the PIT's
-// own counter. Wraps after about 71 minutes, so only differences mean
-// anything.
+// Time since the tick started in microseconds, from the TSC, or from
+// the tick count and the timer's own counter. Wraps after about 71
+// minutes, so only differences mean anything.
 uint32_t timer_micros(void);
 // A clock for busy waits that also runs with interrupts off (the disk is
 // read before they come on at boot). It counts the PIT counter's
@@ -95,6 +98,8 @@ void apic_init_cpu(void);
 // 0, or -EIO if its APIC never took the interrupt.
 int apic_send_init(uint32_t id);
 int apic_send_startup(uint32_t id, uint32_t page);
+int apic_send_ipi(uint32_t id, int vector);  // a fixed interrupt on vector
+void apic_nmi_others(void);                 // every CPU but this one
 // The local APIC's timer, counting down at the bus clock divided by 16.
 void apic_timer_oneshot(uint32_t count);
 void apic_timer_periodic(uint32_t count, int vector);

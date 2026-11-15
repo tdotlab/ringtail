@@ -13,6 +13,7 @@
 // STAR + 8 and STAR + 16, so user data has to come before user code.
 #include "kernel.h"
 #include "arch.h"
+#include "arch/percpu.h"
 
 typedef struct {
     uint32_t reserved0;
@@ -28,29 +29,19 @@ typedef struct {
     uint64_t base;
 } __attribute__((packed)) gdt_ptr_t;
 
-// What the SYSCALL entry (isr.asm) needs, per CPU. SYSCALL leaves rsp
-// alone, so the entry reaches this block through gs, after swapgs
-// (KERNEL_GS_BASE points here), parks the user's rsp in it and loads
-// the kernel stack from it. The offsets are CPU_USER_RSP and
-// CPU_KSTACK in isr.asm.
-typedef struct {
-    uint64_t user_rsp;
-    uint64_t kstack;
-} cpu_t;
-_Static_assert(__builtin_offsetof(cpu_t, user_rsp) == 0 && __builtin_offsetof(cpu_t, kstack) == 8,
-               "isr.asm knows these offsets");
-
 // Every CPU has its own GDT, since loading the task register marks the
 // TSS's descriptor busy, and its own TSS and interrupt stacks, since
-// two CPUs can take a trap at once. Index 0 is the boot CPU.
+// two CPUs can take a trap at once; and its block (arch/percpu.h),
+// first, so a cpu_t* is also a pointer to the rest. Index 0 is the
+// boot CPU.
 typedef struct {
     cpu_t cpu;
     // Five 8-byte descriptors, then the TSS's, which takes two slots.
     uint64_t gdt[7];
     gdt_ptr_t gdt_ptr;
     tss_t tss;
-} percpu_t;
-static percpu_t cpus[MAX_CPUS];
+} cpu_tables_t;
+static cpu_tables_t cpus[MAX_CPUS];
 
 // Stacks for the traps that may arrive when the stack cannot be
 // trusted (IST_* in kernel.h): an NMI or a machine check in the few
@@ -76,7 +67,7 @@ static uint64_t segment(uint8_t access, uint8_t flags) {
     return 0xFFFFull | (uint64_t)access << 40 | 0xFull << 48 | (uint64_t)flags << 52;
 }
 
-static void syscall_init(cpu_t* cpu) {
+static void syscall_init(void) {
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
     // SYSCALL takes CS from STAR[47:32] and SS from 8 past it: 0x08 and
     // 0x10. SYSRET takes SS from STAR[63:48] + 8 and CS from + 16, both
@@ -88,14 +79,12 @@ static void syscall_init(cpu_t* cpu) {
     // (the C code expects it clear), IOPL, NT and AC. SYSRET puts the
     // user's back from r11.
     wrmsr(MSR_FMASK, 0x100 | 0x200 | 0x400 | 0x3000 | 0x4000 | 0x40000);
-    // gs is 0 everywhere but inside the entry's swapgs pair; programs
-    // cannot change its base (no FSGSBASE, no wrmsr in ring 3).
-    wrmsr(MSR_GS_BASE, 0);
-    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
 }
 
+cpu_t* cpu_get(int index) { return &cpus[index].cpu; }
+
 void gdt_init_cpu(int index, void* ist_stacks) {
-    percpu_t* c = &cpus[index];
+    cpu_tables_t* c = &cpus[index];
     uint64_t* gdt = c->gdt;
     gdt[0] = 0;
     gdt[1] = segment(0x9A, 0xA);  // 0x08 kernel code, 64-bit
@@ -116,13 +105,25 @@ void gdt_init_cpu(int index, void* ist_stacks) {
     c->gdt_ptr.limit = sizeof(c->gdt) - 1;
     c->gdt_ptr.base = (uintptr_t)gdt;
     gdt_load(&c->gdt_ptr);
-    syscall_init(&c->cpu);
+    syscall_init();
+    // gs's base is this CPU's block from here on, in the kernel; the
+    // program's is 0, kept in KERNEL_GS_BASE while the kernel runs and
+    // swapped in on the way out. Programs cannot change theirs but by
+    // loading a selector, whose base is 0 (no FSGSBASE, no wrmsr in
+    // ring 3). This comes after gdt_load, which loads gs, and that can
+    // clear the base.
+    c->cpu.self = &c->cpu;
+    c->cpu.index = index;
+    wrmsr(MSR_GS_BASE, (uintptr_t)&c->cpu);
+    wrmsr(MSR_KERNEL_GS_BASE, 0);
 }
 
 void gdt_init(void) { gdt_init_cpu(0, bsp_ist_stacks); }
 
-// Only the boot CPU runs tasks so far.
+// For the CPU it runs on, with interrupts off: the scheduler, as it
+// switches.
 void tss_set_kstack(uintptr_t top) {
-    cpus[0].tss.rsp0 = top;
-    cpus[0].cpu.kstack = top;
+    cpu_tables_t* c = (cpu_tables_t*)this_cpu();
+    c->tss.rsp0 = top;
+    c->cpu.kstack = top;
 }

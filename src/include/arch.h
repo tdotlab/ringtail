@@ -61,6 +61,11 @@ static inline void wrmsr(uint32_t msr, uint64_t v) {
     __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)) : "memory");
 }
 
+static inline uint64_t read_tsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return (uint64_t)hi << 32 | lo;
+}
 static inline void invlpg(uintptr_t va) { __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory"); }
 
 static inline void cpuid(uint32_t leaf, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {

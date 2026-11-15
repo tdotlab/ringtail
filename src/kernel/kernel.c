@@ -100,12 +100,16 @@ static void start_disk(void) {
 }
 
 void kernel_main(uint32_t magic, uint32_t mbi) {
+    // First, since it sets up gs, which finds the running task and the
+    // kernel lock's owner (arch/percpu.h); that lock is this CPU's from
+    // here until it goes idle.
+    gdt_init();
+    kernel_lock();
     serial_init();
     console_init();
     if (magic != MULTIBOOT_MAGIC) panic("not loaded by a multiboot loader (magic %08x)", magic);
     read_boot_info(mbi);
 
-    gdt_init();
     idt_init();
     fpu_init();
     random_init();
@@ -131,7 +135,9 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     net_init();
 
     if (task_create_kernel("init", init_main, 0) < 0) panic("cannot start init");
+    // Idle: the scheduler runs us only when nothing else is ready, and
+    // then the other CPUs may have the kernel.
+    kernel_unlock();
     sti();
-    // Idle: the scheduler runs us only when nothing else is ready.
     for (;;) hlt();
 }

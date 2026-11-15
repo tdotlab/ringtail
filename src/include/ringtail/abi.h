@@ -104,6 +104,7 @@ typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
 #define KINFO_NET     7  // the network card, the address and the packet counts
 #define KINFO_PCI     8  // every PCI device: bus:dev.fn vendor:device class irq
 #define KINFO_CLUSTER 9  // the bytes in a cluster of the disk, as one number
+#define KINFO_CPUS    10 // each processor: its APIC ID, ticks, task switches, the task it runs
 
 #define POWER_REBOOT 0
 #define POWER_OFF    1

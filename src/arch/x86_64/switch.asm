@@ -37,7 +37,9 @@ switch_to:                  ; rdi = save_sp, rsi = new_sp
 ; SEL_USER_DATA in kernel.h) and RFLAGS with only IF set, so the
 ; program starts with interrupts on and IOPL 0 (no port access).
 ; General registers are cleared so no kernel values leak into the
-; program.
+; program. gs is not loaded, which could clear its base, the kernel's;
+; a swapgs gives the program its own (0) instead, as every way back to
+; ring 3 does.
 USER_DATA equ 0x1B
 USER_CODE equ 0x23
 
@@ -48,7 +50,6 @@ enter_user:                 ; rdi = ip, rsi = sp
     mov es, ax
     xor eax, eax
     mov fs, ax
-    mov gs, ax
     push USER_DATA          ; SS
     push rsi                ; RSP
     push 0x202              ; RFLAGS
@@ -68,6 +69,7 @@ enter_user:                 ; rdi = ip, rsi = sp
     xor r13d, r13d
     xor r14d, r14d
     xor r15d, r15d
+    swapgs
     iretq
 
 section .note.GNU-stack noalloc noexec nowrite progbits

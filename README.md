@@ -138,8 +138,8 @@ where they differ from RFC 5280), the generator says why. A mutation
 sweep (every early return in `x509.c` disabled in turn) found the
 cases that were missing. It also reads every root in `disk/roots.pem`.
 
-`tests/qemu_test.py` boots the real ISO in QEMU and drives the shell
-over a serial socket. It uses `build/x86_64/test-disk.img`, which adds the test
+`tests/qemu_test.py` boots the real ISO in QEMU, on a machine with two
+CPUs, and drives the shell over a serial socket. It uses `build/x86_64/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
 banner and runs every program, including the ones that are supposed to
 crash. It covers bad pointers handed to syscalls, every register
@@ -189,7 +189,9 @@ damaged, and 4000 frames of garbage. Short boots check the other two
 e1000 models and a machine with no card, a slow disk and a failing one
 (QEMU's I/O throttling and its blkdebug driver), machines with 2 GB
 and 6 GB of RAM, and machines whose interrupts come another way: no ACPI
-tables, no local APIC, four CPUs, and the q35 chipset with two. Pass `--keep` to keep the serial log and the disk.
+tables, no local APIC, four CPUs (three programs that never yield run
+at once, next to the shell, and are killed where they run), and the
+q35 chipset with two. Pass `--keep` to keep the serial log and the disk.
 
 ## Design in brief
 
@@ -227,10 +229,18 @@ with an INIT and two startup IPIs. Each begins in real mode in a
 trampoline copied below 1 MB, which takes it to 64-bit mode on page
 tables made for it; it then loads its own GDT, TSS and interrupt
 stacks, the shared IDT, the kernel's page tables, and sets up its FPU
-and local APIC. Then it waits, halted: tasks still run on the boot CPU
-only, since the kernel's critical sections are interrupts-off on one
-CPU and lock nothing against another. The banner says how many
-started.
+and local APIC, and becomes the idle task of its own. Tasks then run on
+every CPU, but the kernel on one at a time: a CPU takes one big lock
+on its way into the kernel and lets it go on its way back to ring 3 or
+into its idle halt, so the kernel's critical sections, written for one
+CPU, still exclude everything. Each CPU takes its own local APIC
+timer tick, which needs the lock only to switch tasks, and a CPU that
+leaves a task ready while another sits idle wakes that one with an
+IPI. Device interrupts all go to the boot CPU. With the APICs, time is
+counted on the TSC, measured against the PIT at boot, so that no one
+CPU's ticks have to be the clock; SMP needs it. The banner says how
+many CPUs started, and `cpus` in the shell shows each one's tick and
+switch counts and what it is running.
 
 Tasks: a round-robin, preemptive scheduler runs on the 100 Hz tick. The
 kernel's own tasks (idle, init) and user programs are scheduled the same
@@ -477,7 +487,7 @@ first command a file, and `> FILE` or `>> FILE` writes or appends the
 last command's output. A built-in can start a pipeline (`help | grep file`)
 or be redirected (`help > h.txt`), but not come after a `|` or take `<`.
 Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
-`kill <id>` stops it. The file commands (`ls`, `cat`, `echo`, `touch`, `rm`,
+`kill <id>` stops it; `cpus` shows which CPU runs what. The file commands (`ls`, `cat`, `echo`, `touch`, `rm`,
 `mkdir`, `rmdir`, `mv`, `cp`) are programs on the disk like any other, so they
 pipe, take `<`, and run under `find -exec`; `cat a b > c` joins files, `rm -r`, `cp -r`, `mkdir -p` and `ls -R` work on
 trees, and quote text for `echo` to keep its spacing. An unquoted word with `*`, `?` or `[a-z]` / `[!x]` in it is a wildcard: it is replaced by the matching names, sorted and ignoring case, one directory level per `/` (`ls *.txt`, `cat d/*.c`, `*/readme`); names starting with a dot match only a pattern that starts with a dot, a pattern that matches nothing stays as typed, and quoting a word turns the wildcards off. `write <file> <text>` stays a built-in, and `cd` and `pwd` work on the current directory. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
@@ -606,7 +616,7 @@ so nobody can vouch for it: someone in the middle, or a lying DHCP
 server, can set the clock to any time after the system was built. There is no
 `fork`/`exec` (programs start other programs with `spawn`), no
 signals beyond kill (so a program writing to a pipe nobody reads gets
-EPIPE back instead of being stopped), and no SMP. The only display modes are VGA text and
+EPIPE back instead of being stopped), and only one CPU at a time runs in the kernel. The only display modes are VGA text and
 mode 13h. The network has no IPv6, and the resolver does not retry over
 TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by

@@ -2,9 +2,16 @@
 // wait: blocking on a channel, sleeping, joining, mutexes.
 //
 // Rules that keep this correct:
-//  - schedule() runs with interrupts off, always. Every switch
+//  - schedule() runs with interrupts off, always, and with the kernel
+//    lock (interrupt.c), as all kernel code does. Every switch
 //    happens inside it, so every task is switched out with IF=0 and
 //    restores its own IF on the way back out of whatever called it.
+//  - With more than one CPU, a task can be switched out on one and
+//    back in on another. The ready ones are in one list, and any CPU
+//    takes from it; a running one is marked so, and no other CPU
+//    picks it. Each CPU has an idle task of its own, which runs only
+//    there, when nothing else is ready; the boot CPU's heads the list,
+//    the others are in no list.
 //  - A task only ever frees its own resources while it can still
 //    run (fds, display); its stack and address space are freed by
 //    the scheduler later, from another task, once it is dead.
@@ -19,9 +26,7 @@
 #include "interrupt.h"
 #include "ringtail/abi.h"
 
-task_t* current;
-static task_t* task_list_head;
-static task_t* idle_task;
+static task_t* task_list_head;  // the boot CPU's idle task
 static int next_id;
 static fpu_state_t fpu_clean;  // the state after reset, for new tasks
 
@@ -54,18 +59,34 @@ void fpu_init(void) {
 void task_init(void) {
     // The boot context becomes the idle task. It runs only when
     // nothing else can, and never blocks.
-    idle_task = kzalloc(sizeof(task_t));
-    if (!idle_task) panic("no memory for the idle task");
-    idle_task->id = next_id++;
-    idle_task->state = TASK_RUNNING;
-    idle_task->cr3 = kernel_pd();
     extern char stack_top[];
-    idle_task->kstack_top = (uintptr_t)stack_top;
-    strlcpy(idle_task->name, "idle", TASK_NAME_MAX);
-    idle_task->fpu = fpu_clean;
-    idle_task->next = idle_task;
-    task_list_head = idle_task;
-    current = idle_task;
+    task_t* idle = task_idle_create(0, (uintptr_t)stack_top);
+    if (!idle) panic("no memory for the idle task");
+    next_id++;
+    idle->next = idle;
+    task_list_head = idle;
+    task_idle_enter(idle);
+}
+
+// Idle tasks all have id 0, which only the boot CPU's can be found by.
+task_t* task_idle_create(int cpu, uintptr_t stack_top) {
+    task_t* t = kzalloc(sizeof(task_t));
+    if (!t) return 0;
+    t->is_idle = 1;
+    t->state = TASK_RUNNING;
+    t->cr3 = kernel_pd();
+    t->kstack_top = stack_top;
+    if (cpu == 0) strlcpy(t->name, "idle", TASK_NAME_MAX);
+    else snprintf(t->name, TASK_NAME_MAX, "idle%d", cpu);
+    t->fpu = fpu_clean;
+    return t;
+}
+
+void task_idle_enter(task_t* idle) {
+    cpu_t* c = this_cpu();
+    c->idle = idle;
+    c->task = idle;
+    fpu_restore(&idle->fpu);
 }
 
 task_t* task_find(int id) {
@@ -111,8 +132,10 @@ static void reap(task_t* t) {
 }
 
 void schedule(void) {
-    task_t* prev = current;
+    cpu_t* cpu = this_cpu();
+    task_t* prev = cpu->task;
     uint32_t now = timer_ticks();
+    cpu->kicked = 0;
 
     // Wake sleepers whose time has come, and reap the dead that
     // nobody is waiting on. prev cannot be reaped: its stack is the
@@ -121,32 +144,43 @@ void schedule(void) {
     while (t != task_list_head) {
         task_t* nx = t->next;
         if ((t->state == TASK_SLEEPING || (t->state == TASK_BLOCKED && t->timed))
-            && (int32_t)(now - t->wake_tick) >= 0) t->state = TASK_READY;
+            && (int32_t)(now - t->wake_tick) >= 0) {
+            t->state = TASK_READY;
+            smp_kick_idle();
+        }
         if (t->state == TASK_DEAD && t != prev && t->joiners == 0) reap(t);
         t = nx;
     }
 
     if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
 
-    // Round robin, starting after prev; the idle task only if nobody
-    // else is ready.
+    // Round robin, starting after prev, or at the head after an idle
+    // task (which may be in no list); this CPU's idle task only if
+    // nobody else is ready. A task running on another CPU is not
+    // ready, so it is not taken from there.
     task_t* next = 0;
-    t = prev->next;
+    task_t* from = prev->is_idle ? task_list_head : prev;
+    t = from->next;
     for (;;) {
-        if (t != idle_task && t->state == TASK_READY) { next = t; break; }
-        if (t == prev) break;
+        if (!t->is_idle && t->state == TASK_READY) { next = t; break; }
+        if (t == from) break;
         t = t->next;
     }
-    if (!next) next = idle_task;
+    if (!next) next = cpu->idle;
     next->state = TASK_RUNNING;
     if (next == prev) return;
+    if (prev->state == TASK_READY && !prev->is_idle) smp_kick_idle();  // preempted
 
     check_canary(prev);
     tss_set_kstack(next->kstack_top);
     if (next->cr3 != prev->cr3) write_cr3(next->cr3);
     fpu_save(&prev->fpu);
     fpu_restore(&next->fpu);
-    current = next;
+    cpu->task = next;
+    cpu->switches++;
+    // Until switch_to has saved prev's registers, its stack is in use
+    // here; no other CPU can take it, ready as it is, without the lock
+    // this one holds.
     switch_to(&prev->ksp, next->ksp);
 }
 
@@ -180,6 +214,7 @@ void task_wakeup(void* chan) {
         if (t->state == TASK_BLOCKED && t->wait_chan == chan) {
             t->state = TASK_READY;
             need_resched = 1;
+            smp_kick_idle();
         }
         t = t->next;
     } while (t != task_list_head);
@@ -201,10 +236,12 @@ int task_sleep_ticks(uint32_t ticks) {
 }
 
 // First code a new task runs, entered from switch_to's ret with
-// interrupts still off.
+// interrupts still off and the kernel lock held. A kernel task keeps
+// it; a user task lets go of it for ring 3.
 static void task_trampoline(void) {
     task_t* t = current;
     if (t->user) {
+        kernel_unlock();
         enter_user(t->user_ip, t->user_sp);  // does not return
     }
     sti();
@@ -238,6 +275,7 @@ static int task_start(task_t* t, int held) {
     t->wait_chan = held ? &held_chan : 0;
     t->next = task_list_head->next;
     task_list_head->next = t;
+    if (!held) smp_kick_idle();
     irq_restore(f);
     return t->id;
 }
@@ -271,13 +309,14 @@ void task_release(int id) {
     if (t && t->state == TASK_BLOCKED && t->wait_chan == &held_chan) {
         t->wait_chan = 0;
         t->state = TASK_READY;
+        smp_kick_idle();
     }
     irq_restore(f);
 }
 
 void task_exit(int status) {
     task_t* t = current;
-    if (t == idle_task) panic("idle task exited");
+    if (t->is_idle) panic("idle task exited");
     // Release what only this task can release cleanly, while it can
     // still block: open files (which take the filesystem lock) and
     // the display.
@@ -297,10 +336,13 @@ int task_kill(int id) {
     task_t* t = task_find(id);
     int r = 0;
     if (!t || t->state == TASK_DEAD) r = -ESRCH;
-    else if (t == idle_task) r = -EPERM;
+    else if (t->is_idle) r = -EPERM;
     else {
         t->killed = 1;
-        if (t->state == TASK_BLOCKED || t->state == TASK_SLEEPING) t->state = TASK_READY;
+        if (t->state == TASK_BLOCKED || t->state == TASK_SLEEPING) {
+            t->state = TASK_READY;
+            smp_kick_idle();
+        }
         need_resched = 1;
     }
     irq_restore(f);
@@ -333,7 +375,7 @@ void task_kill_job(int job) {
     uint32_t f = irq_save();
     task_t* t = task_list_head;
     do {
-        if (t->job == job && t->state != TASK_DEAD && t != idle_task) task_kill(t->id);
+        if (t->job == job && t->state != TASK_DEAD && !t->is_idle) task_kill(t->id);
         t = t->next;
     } while (t != task_list_head);
     irq_restore(f);
@@ -346,7 +388,7 @@ int task_join(int id) {
     if (!t) {
         for (int i = 0; i < EXITED_CACHE; i++)
             if (id > 0 && exited[i].id == id) status = exited[i].status;
-    } else if (t != current && t != idle_task) {
+    } else if (t != current && !t->is_idle) {
         t->joiners++;
         while (t->state != TASK_DEAD && !current->killed) task_block(t);
         status = t->state == TASK_DEAD ? t->exit_status : -EINTR;
@@ -361,7 +403,7 @@ int task_job_alive(int job) {
     int alive = 0;
     task_t* t = task_list_head;
     do {
-        if (t->job == job && t->state != TASK_DEAD && t != idle_task) alive = 1;
+        if (t->job == job && t->state != TASK_DEAD && !t->is_idle) alive = 1;
         t = t->next;
     } while (t != task_list_head);
     irq_restore(f);

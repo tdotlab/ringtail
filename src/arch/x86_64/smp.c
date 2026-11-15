@@ -11,6 +11,12 @@
 //
 // Low memory is the BIOS's and the kernel's alone: the frame
 // allocator starts at 1 MB, and nothing else is put there.
+//
+// A started CPU becomes the idle task of its own (task.c) and turns on
+// its timer; from its first tick it takes tasks from the same list as
+// the boot CPU, under the kernel lock (interrupt.c). The boot CPU
+// holds that lock until it has finished starting the system, so the
+// others wait for it to do so.
 #include "kernel.h"
 #include "arch.h"
 #include "lib.h"
@@ -41,8 +47,8 @@ typedef struct __attribute__((packed)) {
 extern const uint8_t ap_trampoline[], ap_trampoline_end[];
 
 static struct {
-    uint32_t apic_id;
     void* ist;
+    task_t* idle;
     volatile int online;
 } cpu_info[MAX_CPUS];
 static int ncpus = 1;       // running, the boot CPU included
@@ -55,9 +61,10 @@ int smp_cpus(void) { return ncpus; }
 // A started CPU's first C, with interrupts off, on the trampoline's
 // page tables (whose upper half is the kernel's) and its own stack.
 // Its descriptor tables first, so a fault or an NMI from here on has
-// somewhere to go; then the kernel's page tables and the boot CPU's
-// CR4 (SMEP, SSE). Then it waits, halted: tasks run on the boot CPU
-// only, so far.
+// somewhere to go, and gs, which this_cpu() reads; then the kernel's
+// page tables and the boot CPU's CR4 (SMEP, SSE). Then it is this
+// CPU's idle task, which halts until there is something to run; it
+// never holds the kernel lock but in an interrupt.
 static void __attribute__((noreturn)) ap_main(uint64_t index) {
     gdt_init_cpu((int)index, cpu_info[index].ist);
     idt_load_here();
@@ -65,8 +72,12 @@ static void __attribute__((noreturn)) ap_main(uint64_t index) {
     write_cr4(boot_cr4);
     fpu_enable();
     apic_init_cpu();
+    this_cpu()->apic_id = apic_id();
+    task_idle_enter(cpu_info[index].idle);
+    timer_init_cpu();
     __atomic_store_n(&cpu_info[index].online, 1, __ATOMIC_RELEASE);
-    for (;;) { cli(); hlt(); }
+    sti();
+    for (;;) hlt();
 }
 
 static void wait_ms(uint32_t ms) {
@@ -109,13 +120,15 @@ static int start_cpu(int index, uint32_t id) {
     trampoline_t* t = phys_to_virt(TRAMPOLINE + TRAMPOLINE_DATA);
     uint8_t* stack = kmalloc(KSTACK_SIZE);
     void* ist = kmalloc(IST_STACKS_SIZE);
-    if (!stack || !ist) {
+    task_t* idle = stack ? task_idle_create(index, (uintptr_t)stack + KSTACK_SIZE) : 0;
+    if (!stack || !ist || !idle) {
         kfree(stack);
         kfree(ist);
+        kfree(idle);
         return -ENOMEM;
     }
-    cpu_info[index].apic_id = id;
     cpu_info[index].ist = ist;
+    cpu_info[index].idle = idle;
     t->stack = (uintptr_t)stack + KSTACK_SIZE;
     t->arg = (uint64_t)index;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -139,10 +152,16 @@ void smp_init(void) {
     if (!irq_uses_apic()) return;
     const madt_t* m = acpi_madt();
     uint32_t self = apic_bsp_id();
-    cpu_info[0].apic_id = self;
+    this_cpu()->apic_id = self;
     cpu_info[0].online = 1;
     listed = apic_cpus();
     if (listed < 2) return;
+    // The time comes from the TSC when the CPUs are many: none of them
+    // takes every tick.
+    if (!timer_tsc_hz()) {
+        snprintf(failed, sizeof failed, "the TSC was not measured");
+        return;
+    }
     trampoline_init();
     for (int i = 0; i < m->cpus; i++) {
         uint32_t id = m->cpu[i].apic_id;
@@ -158,10 +177,42 @@ void smp_init(void) {
     }
 }
 
+// Called by whatever leaves a task ready, with interrupts off and the
+// kernel lock: an idle CPU would otherwise not look until its next
+// tick. One CPU per task made ready, and not one already sent for.
+// The others' task fields change only under the lock, so they hold
+// still while this reads them.
+void smp_kick_idle(void) {
+    if (ncpus < 2) return;
+    cpu_t* me = this_cpu();
+    for (int i = 0; i < ncpus; i++) {
+        cpu_t* c = cpu_get(i);
+        if (c == me || c->task != c->idle || c->kicked) continue;
+        c->kicked = 1;
+        apic_send_ipi(c->apic_id, RESCHED_VECTOR);
+        return;
+    }
+}
+
 const char* smp_describe(char* buf, uint32_t size) {
-    if (ncpus == 1 && listed == 1) snprintf(buf, size, "1");
-    else if (failed[0]) snprintf(buf, size, "%d of %d started (%s)", ncpus, listed, failed);
-    else if (ncpus < listed) snprintf(buf, size, "%d of %d started, tasks run on 1", ncpus, listed);
-    else snprintf(buf, size, "%d started, tasks run on 1", ncpus);
+    if (failed[0]) snprintf(buf, size, "%d of %d started (%s)", ncpus, listed, failed);
+    else if (ncpus < listed) snprintf(buf, size, "%d of %d started", ncpus, listed);
+    else snprintf(buf, size, "%d", ncpus);
     return buf;
+}
+
+// One line per CPU, under the kernel lock: the others' counts move on
+// meanwhile, and that is all.
+void smp_format(sbuf_t* sb) {
+    uint64_t hz = timer_tsc_hz();
+    if (hz) sbprintf(sb, "TSC: %u.%u MHz\n", (unsigned)(hz / 1000000), (unsigned)(hz / 100000 % 10));
+    sbprintf(sb, "CPU  APIC  TICKS     SWITCHES  RUNNING\n");
+    uint32_t f = irq_save();
+    for (int i = 0; i < ncpus; i++) {
+        cpu_t* c = cpu_get(i);
+        task_t* t = c->task;
+        sbprintf(sb, "%3d  %4u  %-8lu  %-8lu  %s\n", i, c->apic_id, (unsigned long)c->ticks,
+                 (unsigned long)c->switches, t ? t->name : "-");
+    }
+    irq_restore(f);
 }
