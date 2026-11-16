@@ -144,10 +144,15 @@ typedef struct { sighandler_t handler; unsigned mask; unsigned flags; void (*res
 // SPAWN_FOREGROUND hands the terminal to the child's job, as SYS_TTY_FG
 // would, before the child runs at all, so it never reads as a
 // background job; only the terminal's current owner may use it.
+// SPAWN_FD3 also gives the child a copy of the caller's fd3 as its
+// descriptor 3 (the shell hands a child shell its variables that way);
+// without it the child has nothing open past 2.
 #define SPAWN_NEW_JOB    1
 #define SPAWN_JOIN       2
 #define SPAWN_FOREGROUND 4
-typedef struct { int flags, job; int fd[3]; } spawn_opts_t;
+#define SPAWN_FD3        8
+typedef struct { int flags, job; int fd[3]; int fd3; } spawn_opts_t;
+#define SPAWN_FDS 4  // descriptors a child can be handed: 0-2 and 3
 
 // SYS_TTY_FG: the foreground job may hand the terminal to a job it
 // started. Once that job has no live tasks, the job that handed it

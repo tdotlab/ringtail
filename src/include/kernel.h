@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include "lib.h"
+#include "ringtail/abi.h"  // SPAWN_FDS
 
 #define RINGTAIL_VERSION "0.28.0"
 #define RINGTAIL_CODENAME "Time Will Tell"
@@ -86,7 +87,7 @@ void syscall_handle(struct regs* r);
 // is NULL. Returns the new task id or -errno.
 #define ARGV_MAX 64
 // held: the task waits for task_release before it runs.
-int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[3], int held);
+int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[SPAWN_FDS], int held);
 
 // SYS_KINFO's reports (kinfo.c): 0, or -EINVAL for an unknown one.
 int kinfo_format(int what, sbuf_t* sb);

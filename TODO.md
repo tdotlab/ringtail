@@ -39,8 +39,14 @@ Every task ends the same way, or it is not done:
 
 - The disk takes DOS 8.3 names only (`tools/mkdisk.py` refuses the rest),
   so a program's name is at most 8 characters.
-- The shell has no `2>&1` yet (an item below). Error cases in
-  `gen_text_cases.py` end in `| cat`; see the `du` and `cal` cases.
+- Older error cases in `gen_text_cases.py` end in `| cat`, from before
+  the shell had `2>&1`; see the `du` and `cal` cases. They still work.
+- `echo`, `printf`, `true`, `false`, `test` and `pwd` are shell
+  built-ins, and a built-in wins over the program of the same name. A
+  QEMU test of the program says `run printf ...`.
+- Commands in `tests/qemu_test.py` are real shell now: quote `;`, `(`,
+  `)`, `$`, `*` and `|` meant for a program (`find . -exec cat {} \;`,
+  `find '(' ... ')'`), as you would at a Linux prompt.
 - A spawned program shares its parent's open files, offsets included
   (`file.c`). A child given a file as standard input reads it on from
   where the parent is and leaves the parent where it stopped, so a
@@ -144,14 +150,6 @@ tried in order, each with its own letters (`-k2,2n -k1,1r`); a key with
 no letters takes the global ones. The whole-line tie-break stays last.
 GNU cases for mixed keys with `-t`, `-s`, and `-u` (which compares only
 the keys).
-
-**Standard error redirection in the shell.** `2> FILE`, `2>> FILE` and
-`2>&1`, including `a 2>&1 | b`, which sends both into the pipe.
-`spawn_opts_t` already carries all three descriptors, so this is the
-shell's parser and the place it fills them in (`saklas.c`).
-Redirections apply left to right, as in sh: `> f 2>&1` sends both to
-`f`, and `2>&1 > f` sends errors to the screen. Test both orders. Update
-the README shell paragraph. Leave the old `| cat` cases as they are.
 
 **tail -f.** Keep reading after the end of the file, checking its size
 every so often (sleep between checks, do not spin), until Ctrl+C. If the
@@ -348,10 +346,13 @@ that POSIX wants the leftmost-longest match, which a plain backtracker
 difference in what it replaces. How to keep POSIX semantics, and how to
 bound the time, is the design.
 
-**Shell scripting.** The shell has no `;`, `&&`, `||`, `$?`, variables or
-scripts, which is why `test`/`[` is not on the list above: without them it
-would do nothing. What the language looks like, how much of POSIX to take,
-and how a script file runs is a design question.
+**The rest of the shell.** The language (`shcore.c`) is POSIX shell
+without `trap`, `getopts`, `command`/`type`, `readonly`, aliases and `~`.
+`trap` wants signals delivered to the shell as events it runs at a safe
+point (it has `sh_interrupted` for SIGINT only). Add each with cases in
+`tests/gen_sh_cases.py`, regenerated against bash --posix, and a QEMU
+case where the console matters. An environment for programs (`export`
+reaching them) needs spawn to carry one, which is an ABI change.
 
 **A resolver cache.** The resolver is a library linked into each program,
 so a cache there only lives as long as one program. A cache worth having is

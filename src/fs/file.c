@@ -83,8 +83,9 @@ int file_fd_ok(int fd) {
     return fd >= 0 && fd < MAX_FDS && current->fds[fd];
 }
 
-void files_inherit(task_t* child, task_t* parent, const int std[3]) {
-    for (int i = 0; i < 3; i++) {
+void files_inherit(task_t* child, task_t* parent, const int std[SPAWN_FDS]) {
+    for (int i = 0; i < SPAWN_FDS; i++) {
+        if (std[i] < 0) continue;  // (only 3 can be: nothing there)
         ofile_t* f = parent->fds[std[i]];
         if (!f) continue;  // the caller checked; keep the console
         child->fds[i] = ofile_get(f);  // replaces a console one, which is not counted

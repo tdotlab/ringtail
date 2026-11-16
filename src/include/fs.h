@@ -94,9 +94,10 @@ void poll_notify(void);
 struct task;
 void files_init_std(struct task* t);
 void files_close_all(struct task* t);
-// Give child copies of parent's descriptors std[0..2] as its 0-2:
-// the same open files, so a child and its parent share the offset.
-void files_inherit(struct task* child, struct task* parent, const int std[3]);
+// Give child copies of parent's descriptors std[0..2] as its 0-2, and
+// std[3] as its 3 unless that is -1: the same open files, so a child
+// and its parent share the offset.
+void files_inherit(struct task* child, struct task* parent, const int std[SPAWN_FDS]);
 int file_fd_ok(int fd);  // fd is open in the current task
 // These operate on the current task and take user pointers.
 int file_open(const char* uname, int flags);

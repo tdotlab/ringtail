@@ -285,7 +285,8 @@ FPU and SSE state saved in a frame there; returning from it makes the
 program could have set for itself. A wait (sleep, a read from the
 keyboard or a pipe, a socket) ends with EINTR when a signal arrives that
 is not blocked. Programs start with every signal at its default, whatever
-their parent did; the shell ignores SIGINT, SIGQUIT and SIGPIPE.
+their parent did. At the prompt the shell ignores SIGQUIT and SIGPIPE and
+catches SIGINT, which stops a loop it is running itself.
 
 System calls: the `syscall` instruction, with the number in rax,
 arguments in rdi, rsi and rdx (where a C call puts them), and the result
@@ -303,7 +304,8 @@ kernel touches it. The numbers and structures are in
 `src/include/ringtail/abi.h`, and the user-side wrappers are in
 `src/programs/lib/ulib.h`. A spawned program inherits copies of its
 parent's standard input, output and error (descriptors 0-2), and spawn
-can remap them or put the program in a new or existing job. The shell is
+can remap them, hand over one more as descriptor 3, or put the program in
+a new or existing job. The shell is
 an ordinary program: everything it shows comes through syscalls such as
 `readdir`, `kinfo` (version, memory, heap, tasks, faults, memory map,
 disk) and `kill`. Pipes are 4 KB kernel buffers: a reader waits for data
@@ -504,18 +506,44 @@ foreground program, and Ctrl+L clears the screen. Tab (which works on the end of
 programs and paths, ignoring case and quoting names with spaces; a second
 Tab with several matches lists them.
 
-`run <program> [args...]`, or just the program's name, starts a program
-from the disk, and a trailing `&` runs it in the background.
-`a | b` pipes one program's output into the next, `< FILE` feeds the
-first command a file, and `> FILE` or `>> FILE` writes or appends the
-last command's output. A built-in can start a pipeline (`help | grep file`)
-or be redirected (`help > h.txt`), but not come after a `|` or take `<`.
+A program's name, or `run <program> [args...]` (which skips a built-in or
+function of the same name), starts a program from the disk, and a
+trailing `&` runs it in the background. The shell reads POSIX shell:
+`a | b` pipes, `a; b`, `a && b` and `a || b` chain, and `< FILE`,
+`> FILE`, `>> FILE`, `2> FILE`, `2>&1`, `<> FILE` and here-documents
+(`<<EOF`, `<<-EOF`, `<<'EOF'`) redirect, built-ins included. It has
+variables and parameters (`$1`, `$#`, `$@`, `$?`, `$$`, `$!`,
+`${x:-default}` and the other `${...}` forms, `${#x}`, `${x%.txt}`),
+`$(command)` and backquotes, arithmetic (`$((n * 2 + 1))`), field
+splitting on `IFS`, quoting with `'...'`, `"..."` and `\`, and `if`,
+`while`, `until`, `for`, `case`, functions (`f() { ...; }`, with `local`
+and `return`), `( subshells )` and `{ groups; }`. Its own commands are the
+usual ones: `cd` (`cd -` goes back), `pwd`, `echo`, `printf`, `test` and
+`[`, `read`, `set` (`-e`, `-u`, `-x`, `-f`), `shift`, `export`,
+`unset`, `eval`, `.`, `exec`, `exit`, `wait`, `break`, `continue`,
+`true`, `false` and `:`. A command can go on over several lines: the
+prompt turns into `> ` until it is whole, and Ctrl+C there drops it. A
+command line that fails shows `[exit status N]`.
+
+`sh FILE [args...]` (or `saklas FILE`) runs a script, as does `./FILE` for
+a file that is not a program; `sh -c 'TEXT' [name args...]` runs TEXT,
+and `sh` reads commands from standard input when that is not the
+terminal (`cat x.sh | sh`). There is no fork, so whatever must run apart
+from the shell (a subshell, `$(...)` that is not a plain program, a loop
+in a pipeline, something in the background) runs in a new copy of the
+shell that gets the variables, functions and parameters over descriptor
+3; a program in a pipeline or in the background runs as itself, so
+`tasks` and `kill` see it. The language lives in
+`src/programs/lib/shcore.c`, apart from the console, so the host test
+(`tests/test_sh.c`) can check it against bash --posix on some 500 scripts.
 Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
 `kill <id>` sends it SIGTERM (`kill -9 <id>`, `kill -KILL <id>`, or any
 signal by name or number; `kill -l` lists them); `cpus` shows which CPU runs what. The file commands (`ls`, `cat`, `echo`, `touch`, `rm`,
 `mkdir`, `rmdir`, `mv`, `cp`) are programs on the disk like any other, so they
-pipe, take `<`, and run under `find -exec`; `cat a b > c` joins files, `rm -r`, `cp -r`, `mkdir -p` and `ls -R` work on
-trees, and quote text for `echo` to keep its spacing. An unquoted word with `*`, `?` or `[a-z]` / `[!x]` in it is a wildcard: it is replaced by the matching names, sorted and ignoring case, one directory level per `/` (`ls *.txt`, `cat d/*.c`, `*/readme`); names starting with a dot match only a pattern that starts with a dot, a pattern that matches nothing stays as typed, and quoting a word turns the wildcards off. `write <file> <text>` stays a built-in, and `cd` and `pwd` work on the current directory. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
+pipe, take `<`, and run under `find -exec` (`echo`, `printf`, `true` and
+`false` are on the disk too, and the shell has its own of each; `run echo`
+picks the program); `cat a b > c` joins files, `rm -r`, `cp -r`, `mkdir -p` and `ls -R` work on
+trees, and quote text for `echo` to keep its spacing. An unquoted word with `*`, `?` or `[a-z]` / `[!x]` in it is a wildcard: it is replaced by the matching names, sorted and ignoring case, one directory level per `/` (`ls *.txt`, `cat d/*.c`, `*/readme`); names starting with a dot match only a pattern that starts with a dot, a pattern that matches nothing stays as typed, and quoting a word turns the wildcards off. `write <file> <text>` writes its words as one line into a file. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
 `../B.TXT`, `/WELCOME.TXT`). A bare program name is always looked up in
 `/`, wherever you are; give a path to run one from somewhere else. `mem`, `heap` and `mmap` show memory, `date` the clock, `uptime` the
 time since boot and timer ticks, and `faults` the fault log. `pci` lists the PCI devices, and `net` shows
@@ -523,8 +551,9 @@ the network card, the address and where it came from, the DNS servers,
 traffic counts, UDP sockets and the ARP table. `net static
 10.0.2.20/24 10.0.2.2 10.0.2.3` sets the address, gateway (or `none`) and
 DNS server by hand, and `net dhcp` goes back to DHCP. `color <name>` sets
-the text colour, and `reboot` and `poweroff` do what they say. `exit`
-ends the shell, and init starts a new one.
+the text colour, and `reboot` and `poweroff` do what they say. `exit [N]`
+ends the shell, and init starts a new one. `help NAME` says what one
+command does.
 
 Programs on the disk:
 
@@ -532,7 +561,7 @@ Programs on the disk:
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
 | kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
-| saklas | The command line (the shell). init starts it at boot and again whenever it ends. |
+| saklas | The command line (the shell). init starts it at boot and again whenever it ends. It is on the disk a second time as `sh`, the name scripts use. |
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
@@ -648,6 +677,12 @@ port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already
 has the address it was given (RFC 5227). The e1000 is the only card it
 drives. `factor` stops at 2^64-1, where GNU's goes on to bigger numbers: a bigger one is refused with a message.
+
+The shell is POSIX shell without `trap`, `getopts`, `command`/`type`,
+`readonly`, aliases, `~` for the home directory, or job control (no
+Ctrl+Z, `fg` or `bg`). `export` marks a variable but there is no
+environment for programs to read, and since there is no `fork` a
+subshell is a new copy of the shell, so one costs a program start.
 
 Certificates are checked, but not everything about them is: there is
 no revocation (no CRLs, no OCSP), so a certificate its CA has taken

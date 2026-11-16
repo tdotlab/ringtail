@@ -462,7 +462,7 @@ static long sys_list(uintptr_t index, uintptr_t ubuf, uintptr_t size) {
 #define SPAWN_ARGS_BYTES 3072
 
 static int spawn_job(const spawn_opts_t* o) {
-    if (o->flags & ~(SPAWN_NEW_JOB | SPAWN_JOIN | SPAWN_FOREGROUND)) return -EINVAL;
+    if (o->flags & ~(SPAWN_NEW_JOB | SPAWN_JOIN | SPAWN_FOREGROUND | SPAWN_FD3)) return -EINVAL;
     if ((o->flags & (SPAWN_NEW_JOB | SPAWN_JOIN)) == (SPAWN_NEW_JOB | SPAWN_JOIN)) return -EINVAL;
     if (o->flags & SPAWN_NEW_JOB) return 0;
     if (o->flags & SPAWN_JOIN) return task_job_mine(o->job) ? o->job : -EPERM;
@@ -476,14 +476,19 @@ static long sys_spawn(uintptr_t uname, uintptr_t uargv, uintptr_t uopts) {
     // While the caller holds the display the child could not print
     // anything visible, and could not take the display either.
     if (is_owner()) return -EBUSY;
-    spawn_opts_t o = { 0, 0, { -1, -1, -1 } };
+    spawn_opts_t o = { 0, 0, { -1, -1, -1 }, -1 };
     if (uopts && copy_from_user(&o, (const void*)uopts, sizeof o)) return -EFAULT;
     int job = spawn_job(&o);
     if (job < 0) return job;
-    int std[3];
+    int std[SPAWN_FDS];
     for (int i = 0; i < 3; i++) {
         std[i] = o.fd[i] < 0 ? i : o.fd[i];
         if (o.fd[i] >= 0 && !file_fd_ok(o.fd[i])) return -EBADF;
+    }
+    std[3] = -1;
+    if (o.flags & SPAWN_FD3) {
+        if (!file_fd_ok(o.fd3)) return -EBADF;
+        std[3] = o.fd3;
     }
 
     char* strings = kmalloc(SPAWN_ARGS_BYTES);

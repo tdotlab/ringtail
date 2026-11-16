@@ -33,6 +33,10 @@ B64_SRCS = test_b64.c ../src/programs/lib/b64.c
 SHASUM_SRCS = test_shasum.c ../src/programs/lib/shasum.c
 
 PFCORE_SRCS = test_pfcore.c ../src/programs/lib/pfcore.c
+SH_SRCS = sh_host.c shos_host.c ../src/programs/lib/shcore.c ../src/programs/lib/pfcore.c
+# Not ../src/include: the host's own signal.h and the like are wanted.
+SH_CFLAGS = -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -I../src/programs/lib
+SH_HDRS = ../src/programs/lib/sh.h ../src/programs/lib/shos.h ../src/programs/lib/pfcore.h
 
 SPCORE_SRCS = test_spcore.c ../src/programs/lib/splitcore.c
 
@@ -55,7 +59,7 @@ SIG_LIB = ../src/programs/lib/sig.c ../src/programs/lib/sha512.c ../src/lib/sha2
 SIG_HDRS = ../src/programs/lib/sig.h ../src/programs/lib/sha512.h ../src/programs/lib/der.h
 X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 
-HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore sh_host test_sh test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509
 
 all: $(HOST_TESTS)
 
@@ -81,6 +85,12 @@ test_b64: $(B64_SRCS) ../src/programs/lib/b64.h b64_cases.h
 
 test_shasum: $(SHASUM_SRCS) ../src/programs/lib/shasum.h shasum_cases.h
 	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(SHASUM_SRCS)
+
+sh_host: $(SH_SRCS) $(SH_HDRS)
+	$(CC) $(SH_CFLAGS) -o $@ $(SH_SRCS)
+
+test_sh: test_sh.c sh_cases.h
+	$(CC) $(SH_CFLAGS) -I. -o $@ test_sh.c
 
 test_pfcore: $(PFCORE_SRCS) ../src/programs/lib/pfcore.h pfcore_cases.h
 	$(CC) $(NETMSG_CFLAGS) -I. -o $@ $(PFCORE_SRCS)
@@ -115,6 +125,7 @@ run: $(HOST_TESTS)
 	./test_b64
 	./test_shasum
 	./test_pfcore
+	./test_sh ./sh_host
 	./test_spcore
 	./test_jncore
 	./test_fcore

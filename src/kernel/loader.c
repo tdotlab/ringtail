@@ -136,7 +136,7 @@ static int setup_stack(uintptr_t pd, int argc, const char* const* argv, uintptr_
     return 0;
 }
 
-int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[3], int held) {
+int loader_spawn(int at, const char* path, int argc, const char* const* argv, int job, const int std[SPAWN_FDS], int held) {
     if (argc < 1 || argc > ARGV_MAX) return -E2BIG;
     int node = diskfs_lookup(at, path);  // referenced, so nobody deletes it while we read it
     if (node < 0) return node;

@@ -220,6 +220,7 @@ class Runner:
             self.failed.append(name)
             print(f"  FAIL  {name}")
             if detail:
+                detail = detail if isinstance(detail, str) else str(detail)
                 print("        " + detail.strip().replace("\n", "\n        ")[:1500])
 
 
@@ -272,7 +273,7 @@ def tests(m, t):
             cur and f'RingTail OS {cur.group(1)} "{cur.group(2)}"' in boot, f"{cur and cur.groups()}: {boot}")
 
     out = m.run("help")
-    t.check("help lists commands", "run <prog>" in out and "poweroff" in out, out)
+    t.check("help lists commands", "help [command]" in out and "poweroff" in out and " run " in out, out)
     out = m.run("ls")
     t.check("ls shows programs and files", "HELLO" in out and "WELCOME.TXT" in out and "KB free" in out, out)
     out = m.run("cat welcome.txt")
@@ -391,6 +392,7 @@ def tests(m, t):
     tcp_tests(m, t)
     text_tests(m, t)
     netconf_tests(m, t)
+    script_tests(m, t)
 
     # The fuzzer throws hostile arguments at every non-blocking system call.
     # The kernel must come through with its heap and its frames intact.
@@ -474,14 +476,16 @@ def tests(m, t):
     t.check("> replaces what was there", "Hello from disk!" in out and "three" not in out, out)
     out = m.run("hello | frobnicate")
     t.check("an unknown command in a pipeline is reported", "Unknown command 'frobnicate'" in out, out)
-    out = m.run("hello |")
-    t.check("a dangling | is an error", "Missing command" in out, out)
-    out = m.run("hello | pwd")
-    t.check("a built-in cannot come after |", "built into the shell" in out, out)
-    out = m.run("hello >")
-    t.check("> needs a file name", "Missing file name" in out, out)
-    out = m.run("pwd < out.txt")
-    t.check("built-ins do not take <", "do not read input" in out, out)
+    m.send("hello |\r")
+    m.expect(rb"\n> ", 5)
+    out = plain(m.run("wc -c"))
+    t.check("a | at the end of a line goes on to the next", out == "17", out)
+    out = plain(m.run("hello | echo built-in"))
+    t.check("a built-in can come after |", out == "built-in", out)
+    out = plain(m.run("hello >"))
+    t.check("> needs a file name", "syntax error" in out and plain(m.run("echo $?")) == "2", out)
+    out = m.run('read line < out.txt; echo "[$line]"')
+    t.check("a built-in reads from <", "[Hello from disk!]" in out, out)
     out = m.run("cat < out.txt")
     t.check("cat is a program, so it takes <", "Hello from disk!" in out, out)
     out = m.run("wc < nosuch.txt")
@@ -551,7 +555,7 @@ def tests(m, t):
     t.check(f"timer runs at 100 Hz (measured {rate:.0f})", 80 <= rate <= 120)
 
     # Shell file commands.
-    m.run("write note.txt hello   world")
+    m.run('write note.txt "hello   world"')
     out = m.run("cat NOTE.TXT")
     t.check("write then cat", "hello   world" in out, out)
     out = m.run("touch note.txt")
@@ -1558,6 +1562,89 @@ def sortuniq_tests(m, t, url):
         run("rm %s.txt" % f)
 
 
+def script_tests(m, t):
+    """The shell as a language (lib/shcore.c under Saklas): commands over
+    several lines at the prompt, scripts run as sh FILE, ./FILE, sh -c
+    and on standard input, and the parts that need a shell of their own
+    (subshells, $( ), a loop in a pipeline) on a system with no fork."""
+    def run(c, timeout=30):
+        return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
+
+    def lines(*ls):  # type a command over several lines; the output after the last
+        for l in ls[:-1]:
+            m.send(l + "\r")
+            m.expect(rb"\n> ", 5)
+        return run(ls[-1])
+
+    run("cd /")
+    run("mkdir shtest")
+    run("cd shtest")
+    t.check("sh is on the disk, and is Saklas", "SH" in run("ls /") and run("sh -c 'echo $0 $#' x a b") == "x 2")
+
+    out = lines("for i in 1 2 3", "do", "  echo n$i", "done")
+    t.check("a loop typed over several lines runs once it is whole", out == "n1\nn2\nn3", out)
+    out = lines("cat > count.sh <<'EOF'", "# count to $1, then say how it went",
+                "n=0", "while [ $n -lt $1 ]; do", "  n=$((n + 1))", "  echo \"line $n\"", "done",
+                "[ $n -eq 3 ] && echo three || echo other", "exit $n", "EOF")
+    t.check("a here-document writes a script", out == "", out)
+    out = run("sh count.sh 3")
+    t.check("sh FILE runs it with its arguments", out == "line 1\nline 2\nline 3\nthree\n[exit status 3]", out)
+    out = run("./count.sh 1")
+    t.check("./FILE runs it too: a file that is not a program is a script", out == "line 1\nother\n[exit status 1]", out)
+    out = run("echo 'echo $((6 * 7))' | sh")
+    t.check("a script on standard input", out == "42", out)
+    out = run("sh nosuch.sh")
+    t.check("a script that is not there is status 127", "nosuch.sh" in out and "[exit status 127]" in out, out)
+
+    out = run("fact() { if [ $1 -le 1 ]; then echo 1; else echo $(( $1 * $(fact $(($1 - 1))) )); fi; }; fact 6")
+    t.check("a function that calls itself through $( ), each one in a shell of its own", out == "720", out)
+    out = run("printf 'a\\nb\\nc\\n' | while read l; do echo \"<$l>\"; done")
+    t.check("a loop at the end of a pipeline reads what the program writes", out == "<a>\n<b>\n<c>", out)
+    out = run("x=1; (x=2; echo in $x); echo out $x")
+    t.check("a subshell keeps its variables to itself", out == "in 2\nout 1", out)
+    out = run("for f in a.txt b.c; do case $f in *.txt) echo text;; *) echo other;; esac; done")
+    t.check("case picks the pattern", out == "text\nother", out)
+    out = run("ls nosuch 2> err.txt; cat err.txt")
+    t.check("2> takes what a program says about failing", "nosuch" in out and "no such" in out, out)
+    out = run("sh -c 'set -e; false; echo not here'; echo $?")
+    t.check("set -e stops a script at the first failure", out == "1", out)
+    out = run("sh -c 'cd /; exit 0'; pwd")
+    t.check("a script's cd stays in the script", out == "/shtest", out)
+    out = run("history | grep -c fact")
+    t.check("a console built-in feeds a pipeline from inside the shell (the line with fact, and this one)", out == "2", out)
+
+    # Here-documents bigger than a pipe holds come from a shell of their own.
+    run("seq 1 1500 > nums")
+    run("printf 'cat <<EOF\\n$(cat nums)\\nEOF\\n' > big.sh")
+    out = run("sh big.sh | wc -l")
+    t.check("a here-document of 6 KB arrives whole", out.split() == ["1500"], out)
+    out = run("sh -c 'exit 7'")
+    t.check("a script's status shows at the prompt", out == "[exit status 7]", out)
+
+    # Ctrl+C stops a script in the foreground, and a loop the shell runs itself.
+    m.send("sh -c 'while true; do :; done'\r")
+    time.sleep(1)
+    m.send("\x03")
+    out = plain(m.expect(PROMPT, 5))
+    t.check("Ctrl+C stops a script that loops", "^C" in out, out)
+    m.send("while true; do :; done\r")
+    time.sleep(1)
+    m.send("\x03")
+    out = plain(m.expect(PROMPT, 5))
+    t.check("and a loop at the prompt", "^C" in out, out)
+    m.send("while true\r")
+    m.expect(rb"\n> ", 5)
+    m.send("\x03")
+    m.expect(PROMPT, 5)
+    out = run("echo after")
+    t.check("Ctrl+C at a > prompt drops the unfinished command", out == "after", out)
+
+    run("cd /")
+    run("rm shtest/count.sh shtest/err.txt shtest/nums shtest/big.sh")
+    run("rmdir shtest")
+    t.check("and it all cleans up", "SHTEST" not in run("ls /").upper())
+
+
 def coreutils_tests(m, t):
     """The file commands that used to be built into the shell and are
     programs now: ls, cat, echo, mkdir, rmdir, touch, rm and mv, as
@@ -1668,7 +1755,7 @@ def coreutils_tests(m, t):
     run("rm mvdir/tz.txt")
     run("rmdir mvsub")
 
-    run("find mvdir -name 't?' -exec rm {} ;")
+    run("find mvdir -name 't?' -exec rm {} \\;")
     out = run("ls mvdir")
     t.check("find -exec rm works now", not any(f in out for f in ["ta ", "tb ", "tc "]), out)
     for c in ["rm tz", "rm te", "rmdir mvdir", "rm ca/x.txt", "rmdir ca"]:
@@ -2032,7 +2119,7 @@ def find_tests(m, t, url):
     t.check("-o", found("find ft -name '*.log' -o -name zero") == ["ft/sub/z.log", "ft/zero"])
     t.check("-a binds tighter than -o", found("find ft -name '*.log' -o -name '*.txt' -a -path 'ft/sub/*'") ==
             ["ft/sub/c.txt", "ft/sub/deep/d.txt", "ft/sub/z.log"])
-    t.check("parentheses", found("find ft ( -name a.txt -o -name z.log ) -type f") == ["ft/a.txt", "ft/sub/z.log"])
+    t.check("parentheses", found("find ft '(' -name a.txt -o -name z.log ')' -type f") == ["ft/a.txt", "ft/sub/z.log"])
     t.check("and written \\( \\) as well", found("find ft \\( -name a.txt -o -name z.log \\) -type f") == ["ft/a.txt", "ft/sub/z.log"])
     t.check("-and, -or and -not spelled out", found("find ft -type f -and -not -name '*.txt' -and -size -1k") == ["ft/sub/z.log", "ft/zero"])
 
@@ -2054,19 +2141,19 @@ def find_tests(m, t, url):
             out[-1] == "ft" and out.index("ft/sub") > out.index("ft/sub/deep/d.txt") and out.index("ft/sub/deep") > out.index("ft/sub/deep/D2.dat"), str(out))
     t.check("-depth is still the whole tree", sorted(out) == paths())
 
-    t.check("-exec runs a program with {} replaced", run("find ft -name a.txt -exec head -n 1 {} ;") == "xxxxx")
-    t.check("-exec in the middle of an argument", run("find ft -name a.txt -exec head -c 3 {} ;") == "xxx")
-    out = run("find ft -type f -name '*.txt' -exec head -n 1 {} ;").split("\n")
+    t.check("-exec runs a program with {} replaced", run("find ft -name a.txt -exec head -n 1 {} \\;") == "xxxxx")
+    t.check("-exec in the middle of an argument", run("find ft -name a.txt -exec head -c 3 {} \\;") == "xxx")
+    out = run("find ft -type f -name '*.txt' -exec head -n 1 {} \\;").split("\n")
     t.check("-exec runs once per match", sorted(out) == sorted("x" * (files[f] - 1) for f in files if f.lower().endswith(".txt")), str(out))
-    out = run("find ft -type f -name '*.txt' -exec grep xxxx {} ; -print").split("\n")
+    out = run("find ft -type f -name '*.txt' -exec grep xxxx {} \\; -print").split("\n")
     t.check("-exec that succeeds is true, so -print follows",
             "ft/a.txt" in out and "ft/sub/deep/d.txt" in out and "ft/B.TXT" not in out and "ft/sub/c.txt" not in out, str(out))
-    out = run("find ft -type f -name '*.txt' -exec grep zzz {} ; -print")
+    out = run("find ft -type f -name '*.txt' -exec grep zzz {} \\; -print")
     t.check("-exec that fails is false, so nothing prints", out == "", out)
-    t.check("-exec runs cat", run("find ft -name a.txt -exec cat {} ;") == "xxxxx")
-    out = run("find ft -name a.txt -exec pwd {} ;")
+    t.check("-exec runs cat", run("find ft -name a.txt -exec cat {} \\;") == "xxxxx")
+    out = run("find ft -name a.txt -exec pwd {} \\;")
     t.check("a built-in cannot be exec'd, and the message says why", "pwd: no such file" in out and "built-ins" in out, out)
-    out = run("find ft -name a.txt -exec wc {} ;")
+    out = run("find ft -name a.txt -exec wc {} \\;")
     t.check("another program works too", re.search(r"1\s+1\s+6 ft/a.txt", out) is not None, out)
 
     # errors
@@ -2077,8 +2164,8 @@ def find_tests(m, t, url):
     for c, what in [("find ft -foo", "unknown predicate '-foo'"), ("find ft -name", "missing argument to '-name'"),
                     ("find ft -type x", "unknown argument 'x' to '-type'"), ("find ft -size 3x", "invalid argument '3x' to '-size'"),
                     ("find ft -size", "missing argument to '-size'"), ("find ft -maxdepth z", "invalid argument 'z' to '-maxdepth'"),
-                    ("find ft -exec wc", "missing argument to '-exec'"), ("find ft ( -name a", "no matching ')'"),
-                    ("find ft -name a )", "unexpected ')'"), ("find ft -name a -o", "ends where a test was expected")]:
+                    ("find ft -exec wc", "missing argument to '-exec'"), ("find ft '(' -name a", "no matching ')'"),
+                    ("find ft -name a ')'", "unexpected ')'"), ("find ft -name a -o", "ends where a test was expected")]:
         out = run(c)
         t.check(c + " is refused", what in out and "[exit status 2]" in out, out)
     t.check("a refused expression searches nothing", "ft/" not in run("find ft -foo"))
@@ -2869,36 +2956,36 @@ def gnu_text_tests(m, t):
     run("rmdir shd")
 
 
-    # ---- v0.33.0: printf: what GNU's cannot show (usage errors, the options it has and has not, %q and the floating point conversions, which RingTail's does not do) ----
+    # ---- v0.33.0: printf (the program; `printf` alone is the shell's): what GNU's cannot show (usage errors, the options it has and has not, %q and the floating point conversions, which RingTail's does not do) ----
     usage = "usage: printf FORMAT [ARG...]"
-    out, rc = st("printf")
+    out, rc = st("run printf")
     t.check("printf with no operand: the message and the usage, status 2", out == "printf: missing operand\n" + usage and rc == 2, (out, rc))
-    out, rc = st("printf --")
+    out, rc = st("run printf --")
     t.check("and with only -- as well", out == "printf: missing operand\n" + usage and rc == 2, (out, rc))
-    out, rc = st("printf --help")
+    out, rc = st("run printf --help")
     t.check("--help alone writes the usage, status 0", out == usage and rc == 0, (out, rc))
-    out, rc = st("printf --help x")
+    out, rc = st("run printf --help x")
     t.check("--help with another argument is a format", out == "--helpprintf: warning: ignoring excess arguments, starting with 'x'" and rc == 0, (out, rc))
-    out, rc = st("printf --version")
+    out, rc = st("run printf --version")
     t.check("there is no --version: it is a format too", out == "--version" and rc == 0, (out, rc))
-    out, rc = st("printf -- '%s\\n' a")
+    out, rc = st("run printf -- '%s\\n' a")
     t.check("-- ends the options, and only the first one", out == "a" and rc == 0, (out, rc))
-    out, rc = st("printf -- -- a")
+    out, rc = st("run printf -- -- a")
     t.check("a second -- is the format", out == "--printf: warning: ignoring excess arguments, starting with 'a'" and rc == 0, (out, rc))
-    out, rc = st("printf '%q\\n' a")
+    out, rc = st("run printf '%q\\n' a")
     t.check("%q is said not to be there, status 1", out == "printf: %q: not supported" and rc == 1, (out, rc))
     for conv in "aAeEfFgG":
-        out, rc = st(f"printf 'x%{conv}y\\n' 1")
+        out, rc = st(f"run printf 'x%{conv}y\\n' 1")
         t.check(f"%{conv} is said not to be there, status 1, after what came before it", out == f"xprintf: %{conv}: floating point is not supported" and rc == 1, (out, rc))
-    out, rc = st("printf 'x%8.3fy' 1")
+    out, rc = st("run printf 'x%8.3fy' 1")
     t.check("a floating point directive is shown whole", out == "xprintf: %8.3f: floating point is not supported" and rc == 1, (out, rc))
-    out, rc = st("printf 'a%sb\\n' 1 2")
+    out, rc = st("run printf 'a%sb\\n' 1 2")
     t.check("a good run is status 0", out == "a1b\na2b" and rc == 0, (out, rc))
-    out, rc = st("printf '%d\\n' 1 x")
+    out, rc = st("run printf '%d\\n' 1 x")
     t.check("a bad number is said, the run goes on, status 1", out == "1\nprintf: 'x': expected a numeric value\n0" and rc == 1, (out, rc))
-    out, rc = st("printf 'a\\cb\\n' | od -c | head -n 1")
+    out, rc = st("run printf 'a\\cb\\n' | od -c | head -n 1")
     t.check("\\c stops the format and the status stays 0", out.split() == ["0000000", "a"], out)
-    out, rc = st("printf '[%2147483647s]\\n' x")
+    out, rc = st("run printf '[%2147483647s]\\n' x")
     t.check("a conversion too big to write is a write error at the end, status 1", out == "[]\nprintf: write error" and rc == 1, (out, rc))
 
 
@@ -3742,15 +3829,16 @@ def _rows(m):
 
 
 def text_tests(m, t):
-    """head, tail and more, on 30 lines of help (all of it, then its first
-    seven lines again) and a few small files."""
+    """head, tail and more, on 30 lines of help (all of it, then as many of
+    its first lines again as make 30) and a few small files."""
     def run(c, timeout=20):  # output as it is, indentation included
         return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
 
     # help leaves its three footer lines off when it is redirected, so
     # the file is the reference, not what help prints on the screen.
     t.check("help > h.txt (setting up)", run("help > h.txt") == "")
-    t.check("help | head -n 7 >> h.txt (setting up)", run("help | head -n 7 >> h.txt") == "")
+    again = 30 - int(run("help | wc -l"))
+    t.check("help | head >> h.txt (setting up)", run("help | head -n %d >> h.txt" % again) == "")
     text = run("cat h.txt")
     lines = text.split("\n")
     full = text + "\n"

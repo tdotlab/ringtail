@@ -132,16 +132,19 @@ $(BUILD)/test-programs/%: $(BUILD)/u/tests/programs/%.o $(CRT0) $(ULIB) src/prog
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(CRT0) $(ULIB) -lgcc
 
-# Disk names are the program names in uppercase (DOS 8.3).
+# Disk names are the program names in uppercase (DOS 8.3). SH is Saklas
+# again, under the name scripts expect.
 upper = $(shell echo $(1) | tr a-z A-Z)
 
 $(DISK): $(PROGRAM_BINS) disk/welcome.txt disk/roots.pem tools/mkdisk.py
 	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt ROOTS.PEM:disk/roots.pem \
-	    $(foreach p,$(PROGRAMS),$(call upper,$(p)):$(BUILD)/programs/$(p))
+	    $(foreach p,$(PROGRAMS),$(call upper,$(p)):$(BUILD)/programs/$(p)) \
+	    SH:$(BUILD)/programs/saklas
 
 $(TEST_DISK): $(PROGRAM_BINS) $(TEST_PROGRAM_BINS) disk/welcome.txt disk/roots.pem tools/mkdisk.py
 	$(PYTHON) tools/mkdisk.py -o $@ WELCOME.TXT:disk/welcome.txt ROOTS.PEM:disk/roots.pem \
 	    $(foreach p,$(PROGRAMS),$(call upper,$(p)):$(BUILD)/programs/$(p)) \
+	    SH:$(BUILD)/programs/saklas \
 	    $(foreach p,$(TEST_PROGRAMS),$(call upper,$(p)):$(BUILD)/test-programs/$(p))
 
 $(ISO): $(KERNEL)

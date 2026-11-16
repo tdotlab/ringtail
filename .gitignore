@@ -13,6 +13,8 @@ tests/test_x509
 tests/test_b64
 tests/test_shasum
 tests/test_pfcore
+tests/test_sh
+tests/sh_host
 tests/test_spcore
 tests/test_jncore
 tests/test_fcore

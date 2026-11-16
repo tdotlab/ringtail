@@ -292,7 +292,7 @@ int task_create_kernel(const char* name, void (*entry)(void*), void* arg) {
 }
 
 int task_create_user(const char* name, uintptr_t pd, uintptr_t ip, uintptr_t sp,
-                     uintptr_t brk, int job, const int std[3], int held) {
+                     uintptr_t brk, int job, const int std[SPAWN_FDS], int held) {
     task_t* t = task_alloc(name);
     if (!t) { as_destroy(pd); return -ENOMEM; }
     t->user = 1;

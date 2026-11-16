@@ -82,7 +82,7 @@ int task_create_kernel(const char* name, void (*entry)(void*), void* arg);
 // task_release: that gives its creator time to hand it the terminal,
 // which it would otherwise race to read.
 int task_create_user(const char* name, uintptr_t pd, uintptr_t ip, uintptr_t sp,
-                     uintptr_t brk, int job, const int std[3], int held);
+                     uintptr_t brk, int job, const int std[SPAWN_FDS], int held);
 void task_release(int id);
 void task_exit(int status) __attribute__((noreturn));
 

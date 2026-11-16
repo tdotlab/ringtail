@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
     sys_wait_job(id);
     check(sys_tty_mode(0) >= 0, "and the terminal stayed with the parent");
 
-    check(spawn_as("first", 8) == -EINVAL, "an unknown spawn flag is refused");
+    check(spawn_as("first", 16) == -EINVAL, "an unknown spawn flag is refused");
     check(spawn_as("first", SPAWN_NEW_JOB | SPAWN_JOIN | SPAWN_FOREGROUND) == -EINVAL,
           "a new job and joining one at once is still refused");
     return check_summary("fgspawn");
