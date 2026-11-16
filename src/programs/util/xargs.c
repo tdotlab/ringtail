@@ -224,11 +224,6 @@ static void run(void) {
         sys_exit(124);
     }
     if (st) failed = 1;
-    // A child has its own copy of a redirected output file, and its own
-    // offset in it; ours has not moved. Go to the end so the next run
-    // writes after this one's output.
-    for (int fd = STDOUT_FILENO; fd <= STDERR_FILENO; fd++)
-        if (sys_fdtype(fd) == FDTYPE_FILE) sys_seek(fd, 0, SEEK_END);
 }
 
 static void run_batch(void) {

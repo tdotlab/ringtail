@@ -1,10 +1,26 @@
 // Per-task file descriptors and current directory. A program starts
 // with console input on fd 0 and console output on 1 and 2, or with
 // copies of its parent's descriptors; the rest are diskfs files and
-// pipe ends and sockets. It starts in its parent's directory. Copies of a
-// file descriptor each keep their own offset. All buffers passed in are user
-// pointers; data moves through a kernel bounce buffer, so the disk
-// code never touches user memory.
+// pipe ends and sockets. It starts in its parent's directory. All
+// buffers passed in are user pointers; data moves through a kernel
+// bounce buffer, so the disk code never touches user memory.
+//
+// A descriptor points at an open file (ofile_t, fs.h), and copies of
+// it, from dup2 or handed to a child by spawn, point at the same one:
+// they share its offset, so a child's output to a redirected file
+// lands after its parent's and the parent's next write lands after
+// the child's, as in POSIX. Rules that keep this safe:
+//  - Only a task changes its own descriptor table (task_exit closes
+//    the dying task's own), so an open file a task is blocked on in
+//    read or accept cannot go away under it: that task's own
+//    reference keeps it.
+//  - A descriptor is taken out of the table before its reference is
+//    dropped, since dropping the last one can block (the filesystem
+//    lock) and nothing may find it half freed.
+//  - A file's offset moves under its mutex, so two tasks reading or
+//    writing the same open file at once do not land on the same
+//    bytes. Pipes and sockets have no offset and do not take it; they
+//    can block for as long as the other end likes.
 #include "fs.h"
 #include "task.h"
 #include "tty.h"
@@ -15,50 +31,72 @@
 #include "net.h"
 #include "arch.h"
 #include "drivers.h"
+#include "kernel.h"  // panic
 
 #define BOUNCE 4096u
 
-void files_init_std(task_t* t) {
-    t->cwd = current ? current->cwd : DISKFS_ROOT;
-    diskfs_ref(t->cwd);
-    memset(t->fds, 0, sizeof t->fds);
-    t->fds[STDIN_FILENO].kind = FD_CONSOLE_IN;
-    t->fds[STDIN_FILENO].flags = O_RDONLY;
-    t->fds[STDOUT_FILENO].kind = FD_CONSOLE_OUT;
-    t->fds[STDOUT_FILENO].flags = O_WRONLY;
-    t->fds[STDERR_FILENO] = t->fds[STDOUT_FILENO];
+// The console's open files, shared by every task and never freed.
+static ofile_t console_in = { .kind = FD_CONSOLE_IN, .flags = O_RDONLY };
+static ofile_t console_out = { .kind = FD_CONSOLE_OUT, .flags = O_WRONLY };
+
+static int ofile_static(const ofile_t* f) { return f == &console_in || f == &console_out; }
+
+static ofile_t* ofile_new(fd_kind_t kind, int flags) {
+    ofile_t* f = kzalloc(sizeof *f);
+    if (!f) return 0;
+    f->refs = 1;
+    f->kind = kind;
+    f->flags = flags;
+    return f;
 }
 
-int file_fd_ok(int fd) {
-    return fd >= 0 && fd < MAX_FDS && current->fds[fd].kind != FD_NONE;
+static ofile_t* ofile_get(ofile_t* f) {
+    if (!ofile_static(f)) __atomic_add_fetch(&f->refs, 1, __ATOMIC_RELAXED);
+    return f;
 }
 
-static void fd_ref(const fd_t* f) {
-    if (f->kind == FD_FILE) diskfs_ref(f->node);
-    else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_ref(f->pipe, f->kind == FD_PIPE_W);
-    else if (f->kind == FD_SOCKET) udp_socket_ref(f->sock);
-    else if (f->kind == FD_TCP) tcpsock_ref(f->tcp);
-}
-
-static void fd_release(fd_t* f) {
+// Drops a reference, and with the last one lets go of what the open
+// file holds. That can block, so f is already out of every table.
+static void ofile_put(ofile_t* f) {
+    if (ofile_static(f)) return;
+    int left = __atomic_sub_fetch(&f->refs, 1, __ATOMIC_ACQ_REL);
+    if (left > 0) return;
+    if (left < 0) panic("open file %p released once too often", (void*)f);
     if (f->kind == FD_FILE) diskfs_unref(f->node);
     else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_unref(f->pipe, f->kind == FD_PIPE_W);
     else if (f->kind == FD_SOCKET) udp_socket_unref(f->sock);
     else if (f->kind == FD_TCP) tcpsock_unref(f->tcp);
     f->kind = FD_NONE;
+    kfree(f);
+}
+
+void files_init_std(task_t* t) {
+    t->cwd = current ? current->cwd : DISKFS_ROOT;
+    diskfs_ref(t->cwd);
+    memset(t->fds, 0, sizeof t->fds);
+    t->fds[STDIN_FILENO] = &console_in;
+    t->fds[STDOUT_FILENO] = &console_out;
+    t->fds[STDERR_FILENO] = &console_out;
+}
+
+int file_fd_ok(int fd) {
+    return fd >= 0 && fd < MAX_FDS && current->fds[fd];
 }
 
 void files_inherit(task_t* child, task_t* parent, const int std[3]) {
     for (int i = 0; i < 3; i++) {
-        const fd_t* f = &parent->fds[std[i]];
-        if (f->kind == FD_NONE) continue;  // the caller checked; keep the console
-        fd_ref(f);
-        child->fds[i] = *f;
+        ofile_t* f = parent->fds[std[i]];
+        if (!f) continue;  // the caller checked; keep the console
+        child->fds[i] = ofile_get(f);  // replaces a console one, which is not counted
     }
 }
 
 void files_close_all(task_t* t) {
-    for (int i = 0; i < MAX_FDS; i++) fd_release(&t->fds[i]);
+    for (int i = 0; i < MAX_FDS; i++) {
+        ofile_t* f = t->fds[i];
+        t->fds[i] = 0;
+        if (f) ofile_put(f);
+    }
     diskfs_unref(t->cwd);
     t->cwd = DISKFS_ROOT;
 }
@@ -75,13 +113,13 @@ int file_chdir(const char* path) {
 
 static int free_fd(int from) {
     for (int i = from; i < MAX_FDS; i++)
-        if (current->fds[i].kind == FD_NONE) return i;
+        if (!current->fds[i]) return i;
     return -EMFILE;
 }
 
-static fd_t* get_fd(int fd) {
-    if (fd < 0 || fd >= MAX_FDS || current->fds[fd].kind == FD_NONE) return 0;
-    return &current->fds[fd];
+static ofile_t* get_fd(int fd) {
+    if (fd < 0 || fd >= MAX_FDS) return 0;
+    return current->fds[fd];
 }
 
 int file_open(const char* uname, int flags) {
@@ -100,10 +138,7 @@ int file_open(const char* uname, int flags) {
     // is a pipe. One direction per descriptor, as the standard ones are.
     if (strcmp(name, DEV_TTY) == 0) {
         if (acc == O_RDWR || (flags & ~O_ACCMODE)) return -EINVAL;
-        fd_t* t = &current->fds[fd];
-        memset(t, 0, sizeof *t);
-        t->kind = acc == O_RDONLY ? FD_CONSOLE_IN : FD_CONSOLE_OUT;
-        t->flags = acc;
+        current->fds[fd] = acc == O_RDONLY ? &console_in : &console_out;
         return fd;
     }
 
@@ -118,22 +153,22 @@ int file_open(const char* uname, int flags) {
         if (node == -EEXIST && !(flags & O_EXCL)) node = diskfs_lookup(current->cwd, name);  // lost a race
     }
     if (node < 0) return node;
+    ofile_t* f = ofile_new(FD_FILE, flags);
+    if (!f) { diskfs_unref(node); return -ENOMEM; }
     if (flags & O_TRUNC) {
         int r = diskfs_truncate(node, 0);
-        if (r < 0) { diskfs_unref(node); return r; }
+        if (r < 0) { kfree(f); diskfs_unref(node); return r; }
     }
-    fd_t* f = &current->fds[fd];
-    f->kind = FD_FILE;
-    f->flags = flags;
     f->node = node;
-    f->offset = 0;
+    current->fds[fd] = f;
     return fd;
 }
 
 int file_close(int fd) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f) return -EBADF;
-    fd_release(f);
+    current->fds[fd] = 0;
+    ofile_put(f);
     return 0;
 }
 
@@ -146,17 +181,19 @@ int file_pipe(int* ufds) {
     if (user_range_ok((uintptr_t)ufds, sizeof fds, 1)) return -EFAULT;
     struct pipe* p = pipe_new();
     if (!p) return -ENOMEM;
-    if (copy_to_user(ufds, fds, sizeof fds)) {
+    ofile_t* r = ofile_new(FD_PIPE_R, O_RDONLY);
+    ofile_t* w = ofile_new(FD_PIPE_W, O_WRONLY);
+    int err = !r || !w ? -ENOMEM : copy_to_user(ufds, fds, sizeof fds) ? -EFAULT : 0;
+    if (err) {
+        kfree(r);
+        kfree(w);
         pipe_unref(p, 0);
         pipe_unref(p, 1);
-        return -EFAULT;
+        return err;
     }
-    fd_t* r = &current->fds[fds[0]];
-    fd_t* w = &current->fds[fds[1]];
-    memset(r, 0, sizeof *r);
-    memset(w, 0, sizeof *w);
-    r->kind = FD_PIPE_R; r->flags = O_RDONLY; r->pipe = p;
-    w->kind = FD_PIPE_W; w->flags = O_WRONLY; w->pipe = p;
+    r->pipe = w->pipe = p;
+    current->fds[fds[0]] = r;
+    current->fds[fds[1]] = w;
     return 0;
 }
 
@@ -164,26 +201,20 @@ int file_socket(int type) {
     if (type != SOCK_DGRAM && type != SOCK_STREAM) return -EINVAL;
     int fd = free_fd(0);
     if (fd < 0) return fd;
-    fd_t* f = &current->fds[fd];
-    if (type == SOCK_DGRAM) {
-        struct socket* sk = udp_socket_new();
-        if (!sk) return -ENFILE;
-        memset(f, 0, sizeof *f);
-        f->kind = FD_SOCKET;
-        f->sock = sk;
-    } else {
-        struct tcp* c = tcpsock_new();
-        if (!c) return -ENFILE;
-        memset(f, 0, sizeof *f);
-        f->kind = FD_TCP;
-        f->tcp = c;
+    ofile_t* f = ofile_new(type == SOCK_DGRAM ? FD_SOCKET : FD_TCP, O_RDWR);
+    if (!f) return -ENOMEM;
+    if (type == SOCK_DGRAM) f->sock = udp_socket_new();
+    else f->tcp = tcpsock_new();
+    if (!f->sock && !f->tcp) {
+        kfree(f);
+        return -ENFILE;
     }
-    f->flags = O_RDWR;
+    current->fds[fd] = f;
     return fd;
 }
 
 int file_get_socket(int fd, struct socket** s) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f) return -EBADF;
     if (f->kind == FD_TCP) return -EOPNOTSUPP;
     if (f->kind != FD_SOCKET) return -ENOTSOCK;
@@ -192,7 +223,7 @@ int file_get_socket(int fd, struct socket** s) {
 }
 
 int file_get_tcp(int fd, struct tcp** c) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f) return -EBADF;
     if (f->kind == FD_SOCKET) return -EOPNOTSUPP;
     if (f->kind != FD_TCP) return -ENOTSOCK;
@@ -209,23 +240,22 @@ int file_accept(int fd, sock_addr_t* uaddr, int timeout_ms) {
     int nfd = free_fd(0);
     if (nfd < 0) return nfd;
     if (uaddr && user_range_ok((uintptr_t)uaddr, sizeof *uaddr, 1)) return -EFAULT;
+    ofile_t* f = ofile_new(FD_TCP, O_RDWR);
+    if (!f) return -ENOMEM;
     struct tcp* c;
     sock_addr_t a;
     uint32_t ip;
     r = tcpsock_accept(l, &c, &ip, &a.port, timeout_ms);
-    if (r) return r;
+    if (r) { kfree(f); return r; }
     a.ip = ip;
-    fd_t* f = &current->fds[nfd];
-    memset(f, 0, sizeof *f);
-    f->kind = FD_TCP;
-    f->flags = O_RDWR;
     f->tcp = c;
+    current->fds[nfd] = f;
     if (uaddr && copy_to_user(uaddr, &a, sizeof a)) return -EFAULT;  // the fd is open all the same
     return nfd;
 }
 
 int file_fdtype(int fd) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f) return -EBADF;
     switch (f->kind) {
     case FD_CONSOLE_IN:
@@ -251,7 +281,7 @@ void poll_notify(void) {
 }
 
 static int fd_events(int fd) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f) return POLLNVAL;
     switch (f->kind) {
     case FD_CONSOLE_IN: return current->job == tty_foreground() && tty_pending() ? POLLIN : 0;
@@ -297,14 +327,14 @@ int file_pollfd(pollfd_t* ufds, uint32_t n, int timeout_ms) {
     return count;
 }
 
+// newfd comes to point at oldfd's open file, offset and all.
 int file_dup2(int oldfd, int newfd) {
-    fd_t* f = get_fd(oldfd);
+    ofile_t* f = get_fd(oldfd);
     if (!f || newfd < 0 || newfd >= MAX_FDS) return -EBADF;
     if (oldfd == newfd) return newfd;
-    fd_t copy = *f;
-    fd_ref(&copy);  // before releasing newfd, in case both share a pipe
-    fd_release(&current->fds[newfd]);
-    current->fds[newfd] = copy;
+    ofile_t* old = current->fds[newfd];
+    current->fds[newfd] = ofile_get(f);  // before the put, in case both are the same
+    if (old) ofile_put(old);
     return newfd;
 }
 
@@ -319,7 +349,7 @@ static int console_read(void* ubuf, uint32_t len) {
 }
 
 int file_read(int fd, void* ubuf, uint32_t len) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f || (f->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
     if (f->kind == FD_SOCKET) return -EINVAL;  // UDP sockets take SYS_RECVFROM
     if (len == 0) return 0;
@@ -339,6 +369,7 @@ int file_read(int fd, void* ubuf, uint32_t len) {
     }
     uint32_t done = 0;
     int err = 0;
+    mutex_lock(&f->lock);
     while (done < len) {
         uint32_t chunk = MIN(len - done, BOUNCE);
         int n = diskfs_pread(f->node, bounce, chunk, f->offset);
@@ -348,12 +379,13 @@ int file_read(int fd, void* ubuf, uint32_t len) {
         done += (uint32_t)n;
         if ((uint32_t)n < chunk) break;  // end of file
     }
+    mutex_unlock(&f->lock);
     kfree(bounce);
     return done ? (int)done : err;
 }
 
 int file_write(int fd, const void* ubuf, uint32_t len) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f || (f->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
     if (f->kind == FD_SOCKET) return -EINVAL;  // and SYS_SENDTO
     if (len == 0) return 0;
@@ -364,6 +396,7 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
     uint32_t done = 0;
     int err = 0;
     if (f->kind == FD_CONSOLE_OUT) console_lock();
+    if (f->kind == FD_FILE) mutex_lock(&f->lock);
     while (done < len) {
         uint32_t chunk = MIN(len - done, BOUNCE);
         if (copy_from_user(bounce, (const uint8_t*)ubuf + done, chunk)) { err = -EFAULT; break; }
@@ -386,24 +419,22 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
         done += (uint32_t)n;
         if ((uint32_t)n < chunk) break;  // disk full
     }
+    if (f->kind == FD_FILE) mutex_unlock(&f->lock);
     if (f->kind == FD_CONSOLE_OUT) console_unlock();
     kfree(bounce);
     return done ? (int)done : err;
 }
 
 int file_seek(int fd, int32_t off, int whence) {
-    fd_t* f = get_fd(fd);
+    ofile_t* f = get_fd(fd);
     if (!f) return -EBADF;
     if (f->kind != FD_FILE) return -EINVAL;  // consoles and pipes do not seek
-    int64_t base;
-    switch (whence) {
-    case SEEK_SET: base = 0; break;
-    case SEEK_CUR: base = f->offset; break;
-    case SEEK_END: base = diskfs_size(f->node); break;
-    default: return -EINVAL;
-    }
+    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) return -EINVAL;
+    mutex_lock(&f->lock);
+    int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (int64_t)f->offset : (int64_t)diskfs_size(f->node);
     int64_t pos = base + off;
-    if (pos < 0 || pos > 0x7FFFFFFF) return -EINVAL;
-    f->offset = (uint32_t)pos;
-    return (int)pos;
+    int r = pos < 0 || pos > 0x7FFFFFFF ? -EINVAL : (int)pos;
+    if (r >= 0) f->offset = (uint32_t)pos;
+    mutex_unlock(&f->lock);
+    return r;
 }

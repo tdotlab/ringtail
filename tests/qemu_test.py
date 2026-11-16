@@ -302,7 +302,7 @@ def tests(m, t):
     out = m.run("version")
     t.check("and the new shell works", "0.28.0" in out, out)
 
-    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn",
+    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn", "fdshare",
                  "udptest", "tcptest", "rndtest", "sysregs"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)

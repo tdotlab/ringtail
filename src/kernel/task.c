@@ -208,6 +208,9 @@ void task_block_timeout(void* chan, uint32_t until) {
 }
 
 void task_wakeup(void* chan) {
+    // The console's mutex is let go of before there are any tasks: the
+    // list is empty then, and nobody can be waiting.
+    if (!task_list_head) return;
     uint32_t f = irq_save();
     task_t* t = task_list_head;
     do {

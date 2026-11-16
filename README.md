@@ -289,7 +289,11 @@ an ordinary program: everything it shows comes through syscalls such as
 `readdir`, `kinfo` (version, memory, heap, tasks, faults, memory map,
 disk) and `kill`. Pipes are 4 KB kernel buffers: a reader waits for data
 and sees end of file once every writer has closed, and a writer waits
-for room. `dup2` copies a descriptor onto another number.
+for room. `dup2` copies a descriptor onto another number. A copy, by
+`dup2` or handed to a spawned program, is the same open file as the
+original, as in POSIX: they share one offset, so a program and its
+parent writing to the same redirected file each write after the other,
+and the file stays open until the last copy is closed.
 
 Filesystem: FAT16 with subdirectories and Windows-style long names
 (VFAT). A name is up to 255 printable ASCII characters, none of

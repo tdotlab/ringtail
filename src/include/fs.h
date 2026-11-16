@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include "ringtail/abi.h"  // MAX_FDS, PATH_MAX, dirent_t
+#include "sync.h"          // mutex_t
 
 #define DISKFS_ROOT 0   // the root directory's node, which always exists
 
@@ -57,15 +58,22 @@ typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, F
 struct pipe;
 struct socket;
 struct tcp;
-typedef struct {
+// An open file: what open, pipe, socket and accept make, and what a
+// task's descriptors point at. Copies of a descriptor, by dup2 or
+// handed to a child by spawn, point at the same one, so they share its
+// offset and flags, as in POSIX; it goes away with the last of them.
+// The console's two are static and never counted or freed.
+typedef struct ofile {
+    int refs;            // descriptors pointing here, in every task
     fd_kind_t kind;
     int flags;
     int node;            // FD_FILE
     uint32_t offset;     // FD_FILE
+    mutex_t lock;        // FD_FILE: a read, write or seek moves the offset whole
     struct pipe* pipe;   // FD_PIPE_R, FD_PIPE_W
     struct socket* sock; // FD_SOCKET (UDP)
     struct tcp* tcp;     // FD_TCP
-} fd_t;
+} ofile_t;
 
 // Pipes (pipe.c). pipe_new returns a pipe with one reader and one
 // writer counted. The read and write calls take kernel buffers and
@@ -86,7 +94,8 @@ void poll_notify(void);
 struct task;
 void files_init_std(struct task* t);
 void files_close_all(struct task* t);
-// Give child copies of parent's descriptors std[0..2] as its 0-2.
+// Give child copies of parent's descriptors std[0..2] as its 0-2:
+// the same open files, so a child and its parent share the offset.
 void files_inherit(struct task* child, struct task* parent, const int std[3]);
 int file_fd_ok(int fd);  // fd is open in the current task
 // These operate on the current task and take user pointers.

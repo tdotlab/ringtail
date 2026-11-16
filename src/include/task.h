@@ -48,7 +48,7 @@ typedef struct task {
     uintptr_t brk_start, brk;  // user heap: from the end of the image to the break
 
     char name[TASK_NAME_MAX];
-    fd_t fds[MAX_FDS];
+    ofile_t* fds[MAX_FDS];  // 0 where closed
     int cwd;               // current directory, a diskfs node (0 is the root)
     fpu_state_t fpu;       // floating-point registers, saved on every switch
 

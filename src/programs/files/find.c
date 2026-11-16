@@ -323,11 +323,6 @@ static int do_exec(const node_t* n, const ent_t* e) {
         return 0;
     }
     int st = sys_join(id);
-    // The child has its own copy of a redirected output file, with its own
-    // offset in it; ours has not moved. Go to the end so what find writes
-    // next, and the next run, come after this run's output.
-    for (int fd = STDOUT_FILENO; fd <= STDERR_FILENO; fd++)
-        if (sys_fdtype(fd) == FDTYPE_FILE) sys_seek(fd, 0, SEEK_END);
     return st == 0;
 }
 

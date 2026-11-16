@@ -41,10 +41,11 @@ Every task ends the same way, or it is not done:
   so a program's name is at most 8 characters.
 - The shell has no `2>&1` yet (an item below). Error cases in
   `gen_text_cases.py` end in `| cat`; see the `du` and `cal` cases.
-- A spawned program gets its own copy of each file offset, not a shared
-  one (see "Shared file offsets" in the Opus section). Anything that runs
-  programs into a file it is also writing has to allow for that, as `xargs`
-  and `find -exec` do by seeking to the end after each run.
+- A spawned program shares its parent's open files, offsets included
+  (`file.c`). A child given a file as standard input reads it on from
+  where the parent is and leaves the parent where it stopped, so a
+  program that runs others and still reads its own input (as `xargs`
+  does) must hand them something else; `xargs` gives them an empty pipe.
 - Not every reference is GNU: `cal` is checked against BSD `ncal`, because
   that is the layout people know. Check the reference's `--version`, say
   which one it is in the commit, and make the generator refuse to run
@@ -95,6 +96,20 @@ Every task ends the same way, or it is not done:
   early in `ap_main`, triple-faults, and QEMU resets the whole machine:
   a startup bug shows as the banner printed over and over, not as a
   CPU missing from the count.
+- `task_wakeup` ran before `task_init` (the console's mutex is let go
+  of from the first kprintf) and walked a task list that was not there
+  yet, reading the real-mode interrupt table at address 0, which is
+  still mapped then. It got away with it for years because `next` sat
+  at an offset where that memory ended the loop; shrinking `task_t`
+  moved it and the boot died with no output at all. It now returns
+  early with no tasks. A boot that prints nothing before the banner:
+  `-d int` and `info registers` in the monitor show where.
+- Two tasks writing one shared open file at once each take its mutex
+  (`file.c`), so no two writes land on the same bytes. No test can see
+  the mutex yet: under the big kernel lock a write that does not block
+  on the disk cannot be interrupted by another, and the suite passes
+  with it removed. It matters once the lock is split or the disk
+  writes through.
 - `make` does not rebuild objects when compiler flags change. After
   changing `KCFLAGS` (adding `-mcmodel=kernel`, say), delete
   `build/x86_64/k` first, or the link fails with relocations "truncated
@@ -307,15 +322,6 @@ under QEMU's `virt` machine, before the shell could start.
 
 These need a design decision first; Sonnet would build the wrong thing
 confidently.
-
-**Shared file offsets.** A copy of a file descriptor keeps its own
-offset (`src/fs/file.c`), where in POSIX a parent and the programs it
-starts share one open file and one offset. That is why `xargs` and
-`find -exec` seek to the end after each run. The fix is a shared,
-reference-counted open file that `spawn` (and `dup2`: check what it does
-now) hands on, after which those seeks can go. It changes when a file is
-really closed and who frees it, across tasks: a mistake there is a
-use-after-free that shows up a week later.
 
 **Back-references in grep and sed.** `\1` inside a pattern (the README
 says "No back-references"). An automaton cannot match them; GNU switches
