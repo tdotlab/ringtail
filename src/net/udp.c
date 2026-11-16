@@ -168,11 +168,11 @@ int udp_recvfrom(struct socket* s, uint32_t* ip, int* port, uint8_t* kbuf, uint3
             break;
         }
         if (timeout_ms == 0) { r = -EAGAIN; break; }
-        if (current->killed) { r = -EINTR; break; }
+        if (task_signalled(current)) { r = -EINTR; break; }
         if (timeout_ms > 0 && (int32_t)(timer_ticks() - until) >= 0) { r = -ETIMEDOUT; break; }
         mutex_unlock(&net_lock);
         uint32_t f = irq_save();
-        if (!s->head && !current->killed) {
+        if (!s->head && !task_signalled(current)) {
             if (timeout_ms > 0) task_block_timeout(s, until);
             else task_block(s);
         }

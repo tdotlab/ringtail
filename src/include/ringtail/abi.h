@@ -3,8 +3,8 @@
 // Calling convention: int $0x80 with the call number in rax and up
 // to three arguments in rdi, rsi, rdx. The result comes back in rax.
 // Failures return a negative errno value (-ENOENT and so on).
-// Exit statuses are plain ints: a killed program reports EXIT_KILLED
-// and one that faulted reports EXIT_FAULTED.
+// Exit statuses are plain ints; a program ended by a signal reports
+// EXIT_SIGNAL(sig) (see Signals below).
 #ifndef RINGTAIL_ABI_H
 #define RINGTAIL_ABI_H
 
@@ -39,7 +39,7 @@
 #define SYS_SAVE        29  // (name, buf, len)        -> 0; replaces the file whole or not at all (len <= 1 MB)
 #define SYS_TTY_FG      30  // (job)                   -> 0; hand the terminal to a job, or take it back
 #define SYS_WAIT_JOB    31  // (job)                   -> 0 once no task of the job is alive
-#define SYS_KILL        32  // (task id)               -> 0; kernel tasks cannot be killed
+#define SYS_KILL        32  // (task id, signal)       -> 0; signal 0 only checks the task is there; not kernel tasks
 #define SYS_READDIR     33  // (path, int* cursor, dirent_t*) -> 1 with an entry, 0 after the last; *cursor starts at 0
 #define SYS_KINFO       34  // (KINFO_*, buf, size)    -> length of the full text; buf gets as much as fits, NUL-terminated
 #define SYS_SET_COLOR   35  // (VGA attribute)         -> 0; the console's default colour
@@ -69,10 +69,71 @@
 #define SYS_FDTYPE      59  // (fd)                    -> FDTYPE_*
 #define SYS_RANDOM      60  // (buf, len)              -> len; random bytes fit for keys, 256 at most a call
 #define SYS_SETTIME     61  // (const rtc_time_t*)     -> 0; sets the clock (see below)
-#define NUM_SYSCALLS    62
+#define SYS_SIGACTION   62  // (signal, const sigaction_t* or NULL, sigaction_t* old or NULL) -> 0
+#define SYS_SIGMASK     63  // (SIG_BLOCK, SIG_UNBLOCK or SIG_SETMASK, mask) -> the mask before
+#define SYS_SIGRETURN   64  // () -> does not return: a handler's way back (sigaction_t.restorer)
+#define NUM_SYSCALLS    65
 
-#define EXIT_KILLED  (-1)  // Ctrl+C, Ctrl+backslash or kill
-#define EXIT_FAULTED (-2)
+// Signals, numbered as on Linux. Each one's default action is to end
+// the program, which then reports EXIT_SIGNAL(sig). A program can
+// ignore a signal or catch it with a handler instead (SYS_SIGACTION),
+// or block it for a while (SYS_SIGMASK), and it stays pending until
+// unblocked; all but SIGKILL, which always ends it. A signal that is
+// pending and not blocked interrupts a blocking call, which returns
+// -EINTR (after the handler, if there is one, has run).
+//
+// Where they come from: SYS_KILL (kill in the shell, SIGTERM unless
+// told otherwise); Ctrl+C sends SIGINT to the foreground job, unless it
+// asked for TTY_NOSIG, and Ctrl+backslash SIGQUIT in any mode (a third
+// within two seconds sends SIGKILL, so a program that catches both
+// cannot lock the terminal); writing to a pipe with no reader sends
+// SIGPIPE (and fails with EPIPE if it is ignored or caught); and a
+// fault sends the signal named for it: SIGSEGV for a bad memory access,
+// SIGILL, SIGFPE, SIGBUS or SIGTRAP. A fault the program does not catch
+// is reported on the screen and in the fault log. If a handler returns
+// from a fault, the instruction runs again.
+//
+// Spawned programs start with every signal at its default and none
+// blocked.
+#define SIGHUP   1
+#define SIGINT   2
+#define SIGQUIT  3
+#define SIGILL   4
+#define SIGTRAP  5
+#define SIGABRT  6
+#define SIGBUS   7
+#define SIGFPE   8
+#define SIGKILL  9
+#define SIGUSR1  10
+#define SIGSEGV  11
+#define SIGUSR2  12
+#define SIGPIPE  13
+#define SIGALRM  14
+#define SIGTERM  15
+#define NSIG     16  // signals are 1 to NSIG - 1
+#define SIGBIT(sig) (1u << (sig))
+
+#define EXIT_SIGNAL(sig) (-256 - (sig))
+// The signal that ended a program with this exit status, or 0.
+#define EXIT_SIGNUM(st)  ((st) < -256 && (st) > -256 - NSIG ? -256 - (st) : 0)
+
+// SYS_SIGACTION. A handler runs on the program's own stack as
+// handler(sig), with the signals in mask blocked and, unless
+// SA_NODEFER, sig itself; it returns to restorer, which must call
+// SYS_SIGRETURN to go back to where the program was, with its
+// registers and mask as they were. ulib's sigaction fills restorer in.
+// SA_RESETHAND puts the default back as the handler is called.
+// Interrupted calls are not restarted.
+typedef void (*sighandler_t)(int);
+#define SIG_DFL ((sighandler_t)0)
+#define SIG_IGN ((sighandler_t)1)
+#define SA_RESETHAND 1
+#define SA_NODEFER   2
+typedef struct { sighandler_t handler; unsigned mask; unsigned flags; void (*restorer)(void); } sigaction_t;
+
+#define SIG_BLOCK   0  // SYS_SIGMASK: add these to the mask
+#define SIG_UNBLOCK 1  // take these out
+#define SIG_SETMASK 2  // the mask becomes these
 
 // SYS_SPAWN options. By default the child joins the caller's job and
 // its descriptors 0, 1 and 2 are copies of the caller's. SPAWN_NEW_JOB
@@ -145,8 +206,8 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 // they arrive, without echo or line editing; Backspace reads as 0x7F
 // and the navigation keys as xterm escape sequences (ESC [ A,
 // ESC [ 1 ; 5 C for Ctrl+Right, ESC [ 3 ~ for Delete). TTY_NOSIG:
-// Ctrl+C is delivered as byte 3 instead of killing the job.
-// Ctrl+backslash kills the job in any mode and is never delivered.
+// Ctrl+C is delivered as byte 3 instead of sending SIGINT.
+// Ctrl+backslash sends SIGQUIT in any mode and is never delivered.
 // The mode returns to 0 (cooked) when the job leaves the foreground.
 #define TTY_RAW   1
 #define TTY_NOSIG 2

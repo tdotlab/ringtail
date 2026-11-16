@@ -70,7 +70,7 @@ static inline int sys_spawn_opts(const char* name, const char* const* argv, cons
 }
 static inline int sys_tty_fg(int job) { return SC1(SYS_TTY_FG, job); }
 static inline int sys_wait_job(int job) { return SC1(SYS_WAIT_JOB, job); }
-static inline int sys_kill(int id) { return SC1(SYS_KILL, id); }
+static inline int sys_kill(int id, int sig) { return SC2(SYS_KILL, id, sig); }
 static inline int sys_readdir(const char* path, int* cursor, dirent_t* d) { return SC3(SYS_READDIR, path, cursor, d); }
 static inline int sys_kinfo(int what, char* buf, uint32_t size) { return SC3(SYS_KINFO, what, buf, size); }
 static inline int sys_set_color(int attr) { return SC1(SYS_SET_COLOR, attr); }
@@ -159,6 +159,23 @@ int join_path(char* out, size_t size, const char* dir, const char* name);
 // Walks up through ".." from dir's parent; used to stop `cp -r a a/b`.
 // A dir that does not exist yet is judged by its parent.
 int path_inside(const char* dir_path, uint32_t id);
+
+// Signals (ringtail/abi.h). sys_sigaction fills in act's restorer with
+// ulib's own, which makes the SYS_SIGRETURN. signal() sets a plain
+// handler (no mask, no flags) and returns the one before, or SIG_ERR.
+#define SIG_ERR ((sighandler_t)-1)
+int sys_sigaction(int sig, const sigaction_t* act, sigaction_t* old);
+sighandler_t signal(int sig, sighandler_t handler);
+// The mask before, or -errno.
+static inline int sys_sigmask(int how, unsigned mask) { return SC2(SYS_SIGMASK, how, mask); }
+static inline int raise(int sig) { return sys_kill(sys_getpid(), sig); }
+// A signal's name without the SIG ("INT"), or 0 for none.
+const char* signame(int sig);
+// What it means, as a shell reports a program it ended ("Terminated").
+const char* sigdescr(int sig);
+// A signal from its name (INT or SIGINT, any case) or number; -1 for
+// neither.
+int signum(const char* s);
 
 // Self-checking programs: check() prints one result line, and
 // check_summary() prints the total and returns an exit status.

@@ -229,7 +229,7 @@ int task_sleep_ticks(uint32_t ticks) {
     uint32_t until = timer_ticks() + ticks;
     int r = 0;
     while ((int32_t)(timer_ticks() - until) < 0) {
-        if (current->killed) { r = -EINTR; break; }
+        if (task_signalled(current)) { r = -EINTR; break; }
         current->wake_tick = until;
         current->state = TASK_SLEEPING;
         schedule();
@@ -334,28 +334,33 @@ void task_exit(int status) {
     panic("dead task %d was scheduled", t->id);
 }
 
-int task_kill(int id) {
+int task_signal(int id, int sig) {
+    if (sig < 0 || sig >= NSIG) return -EINVAL;
     uint32_t f = irq_save();
     task_t* t = task_find(id);
     int r = 0;
     if (!t || t->state == TASK_DEAD) r = -ESRCH;
     else if (t->is_idle) r = -EPERM;
-    else {
-        t->killed = 1;
-        if (t->state == TASK_BLOCKED || t->state == TASK_SLEEPING) {
-            t->state = TASK_READY;
-            smp_kick_idle();
+    else if (sig && (sig == SIGKILL || t->sig_action[sig].handler != SIG_IGN)) {
+        // The target may be running on another CPU: the bit goes in
+        // atomically, and it looks at its mask only on its own way out.
+        __atomic_fetch_or(&t->sig_pending, SIGBIT(sig), __ATOMIC_SEQ_CST);
+        if (!(t->sig_blocked & SIGBIT(sig))) {
+            if (t->state == TASK_BLOCKED || t->state == TASK_SLEEPING) {
+                t->state = TASK_READY;
+                smp_kick_idle();
+            }
+            need_resched = 1;
         }
-        need_resched = 1;
     }
     irq_restore(f);
     return r;
 }
 
-int task_kill_user(int id) {
+int task_signal_user(int id, int sig) {
     uint32_t f = irq_save();
     task_t* t = task_find(id);
-    int r = !t || t->state == TASK_DEAD ? -ESRCH : !t->user ? -EPERM : task_kill(id);
+    int r = !t || t->state == TASK_DEAD ? -ESRCH : !t->user ? -EPERM : task_signal(id, sig);
     irq_restore(f);
     return r;
 }
@@ -373,12 +378,12 @@ int task_job_mine(int job) {
     return ok;
 }
 
-void task_kill_job(int job) {
+void task_signal_job(int job, int sig) {
     if (job <= 0) return;
     uint32_t f = irq_save();
     task_t* t = task_list_head;
     do {
-        if (t->job == job && t->state != TASK_DEAD && !t->is_idle) task_kill(t->id);
+        if (t->job == job && t->state != TASK_DEAD && !t->is_idle) task_signal(t->id, sig);
         t = t->next;
     } while (t != task_list_head);
     irq_restore(f);
@@ -393,7 +398,7 @@ int task_join(int id) {
             if (id > 0 && exited[i].id == id) status = exited[i].status;
     } else if (t != current && !t->is_idle) {
         t->joiners++;
-        while (t->state != TASK_DEAD && !current->killed) task_block(t);
+        while (t->state != TASK_DEAD && !task_signalled(current)) task_block(t);
         status = t->state == TASK_DEAD ? t->exit_status : -EINTR;
         t->joiners--;
     }
@@ -415,7 +420,7 @@ int task_job_alive(int job) {
 
 void task_wait_job(int job) {
     uint32_t f = irq_save();
-    while (task_job_alive(job) && !current->killed) task_block(&next_id);
+    while (task_job_alive(job) && !task_signalled(current)) task_block(&next_id);
     irq_restore(f);
 }
 

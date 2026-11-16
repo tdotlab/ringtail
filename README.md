@@ -145,7 +145,8 @@ banner and runs every program, including the ones that are supposed to
 crash. It covers bad pointers handed to syscalls, every register
 after a `syscall` and an `int 0x80` (with NMIs arriving meanwhile, from
 the QEMU monitor), stack growth and
-overflow, malloc, Ctrl+C on foreground jobs, background jobs, raw
+overflow, malloc, signals (`sigtest`: handlers, masks, nesting, faults caught
+and not, and every register around an asynchronous one), Ctrl+C on foreground jobs, background jobs, raw
 terminal mode, ANSI output (read back from VGA memory through the QEMU
 monitor), an editing session in Octavo, file and directory commands,
 the timer rate (against the host's clock), the network card's
@@ -246,9 +247,9 @@ Tasks: a round-robin, preemptive scheduler runs on the 100 Hz tick. The
 kernel's own tasks (idle, init) and user programs are scheduled the same
 way. init gives DHCP its chance, runs `sntp -b` once if the network is
 up, then starts SAKLAS from the disk, hands it the terminal, and starts a
-fresh one whenever it ends. A program that faults is killed and the fault is
-logged (`faults` in the shell). A kill takes effect at the next safe
-point, never in the middle of a kernel operation. The tty belongs to one
+fresh one whenever it ends. A program that faults gets a signal for it
+(SIGSEGV, SIGFPE, SIGILL, SIGBUS or SIGTRAP); unless it catches that, it
+ends and the fault is logged (`faults` in the shell). The tty belongs to one
 foreground job, which receives keyboard input, Ctrl+C and Ctrl+\. A job
 can lend the terminal to a job it started and take it back once that job
 is gone, getting its own terminal mode back with it; that is how the
@@ -260,13 +261,31 @@ Terminal: programs read the keyboard (or the serial port) through
 standard input, a line at a time by default. Raw mode hands over every
 key as it comes, with arrows, Home/End, PgUp/PgDn, Delete and F1-F12 as
 xterm escape sequences and Alt as an ESC prefix; with TTY_NOSIG, Ctrl+C
-is an ordinary byte, and Ctrl+\ is the kill switch that always works. `poll`
+is an ordinary byte. Ctrl+\ sends SIGQUIT in any mode, and a third press
+within two seconds sends SIGKILL, so it works even on a program that
+catches SIGQUIT. `poll`
 waits up to a given number of ticks for input, so a program can redraw on a
 timer and still answer a key at once. The console understands the common ANSI escapes for cursor
 motion, erasing, colours and hiding the cursor, on screen and on serial
 alike. Opening `/dev/tty` (`DEV_TTY`) gives the terminal itself, read-only for
 keys or write-only for output, whatever standard input and output are
 redirected to; that is how `more` can wait for a key at the end of a pipe.
+
+Signals: 15 of them, numbered as on Linux (SIGINT 2, SIGKILL 9, SIGTERM 15
+and so on), sent with `kill`, by the terminal, by a pipe with no reader
+or by a fault. Each one's default ends the program, whose exit status then
+says which signal it was. `sigaction` sets a handler or ignores one
+(SIGKILL can be neither), with a mask of signals to hold off while the
+handler runs and the flags SA_RESETHAND and SA_NODEFER; `sigmask` blocks
+and unblocks. A signal is acted on as the task goes back to user mode, so
+never in the middle of a kernel operation. A handler runs on the
+program's own stack, below the red zone, with every register and the
+FPU and SSE state saved in a frame there; returning from it makes the
+`sigreturn` call, which puts them back, taking from the frame only what a
+program could have set for itself. A wait (sleep, a read from the
+keyboard or a pipe, a socket) ends with EINTR when a signal arrives that
+is not blocked. Programs start with every signal at its default, whatever
+their parent did; the shell ignores SIGINT, SIGQUIT and SIGPIPE.
 
 System calls: the `syscall` instruction, with the number in rax,
 arguments in rdi, rsi and rdx (where a C call puts them), and the result
@@ -289,7 +308,8 @@ an ordinary program: everything it shows comes through syscalls such as
 `readdir`, `kinfo` (version, memory, heap, tasks, faults, memory map,
 disk) and `kill`. Pipes are 4 KB kernel buffers: a reader waits for data
 and sees end of file once every writer has closed, and a writer waits
-for room. `dup2` copies a descriptor onto another number. A copy, by
+for room. A write with no reader left fails with EPIPE and sends the
+writer SIGPIPE. `dup2` copies a descriptor onto another number. A copy, by
 `dup2` or handed to a spawned program, is the same open file as the
 original, as in POSIX: they share one offset, so a program and its
 parent writing to the same redirected file each write after the other,
@@ -491,7 +511,8 @@ first command a file, and `> FILE` or `>> FILE` writes or appends the
 last command's output. A built-in can start a pipeline (`help | grep file`)
 or be redirected (`help > h.txt`), but not come after a `|` or take `<`.
 Ctrl+C stops every program in a pipeline. `tasks` lists what is running and
-`kill <id>` stops it; `cpus` shows which CPU runs what. The file commands (`ls`, `cat`, `echo`, `touch`, `rm`,
+`kill <id>` sends it SIGTERM (`kill -9 <id>`, `kill -KILL <id>`, or any
+signal by name or number; `kill -l` lists them); `cpus` shows which CPU runs what. The file commands (`ls`, `cat`, `echo`, `touch`, `rm`,
 `mkdir`, `rmdir`, `mv`, `cp`) are programs on the disk like any other, so they
 pipe, take `<`, and run under `find -exec`; `cat a b > c` joins files, `rm -r`, `cp -r`, `mkdir -p` and `ls -R` work on
 trees, and quote text for `echo` to keep its spacing. An unquoted word with `*`, `?` or `[a-z]` / `[!x]` in it is a wildcard: it is replaced by the matching names, sorted and ignoring case, one directory level per `/` (`ls *.txt`, `cat d/*.c`, `*/readme`); names starting with a dot match only a pattern that starts with a dot, a pattern that matches nothing stays as typed, and quoting a word turns the wildcards off. `write <file> <text>` stays a built-in, and `cd` and `pwd` work on the current directory. Every file argument can be a path (`docs/a.txt`, `"My Docs/notes.txt"`,
@@ -618,9 +639,9 @@ answer from DNS waits on the resolver (up to 4 s a DNS server) before
 the shell starts. `sntp` takes one answer from one server, with no NTS,
 so nobody can vouch for it: someone in the middle, or a lying DHCP
 server, can set the clock to any time after the system was built. There is no
-`fork`/`exec` (programs start other programs with `spawn`), no
-signals beyond kill (so a program writing to a pipe nobody reads gets
-EPIPE back instead of being stopped), and only one CPU at a time runs in the kernel. The only display modes are VGA text and
+`fork`/`exec` (programs start other programs with `spawn`). Signals
+are a small set (no siginfo, no SA_RESTART, so an interrupted call returns
+EINTR, no job control or SIGCHLD, and sockets do not send SIGPIPE). Only one CPU at a time runs in the kernel. The only display modes are VGA text and
 mode 13h. The network has no IPv6, and the resolver does not retry over
 TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by

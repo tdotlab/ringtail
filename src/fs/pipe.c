@@ -1,7 +1,9 @@
 // Pipes: a 4 KB ring buffer with a reading end and a writing end.
 // Each end counts the descriptors that refer to it, across tasks.
 // A read waits for data and returns 0 once no writer is left; a
-// write waits for room and fails with EPIPE once no reader is left.
+// write waits for room and fails with EPIPE once no reader is left,
+// and sends the writer SIGPIPE, which ends it unless it ignores or
+// catches that.
 // Both ends wait on the pipe itself, and every change wakes both
 // sides; wakeups may be spurious, so each side re-checks.
 #include "fs.h"
@@ -64,7 +66,7 @@ int pipe_read(struct pipe* p, uint8_t* kbuf, uint32_t len) {
             break;
         }
         if (p->writers == 0) { r = 0; break; }
-        if (current->killed) { r = -EINTR; break; }
+        if (task_signalled(current)) { r = -EINTR; break; }
         task_block(p);
     }
     irq_restore(f);
@@ -87,9 +89,11 @@ int pipe_write(struct pipe* p, const uint8_t* kbuf, uint32_t len) {
             changed(p);
             continue;
         }
-        if (current->killed) { err = -EINTR; break; }
+        if (task_signalled(current)) { err = -EINTR; break; }
         task_block(p);
     }
+    // Some bytes in, and the reader gone: the count now, EPIPE next time.
+    if (!done && err == -EPIPE && current->user) task_signal(current->id, SIGPIPE);
     irq_restore(f);
     return done ? (int)done : err;
 }

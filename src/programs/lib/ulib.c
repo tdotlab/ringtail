@@ -34,6 +34,63 @@ int dprintf(int fd, const char* fmt, ...) {
     return n;
 }
 
+// ---- Signals ----
+
+#define STR_(x) #x
+#define STR(x) STR_(x)
+void sig_restorer(void);
+// Where a handler returns: the frame is right above rsp (arch sigframe.c).
+__asm__(".text\n"
+        ".globl sig_restorer\n"
+        "sig_restorer:\n"
+        "    mov $" STR(SYS_SIGRETURN) ", %eax\n"
+        "    syscall\n"
+        "    ud2\n");
+
+int sys_sigaction(int sig, const sigaction_t* act, sigaction_t* old) {
+    sigaction_t a;
+    if (act) {
+        a = *act;
+        a.restorer = sig_restorer;
+    }
+    return SC3(SYS_SIGACTION, sig, act ? &a : 0, old);
+}
+
+sighandler_t signal(int sig, sighandler_t handler) {
+    sigaction_t a = { handler, 0, 0, 0 }, old;
+    return sys_sigaction(sig, &a, &old) < 0 ? SIG_ERR : old.handler;
+}
+
+static const struct { const char* name; const char* descr; } signals[NSIG] = {
+    [SIGHUP] = { "HUP", "Hangup" },
+    [SIGINT] = { "INT", "Interrupt" },
+    [SIGQUIT] = { "QUIT", "Quit" },
+    [SIGILL] = { "ILL", "Illegal instruction" },
+    [SIGTRAP] = { "TRAP", "Trace/breakpoint trap" },
+    [SIGABRT] = { "ABRT", "Aborted" },
+    [SIGBUS] = { "BUS", "Bus error" },
+    [SIGFPE] = { "FPE", "Floating point exception" },
+    [SIGKILL] = { "KILL", "Killed" },
+    [SIGUSR1] = { "USR1", "User defined signal 1" },
+    [SIGSEGV] = { "SEGV", "Segmentation fault" },
+    [SIGUSR2] = { "USR2", "User defined signal 2" },
+    [SIGPIPE] = { "PIPE", "Broken pipe" },
+    [SIGALRM] = { "ALRM", "Alarm clock" },
+    [SIGTERM] = { "TERM", "Terminated" },
+};
+
+const char* signame(int sig) { return sig > 0 && sig < NSIG ? signals[sig].name : 0; }
+const char* sigdescr(int sig) { return sig > 0 && sig < NSIG ? signals[sig].descr : 0; }
+
+int signum(const char* s) {
+    uint32_t n;
+    if (!parse_uint(s, &n)) return n < NSIG ? (int)n : -1;
+    if ((s[0] | 32) == 's' && (s[1] | 32) == 'i' && (s[2] | 32) == 'g') s += 3;
+    for (int i = 1; i < NSIG; i++)
+        if (!strcasecmp(s, signals[i].name)) return i;
+    return -1;
+}
+
 static int checks, failures;
 
 int check(int ok, const char* what) {

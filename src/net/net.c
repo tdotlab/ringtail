@@ -230,11 +230,11 @@ int arp_resolve(uint32_t ip, uint8_t* mac) {
         uint32_t until = timer_ticks() + ARP_RETRY;
         mutex_unlock(&net_lock);
         uint32_t f = irq_save();
-        while (!arp_find(ip) && !current->killed && (int32_t)(timer_ticks() - until) < 0)
+        while (!arp_find(ip) && !task_signalled(current) && (int32_t)(timer_ticks() - until) < 0)
             task_block_timeout(&arp_chan, until);
         irq_restore(f);
         mutex_lock(&net_lock);
-        if (current->killed) return -EINTR;
+        if (task_signalled(current)) return -EINTR;
     }
 }
 
@@ -577,12 +577,12 @@ int net_ping(ping_t* p) {
     mutex_unlock(&net_lock);
 
     uint32_t f = irq_save();
-    while (s->result == 1 && !current->killed && (int32_t)(timer_ticks() - until) < 0)
+    while (s->result == 1 && !task_signalled(current) && (int32_t)(timer_ticks() - until) < 0)
         task_block_timeout(s, until);
     irq_restore(f);
 
     mutex_lock(&net_lock);
-    r = s->result == 1 ? (current->killed ? -EINTR : -ETIMEDOUT) : s->result;
+    r = s->result == 1 ? (task_signalled(current) ? -EINTR : -ETIMEDOUT) : s->result;
     if (r == 0) { p->rtt_us = s->rtt_us; p->ttl = s->ttl; }
     s->used = 0;
     mutex_unlock(&net_lock);

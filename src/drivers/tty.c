@@ -25,11 +25,29 @@ int input_chan;
 static char pending[LINE_MAX];
 static uint32_t pending_len, pending_pos;
 
+// Ctrl+backslash presses at the job in the foreground, for the third
+// one that sends SIGKILL.
+static int quit_job, quits;
+static uint32_t quit_tick;
+#define QUIT_TICKS 200  // two seconds for three
+
 void tty_input(int c) {
-    // Ctrl+C kills the foreground job unless it asked for TTY_NOSIG.
-    // Ctrl+\ always does, so a stuck raw program cannot lock you out.
-    if (fg_job && (c == KEY_CTRL_BACKSLASH || (c == KEY_CTRL_C && !(mode & TTY_NOSIG)))) {
-        task_kill_job(fg_job);
+    // Ctrl+C sends SIGINT to the foreground job unless it asked for
+    // TTY_NOSIG. Ctrl+\ sends SIGQUIT in any mode, and a third within
+    // two seconds SIGKILL, so a program that catches both still cannot
+    // lock you out.
+    if (fg_job && c == KEY_CTRL_C && !(mode & TTY_NOSIG)) {
+        task_signal_job(fg_job, SIGINT);
+        return;
+    }
+    if (fg_job && c == KEY_CTRL_BACKSLASH) {
+        uint32_t now = timer_ticks();
+        if (quit_job != fg_job || now - quit_tick > QUIT_TICKS) {
+            quit_job = fg_job;
+            quit_tick = now;
+            quits = 0;
+        }
+        task_signal_job(fg_job, ++quits >= 3 ? SIGKILL : SIGQUIT);
         return;
     }
     if (gfx_owner() >= 0) return;  // the display owner reads raw scancodes
@@ -52,7 +70,7 @@ int tty_getc(void) {
             tail++;
             break;
         }
-        if (current->killed) { c = -EINTR; break; }
+        if (task_signalled(current)) { c = -EINTR; break; }
         task_block(&input_chan);
     }
     irq_restore(f);

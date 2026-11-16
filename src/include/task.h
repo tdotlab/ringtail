@@ -30,12 +30,17 @@ typedef struct task {
     uintptr_t kstack_top;
 
     int id;
-    int job;               // tasks started together share a job; Ctrl+C kills a job
+    int job;               // tasks started together share a job; Ctrl+C signals a job
     int parent;
     task_state_t state;
     int user;
     int is_idle;           // a CPU's idle task: never in the run queue, never exits
-    volatile int killed;
+    // Signals (signal.c), a bit each. Anyone sets bits in sig_pending,
+    // atomically; only the task itself clears them, or changes its
+    // mask and actions.
+    volatile uint32_t sig_pending;  // sent, not yet acted on
+    uint32_t sig_blocked;           // held back; never SIGKILL
+    sigaction_t sig_action[NSIG];
     int exit_status;
     int joiners;           // tasks waiting in task_join; keeps the corpse around
     uint32_t wake_tick;    // for TASK_SLEEPING, and TASK_BLOCKED when timed
@@ -98,11 +103,17 @@ void task_wakeup(void* chan);   // safe from interrupt handlers
 // task was killed while sleeping.
 int task_sleep_ticks(uint32_t ticks);
 
-// Deferred kill: the target stops at its next safe point (on the
-// way back to user mode, or at a kernel task's own check).
-int task_kill(int id);
-int task_kill_user(int id);  // for programs: -EPERM for kernel tasks
-void task_kill_job(int job);
+// Signals (signal.c). Sending is deferred: the target acts on it at its
+// next safe point, on the way back to user mode (a kernel task has no
+// handlers: a signal only makes its waits give up). A target blocked
+// or asleep wakes, unless the signal is blocked. An ignored signal is
+// dropped. Sending signal 0 only checks that the task is there.
+int task_signal(int id, int sig);
+int task_signal_user(int id, int sig);  // for programs: -EPERM for kernel tasks
+void task_signal_job(int job, int sig);
+// A signal the task must act on is pending: its blocking waits give up
+// with -EINTR.
+static inline int task_signalled(const task_t* t) { return (t->sig_pending & ~t->sig_blocked) != 0; }
 // Wait for a task to exit and return its exit status.
 int task_join(int id);
 // Wait until no live task belongs to the job.

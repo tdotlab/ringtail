@@ -20,6 +20,7 @@
 #include "net.h"
 #include "random.h"
 #include "ct.h"
+#include "signal.h"
 #include "civil.h"
 #include "timefloor.h"  // RINGTAIL_TIME_FLOOR, made by the Makefile
 #include "ringtail/abi.h"
@@ -267,7 +268,7 @@ static long sys_wait(uintptr_t lx, uintptr_t ly, uintptr_t lb) {
     uint32_t f = irq_save();
     int r = 0;
     while (!input_ready((int)lx, (int)ly, (int)lb)) {
-        if (current->killed) { r = -EINTR; break; }
+        if (task_signalled(current)) { r = -EINTR; break; }
         task_block(&input_chan);
     }
     irq_restore(f);
@@ -285,7 +286,7 @@ static long sys_poll(uintptr_t ticks, uintptr_t b, uintptr_t c) {
     uint32_t end = timer_ticks() + ticks;
     for (;;) {
         if (current->job == tty_foreground() && tty_pending()) return 1;
-        if (current->killed) return -EINTR;
+        if (task_signalled(current)) return -EINTR;
         if ((int32_t)(timer_ticks() - end) >= 0) return 0;
         task_sleep_ticks(1);
     }
@@ -512,7 +513,7 @@ static long sys_spawn(uintptr_t uname, uintptr_t uargv, uintptr_t uopts) {
     if (r > 0 && fg) {
         // The child gets the terminal before its first instruction.
         int h = tty_handover(job ? job : r);
-        if (h) task_kill(r);  // never ran; it ends at once
+        if (h) task_signal(r, SIGKILL);  // never ran; it ends at once
         task_release(r);
         if (h) r = h;
     }
@@ -528,12 +529,12 @@ static long sys_wait_job(uintptr_t job, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if ((int)job <= 0) return -EINVAL;
     task_wait_job((int)job);
-    return current->killed ? -EINTR : 0;
+    return task_signalled(current) ? -EINTR : 0;
 }
 
-static long sys_kill(uintptr_t id, uintptr_t b, uintptr_t c) {
-    (void)b; (void)c;
-    return task_kill_user((int)id);
+static long sys_kill(uintptr_t id, uintptr_t sig, uintptr_t c) {
+    (void)c;
+    return task_signal_user((int)id, (int)sig);
 }
 
 static long sys_readdir(uintptr_t upath, uintptr_t ucursor, uintptr_t uent) {
@@ -661,6 +662,8 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_TTY_FG] = sys_tty_fg,
     [SYS_WAIT_JOB] = sys_wait_job,
     [SYS_KILL] = sys_kill,
+    [SYS_SIGACTION] = sys_sigaction,
+    [SYS_SIGMASK] = sys_sigmask,
     [SYS_READDIR] = sys_readdir,
     [SYS_KINFO] = sys_kinfo,
     [SYS_SET_COLOR] = sys_set_color,
@@ -694,6 +697,10 @@ static const syscall_fn table[NUM_SYSCALLS] = {
 
 void syscall_handle(regs_t* r) {
     uintptr_t n = SYSCALL_NR(r);
+    if (n == SYS_SIGRETURN) {  // the one that sets every register, rax included
+        signal_return(r);
+        return;
+    }
     if (n >= NUM_SYSCALLS || !table[n]) {
         SYSCALL_RET(r) = (uintptr_t)-ENOSYS;
         return;

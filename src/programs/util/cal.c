@@ -23,7 +23,34 @@
 //
 // On a terminal, today is shown in reverse; piped or redirected, it is
 // plain.
+//
+// The output is gathered and written at the end, in one write (a year is
+// about 2 KB), as stdio's buffer does for GNU cal: in `xargs cal | head
+// -n 1` everything is in the pipe before head goes, where a write per
+// line would find it gone and die of SIGPIPE.
+#include <stdarg.h>
 #include "ulib.h"
+
+static char out[4096];
+static uint32_t outn;
+
+static void flush(void) {
+    if (outn) sys_write(STDOUT_FILENO, out, outn);
+    outn = 0;
+}
+
+static void put(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void put(const char* fmt, ...) {
+    char t[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(t, sizeof t, fmt, ap);
+    va_end(ap);
+    if (n > (int)sizeof t - 1) n = sizeof t - 1;
+    if (outn + (uint32_t)n > sizeof out) flush();
+    memcpy(out + outn, t, (size_t)n);
+    outn += (uint32_t)n;
+}
 
 static int usage(void) {
     dprintf(STDERR_FILENO, "usage: cal [-1 | -3 | -y] [[MONTH] YEAR]\n");
@@ -73,7 +100,7 @@ static void fill(uint8_t* cells, uint32_t y, uint32_t m) {
 // when it cannot be exact), padded to the 22 a month takes with its gap.
 static void title(const char* s) {
     int len = (int)strlen(s), pad = (20 - len) / 2;
-    printf("%*s%s%*s", pad, "", s, 22 - pad - len, "");
+    put("%*s%s%*s", pad, "", s, 22 - pad - len, "");
 }
 
 // Up to three months side by side: titles, weekday names, six weeks.
@@ -94,21 +121,21 @@ static void row_of_months(const uint32_t* ys, const uint32_t* ms, int n, int wit
             title(names[ms[i] - 1]);
         }
     }
-    printf("\n");
-    for (int i = 0; i < n; i++) printf("Su Mo Tu We Th Fr Sa  ");
-    printf("\n");
+    put("\n");
+    for (int i = 0; i < n; i++) put("Su Mo Tu We Th Fr Sa  ");
+    put("\n");
     for (int w = 0; w < 6; w++) {
         for (int i = 0; i < n; i++) {
             for (int k = 0; k < 7; k++) {
                 uint32_t d = cells[i][w * 7 + k];
-                if (k) printf(" ");
-                if (!d) printf("  ");
-                else if (d == hl[i]) printf("\x1b[7m%2u\x1b[27m", d);
-                else printf("%2u", d);
+                if (k) put(" ");
+                if (!d) put("  ");
+                else if (d == hl[i]) put("\x1b[7m%2u\x1b[27m", d);
+                else put("%2u", d);
             }
-            printf("  ");
+            put("  ");
         }
-        printf("\n");
+        put("\n");
     }
 }
 
@@ -116,14 +143,14 @@ static void row_of_months(const uint32_t* ys, const uint32_t* ms, int n, int wit
 static void year_heading(uint32_t y) {
     char t[16];
     snprintf(t, sizeof t, "%u", y);
-    printf("%*s%s\n", (int)(60 - strlen(t)) / 2, "", t);
+    put("%*s%s\n", (int)(60 - strlen(t)) / 2, "", t);
 }
 
 static void show_year(uint32_t y) {
     year_heading(y);
     for (int r = 0; r < 4; r++) {
         uint32_t ys[3] = { y, y, y }, ms[3] = { 3 * r + 1, 3 * r + 2, 3 * r + 3 };
-        if (r) printf("\n");
+        if (r) put("\n");
         row_of_months(ys, ms, 3, 0);
     }
 }
@@ -248,5 +275,6 @@ int main(int argc, char** argv) {
         uint32_t ys[1] = { year }, ms[1] = { month };
         row_of_months(ys, ms, 1, 1);
     }
+    flush();
     return 0;
 }

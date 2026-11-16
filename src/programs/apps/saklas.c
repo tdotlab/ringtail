@@ -487,12 +487,23 @@ static void cmd_date(cmd_t* c) {
 }
 
 static void cmd_kill(cmd_t* c) {
+    if (!strcmp(c->argv[1], "-l") && c->argc == 2) {
+        for (int i = 1; i < NSIG; i++) printf("%2d %-5s %s\n", i, signame(i), sigdescr(i));
+        return;
+    }
+    int sig = SIGTERM, a = 1;
+    if (c->argv[1][0] == '-' && c->argc == 3) {
+        sig = signum(c->argv[1] + 1);
+        if (sig < 0) { complain("Unknown signal. kill -l lists them."); return; }
+        a = 2;
+    }
     uint32_t id;
-    if (parse_uint(c->argv[1], &id)) { complain("Usage: kill <task id>"); return; }
+    if (c->argc != a + 1 || parse_uint(c->argv[a], &id)) { complain("Usage: kill [-SIGNAL] <task id>, or kill -l"); return; }
     if ((int)id == sys_getpid()) { complain("The shell will not kill itself"); return; }
-    int r = sys_kill((int)id);
+    int r = sys_kill((int)id, sig);
     if (r < 0) { err("kill", r); return; }
-    printf("Killed task %u\n", id);
+    if (sig) printf("Sent SIG%s to task %u\n", signame(sig), id);
+    else printf("Task %u is there\n", id);
 }
 
 static void cmd_reboot(cmd_t* c) { (void)c; sys_power(POWER_REBOOT); }
@@ -517,7 +528,7 @@ static const builtin_t builtins[] = {
     { "write", 2, "<file> <text>", "replace a file's contents", cmd_write },
     { "run", 1, "<prog> [args] [&]", "run a program (or just type its name)", 0 },
     { "tasks", 0, "", "list tasks", cmd_tasks },
-    { "kill", 1, "<id>", "stop a task", cmd_kill },
+    { "kill", 1, "[-SIG] <id>", "send a task a signal (TERM)", cmd_kill },
     { "cpus", 0, "", "the processors and what each one runs", cmd_cpus },
     { "faults", 0, "", "recent faults", cmd_faults },
     { "mem", 0, "", "memory summary", cmd_mem },
@@ -1043,6 +1054,17 @@ static void close_fd(int* fd) {
     *fd = -1;
 }
 
+// How a foreground program ended, unless it was a plain success.
+static void report(int status) {
+    int sig = EXIT_SIGNUM(status);
+    if (sig == SIGINT) print("^C\n");
+    else if (sig == SIGQUIT) print("^\\\n");
+    else if (sig == SIGSEGV || sig == SIGILL || sig == SIGFPE || sig == SIGBUS || sig == SIGTRAP) return;  // the kernel said what happened
+    else if (sig == SIGPIPE) return;  // the reader went first, which is no news (bash says nothing either)
+    else if (sig) printf(DIM "[%s]" NORM "\n", sigdescr(sig));
+    else if (status != 0) printf(DIM "[exit status %d]" NORM "\n", status);
+}
+
 static void run(void) {
     int in = -1, out = -1, prev = -1, feed = -1, r;
     if (pl.in && (in = sys_open(pl.in, O_RDONLY)) < 0) { err(pl.in, in); return; }
@@ -1102,12 +1124,11 @@ static void run(void) {
     int status = sys_join(ids[nids - 1]);
     sys_wait_job(lead);
     sys_tty_fg(0);
-    if (status == EXIT_KILLED) print("^C\n");
-    else if (status != 0 && status != EXIT_FAULTED) printf(DIM "[exit status %d]" NORM "\n", status);
+    report(status);
     return;
 
 fail:
-    for (int i = 0; i < nids; i++) sys_kill(ids[i]);
+    for (int i = 0; i < nids; i++) sys_kill(ids[i], SIGKILL);
     if (lead && !pl.background) {  // take the terminal back
         sys_wait_job(lead);
         sys_tty_fg(0);
@@ -1126,6 +1147,12 @@ static void execute(const char* line) {
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
+    // Ctrl+C and Ctrl+\ are for the program in the foreground, not the
+    // shell; and a builtin writing into a pipeline whose reader has gone
+    // should see EPIPE, not end the shell.
+    signal(SIGINT, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
     print("Type 'help' for commands.\n");
     char line[LINE_MAX];
     for (;;) {

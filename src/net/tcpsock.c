@@ -72,11 +72,11 @@ static uint32_t deadline(int timeout_ms) {
 static int wait_for(tcp_t* c, int (*ready)(const tcp_t*), int forever, uint32_t until) {
     for (;;) {
         if (ready(c)) return 0;
-        if (current->killed) return -EINTR;
+        if (task_signalled(current)) return -EINTR;
         if (!forever && (int32_t)(timer_ticks() - until) >= 0) return -ETIMEDOUT;
         mutex_unlock(&net_lock);
         uint32_t f = irq_save();
-        if (!ready(c) && !current->killed) {
+        if (!ready(c) && !task_signalled(current)) {
             if (forever) task_block(c);
             else task_block_timeout(c, until);
         }

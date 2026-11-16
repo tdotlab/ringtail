@@ -313,14 +313,14 @@ int file_pollfd(pollfd_t* ufds, uint32_t n, int timeout_ms) {
             count += p[i].revents != 0;
         }
         if (count || timeout_ms == 0) break;
-        if (current->killed) return -EINTR;
+        if (task_signalled(current)) return -EINTR;
         uint32_t now = timer_ticks(), wake = now + TIMER_HZ / 10;
         if (timeout_ms > 0) {
             if ((int32_t)(now - until) >= 0) break;
             if ((int32_t)(wake - until) > 0) wake = until;
         }
         uint32_t f = irq_save();
-        if (poll_gen == gen && !current->killed) task_block_timeout((void*)&poll_gen, wake);
+        if (poll_gen == gen && !task_signalled(current)) task_block_timeout((void*)&poll_gen, wake);
         irq_restore(f);
     }
     if (copy_to_user(ufds, p, size)) return -EFAULT;

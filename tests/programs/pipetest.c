@@ -45,7 +45,9 @@ int main(int argc, char** argv) {
 
     sys_pipe(p);
     sys_close(p[0]);
+    signal(SIGPIPE, SIG_IGN);  // or it would end this program (sigtest checks that)
     check(sys_write(p[1], "x", 1) == -EPIPE, "writing with no reader gives EPIPE");
+    signal(SIGPIPE, SIG_DFL);
     sys_close(p[1]);
 
     check(sys_pipe((int*)0) == -EFAULT && sys_pipe((int*)0xC0000000) == -EFAULT, "bad pointers give EFAULT");

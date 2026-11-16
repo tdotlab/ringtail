@@ -24,10 +24,11 @@
 // share xargs's output.
 //
 // Exit status: 0; 123 if a run exited with a nonzero status; 124 if one
-// exited with 255, which stops xargs; 125 if one was killed or crashed,
-// which stops it too; 126 if COMMAND could not be started, 127 if it was
-// not found (both stop it); 1 for a bad quote or an unreadable input;
-// 2 for a bad command line.
+// exited with 255, which stops xargs; 125 if a signal ended one (a
+// fault among them) or it exited with a negative status, which stops
+// it too; 126 if COMMAND could not be started, 127 if it was not found
+// (both stop it); 1 for a bad quote or an unreadable input; 2 for a
+// bad command line.
 #include "ulib.h"
 
 #define MAX_ARGS 64     // ARGV_MAX in the kernel
@@ -216,7 +217,11 @@ static void run(void) {
     }
     int st = sys_join(id);
     if (st < 0) {
-        dprintf(STDERR_FILENO, "xargs: %s: %s\n", av[0], st == EXIT_KILLED ? "killed" : "terminated by a fault");
+        int sig = EXIT_SIGNUM(st);
+        if (sig == SIGSEGV || sig == SIGILL || sig == SIGFPE || sig == SIGBUS || sig == SIGTRAP)
+            dprintf(STDERR_FILENO, "xargs: %s: terminated by a fault (SIG%s)\n", av[0], signame(sig));
+        else if (sig) dprintf(STDERR_FILENO, "xargs: %s: killed by SIG%s\n", av[0], signame(sig));
+        else dprintf(STDERR_FILENO, "xargs: %s: exited with status %d\n", av[0], st);
         sys_exit(125);
     }
     if (st == 255) {

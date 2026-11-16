@@ -302,7 +302,7 @@ def tests(m, t):
     out = m.run("version")
     t.check("and the new shell works", "0.28.0" in out, out)
 
-    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn", "fdshare",
+    for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn", "fdshare", "sigtest",
                  "udptest", "tcptest", "rndtest", "sysregs"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
@@ -513,7 +513,7 @@ def tests(m, t):
     t.check("the shell stays responsive next to it", "Up " in out and time.time() - start < 3, out)
     if busy:
         out = m.run("kill " + busy.group(1))
-        t.check("kill stops it", "Killed task" in out, out)
+        t.check("kill stops it", "Sent SIGTERM to task " + busy.group(1) in out, out)
     out = m.run("kill 1")
     t.check("kernel tasks cannot be killed", "not permitted" in out, out)
     out = m.run("tasks")
@@ -801,7 +801,52 @@ def tests(m, t):
     t.check("three quick Ctrl+C are just bytes too", "03" in out and "^C" not in out, out)
     m.send("\x1c")
     out = m.expect(PROMPT, 5)
-    t.check("Ctrl+\\ kills a TTY_NOSIG program", "^C" in out, out)
+    t.check("Ctrl+\\ sends SIGQUIT even to a TTY_NOSIG program", "^\\" in out, out)
+
+    # Signals from the terminal and from kill, to a program that
+    # catches some (sigtest's own checks are in its self-test).
+    m.send("run sigtest wait\r")
+    m.expect(rb"sigtest: waiting", 5)
+    m.send("\x03")
+    out = m.expect(PROMPT, 5)
+    t.check("a program can catch Ctrl+C's SIGINT", "got SIGINT" in out and "^C" not in out, out)
+    out = m.run("run sigtest wait &")
+    bg = re.search(r"\[(\d+)\] started", out)
+    t.check("a program catching signals starts in the background", bg, out)
+    if bg:
+        time.sleep(0.5)
+        out = m.run("kill -0 " + bg.group(1))
+        t.check("kill -0 only asks whether a task is there", "Task %s is there" % bg.group(1) in out, out)
+        # The program's line and the shell's next prompt can come in either order.
+        def both(what):
+            return rb"(?s)(" + what + rb".*" + PROMPT + rb"|" + PROMPT + rb".*" + what + rb")"
+        m.send("kill -USR1 " + bg.group(1) + "\r")
+        out = m.expect(both(rb"got SIGUSR1"), 5)
+        t.check("kill -USR1 calls its handler", "Sent SIGUSR1 to task " + bg.group(1) in out, out)
+        m.send("kill -sigint " + bg.group(1) + "\r")
+        out = m.expect(both(rb"got SIGINT"), 5)
+        time.sleep(0.5)
+        tasks = m.run("tasks")
+        t.check("and kill -sigint ends it, by its handler", "Sent SIGINT" in out and "sigtest" not in tasks, (out, tasks))
+    out = m.run("kill -BOGUS 5")
+    t.check("kill refuses a signal it does not know", "Unknown signal" in out, out)
+    out = m.run("kill -l")
+    t.check("kill -l lists the signals", " 9 KILL  Killed\n" in out and "15 TERM  Terminated" in out, out)
+    m.send("run sigtest stubborn\r")
+    m.expect(rb"sigtest: stubborn", 5)
+    m.send("\x03")
+    time.sleep(0.2)
+    m.send("\x1c")
+    time.sleep(0.2)
+    m.send("\x1c")
+    try:  # the third must come within two seconds of the first
+        early = m.expect(PROMPT, 0.7)
+    except Exception:
+        early = None
+    t.check("a program that ignores SIGINT and SIGQUIT outlives Ctrl+C and two Ctrl+\\", early is None, early)
+    m.send("\x1c")
+    out = m.expect(PROMPT, 5)
+    t.check("but not a third Ctrl+\\, which sends SIGKILL", "[Killed]" in out, out)
 
     # ANSI escapes position and colour text on the VGA screen.
     m.run("run ansi")
@@ -3659,7 +3704,7 @@ def tcp_tests(m, t):
         t.check("and httpd still answers after it", out.strip() == "hello", out)
         if srv:
             out = m.run("kill " + srv.group(1))
-            t.check("httpd can be killed", "Killed task" in out, out)
+            t.check("httpd can be killed", "Sent SIGTERM" in out, out)
         for c in ["rm www/sub/index.html", "rmdir www/sub", "rm www/hi.txt", 'rm "www/My Notes.txt"', "rm www/big.bin",
                   "rmdir www", "rm got.bin", "rm req.txt"]:
             out = m.run(c, timeout=20)
@@ -3891,7 +3936,7 @@ def parallel_checks(vm, t, name):
     out = plain(vm.run("uptime"))
     t.check(f"[{name}] the shell stays quick", "Up " in out and time.time() - start < 2, out)
     killed = [plain(vm.run("kill " + j)) for j in jobs]
-    t.check(f"[{name}] each spinner is killed on the CPU it runs on", all("Killed task" in k for k in killed), "\n".join(killed))
+    t.check(f"[{name}] each spinner is killed on the CPU it runs on", all("Sent SIGTERM" in k for k in killed), "\n".join(killed))
     vm.run("sleep 1")
     out = plain(vm.run("tasks"))
     t.check(f"[{name}] and none is left", "spin" not in out, out)

@@ -312,6 +312,23 @@ kernels do.
 **AVX.** Programs get x87 and SSE, saved with `fxsave`. AVX needs `xsave`
 and a bigger save area, sized from CPUID.
 
+**The rest of signals.** Signals work (`src/kernel/signal.c`,
+`src/arch/x86_64/sigframe.c`, `sigtest`), but leave out: SA_RESTART (an
+interrupted call always returns EINTR); siginfo and a ucontext for the
+handler (it gets only the number; a fault handler cannot see the address);
+`sigsuspend`/`pause` and `alarm`; SIGPIPE from sockets (they return EPIPE
+only); `kill` of a whole job (a negative id); and a fresh FPU state for a
+handler (it starts with the interrupted code's MXCSR and x87 stack, where
+Linux gives it the default). The shell prints nothing when a task dies of a
+fault signal, since the kernel has said why; but `kill -SEGV` from outside
+is not a fault, and then nothing at all is said.
+
+A smaller one in the same place: `lio_out` (lineio.h) writes in 1 KB pieces
+where glibc's stdio uses 4 KB for a pipe, so a tool with 1 to 4 KB of output
+in `xargs tool | head -n 1` dies of SIGPIPE here (and xargs says so) where
+the GNU one wrote everything before head left. Nothing in the suite does
+that; `cal`, which printed a line at a time and did, now writes once.
+
 **ARM64.** The `src/arch` split is where a port starts, but it is far from
 all of it: the drivers talk to PC hardware (port I/O, PCI through 0xCF8,
 VGA, PS/2, ATA PIO, the CMOS clock), and an ARM board has none of that.
@@ -341,10 +358,15 @@ so a cache there only lives as long as one program. A cache worth having is
 shared, which means the kernel or a daemon, and TTLs against a clock that
 `sntp` can move.
 
+**Job control.** SIGCHLD, SIGTSTP/SIGSTOP and SIGCONT, Ctrl+Z, and `fg`
+and `bg` in the shell. A stopped task is a new scheduler state, a stop has
+to reach the parent (SIGCHLD and a wait that sees it), and the terminal has
+to change hands when a job stops as well as when it ends.
+
 **Clock discipline and better time.** Several servers and a choice between
 them, slewing instead of stepping, NTS. Each is a trust and design call.
 
-**A graphics mode past 13h** (Bochs VBE framebuffer), **signals**,
+**A graphics mode past 13h** (Bochs VBE framebuffer),
 **fork/exec**, **finer kernel locks**, **IPv6**, and **TLS session resumption**: each one
 reaches into the scheduler, memory, the syscall interface or the protocol
 state machine, where a quiet mistake costs days.

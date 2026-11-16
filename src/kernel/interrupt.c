@@ -9,6 +9,7 @@
 #include "mm.h"
 #include "drivers.h"
 #include "random.h"
+#include "signal.h"
 #include "ringtail/abi.h"
 
 static irq_handler_t irq_handlers[16];
@@ -193,14 +194,32 @@ static void kernel_exception(regs_t* r) {
     halt_forever();
 }
 
+// The signal each exception sends a program, as on Linux.
+static int fault_signal(uint64_t vector) {
+    switch (vector) {
+    case 0: case 16: case 19: return SIGFPE;   // divide error, x87 and SIMD exceptions
+    case 1: case 3: return SIGTRAP;            // debug, breakpoint
+    case 6: return SIGILL;                     // invalid opcode
+    case 10: case 11: case 12: case 17: return SIGBUS;  // TSS, segment, stack segment, alignment
+    default: return SIGSEGV;                   // page fault, general protection and the rest
+    }
+}
+
 static void user_exception(regs_t* r) {
-    if (r->vector == 14 && user_fault_fixup(read_cr2(), r->err)) return;
+    uintptr_t cr2 = r->vector == 14 ? read_cr2() : 0;  // before anything else can fault
+    if (r->vector == 14 && user_fault_fixup(cr2, r->err)) return;
     // From here on this is ordinary task context: the frame belongs
-    // to the task, so it may block (to print) and then exit.
+    // to the task, so it may block (to print, or to grow the stack for
+    // a signal handler) and then exit.
     sti();
+    int sig = fault_signal(r->vector);
+    if (signal_fault(r, sig)) {  // the program catches it: its handler runs next
+        cli();
+        return;
+    }
     char what[96];
     if (r->vector == 14) {
-        snprintf(what, sizeof(what), "page fault at %08lx (%s, %s)", (unsigned long)read_cr2(),
+        snprintf(what, sizeof(what), "page fault at %08lx (%s, %s)", (unsigned long)cr2,
                  (r->err & 1) ? "protection" : "not mapped", (r->err & 2) ? "write" : "read");
     } else {
         snprintf(what, sizeof(what), "%s", exception_names[r->vector]);
@@ -209,7 +228,7 @@ static void user_exception(regs_t* r) {
                  (unsigned long)regs_ip(r));
     kprintf_color(COLOR_ERROR, "%s: %s at " REGS_IP_NAME "=%08lx - task killed\n", current->name, what,
                   (unsigned long)regs_ip(r));
-    task_exit(EXIT_FAULTED);
+    signal_exit(sig);
 }
 
 static void handle_irq(int irq) {
@@ -309,11 +328,13 @@ void interrupt_dispatch(regs_t* r) {
         need_resched = 0;
         schedule();
     }
-    // A kill takes effect here, on the way back to ring 3, where the
-    // task holds no kernel locks and has nothing half done.
-    if (regs_from_user(r) && current->killed) {
+    // Signals take effect here, on the way back to ring 3, where the
+    // task holds no kernel locks and has nothing half done: a handler's
+    // frame goes on the program's stack, or the task ends.
+    if (regs_from_user(r) && task_signalled(current)) {
         sti();
-        task_exit(EXIT_KILLED);
+        signal_deliver(r);
+        cli();
     }
     // took is this frame's, on this task's stack, so it holds after a
     // switch: a frame that came in without the lock goes back where

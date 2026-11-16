@@ -189,8 +189,11 @@ isr_paranoid:
 ; leave by iretq.
 ;
 ; It leaves by SYSRET when it can, which is faster: rcx and r11 come
-; back as the return address and flags, so they are not preserved, and
-; the return address must be a canonical user address. On Intel a
+; back as the return address and flags, so it can only when the frame
+; already says so (it does unless the call changed the registers it
+; goes back to: SYS_SIGRETURN puts back a program interrupted anywhere,
+; and a signal handler's call starts somewhere else), and the return
+; address must be a canonical user address. On Intel a
 ; SYSRET to a non-canonical one faults in ring 0, on the user's stack
 ; (the hole several kernels had in 2012); those returns, and any frame
 ; not headed back to user code, take the iretq.
@@ -205,7 +208,9 @@ CPU_USER_RSP equ 0          ; offsets in cpu_t, arch/percpu.h
 CPU_KSTACK equ 8
 USER_DATA equ 0x1B          ; SEL_USER_DATA and SEL_USER_CODE, kernel.h
 USER_CODE equ 0x23
-FRAME_RIP equ 17*8          ; regs_t offsets, arch/regs.h
+FRAME_R11 equ 4*8           ; regs_t offsets, arch/regs.h
+FRAME_RCX equ 12*8
+FRAME_RIP equ 17*8
 FRAME_CS equ 18*8
 FRAME_RFLAGS equ 19*8
 FRAME_RSP equ 20*8
@@ -227,12 +232,16 @@ syscall_entry:
     call interrupt_dispatch
     cli                     ; interrupt_dispatch returns with them off; make sure
     mov rcx, [rsp + FRAME_RIP]
+    cmp rcx, [rsp + FRAME_RCX]  ; SYSRET would set rcx to the return address
+    jne isr_return
     mov r11, rcx
     shr r11, 47             ; a canonical user address has bits 47-63 clear
     jnz isr_return          ; which swaps gs back if the frame goes to ring 3
     cmp qword [rsp + FRAME_CS], USER_CODE
     jne isr_return
     mov r11, [rsp + FRAME_RFLAGS]
+    cmp r11, [rsp + FRAME_R11]  ; and r11 to the flags
+    jne isr_return
     pop r15
     pop r14
     pop r13
