@@ -264,8 +264,10 @@ GNU cases say whether the answers stay right.
 
 **UEFI.** GRUB boots RingTail through Multiboot 1 from a BIOS. Most real
 machines boot UEFI. Multiboot2 through GRUB's EFI build is the small step;
-a loader of our own (or Limine) is the big one. The framebuffer from UEFI
-would also replace VGA text, which UEFI machines may not have.
+a loader of our own (or Limine) is the big one. The console already draws
+on a linear framebuffer (GRUB's, see `read_framebuffer` in kernel.c), so
+UEFI's GOP framebuffer would slot in where it is; the VGA text and mode 13h
+fallbacks are what UEFI machines may not have.
 
 **SMP, past the big lock.** Tasks run on every CPU, under one kernel
 lock (`kernel_lock`, `src/kernel/interrupt.c`): a CPU holds it whenever
@@ -367,7 +369,33 @@ to change hands when a job stops as well as when it ends.
 **Clock discipline and better time.** Several servers and a choice between
 them, slewing instead of stepping, NTS. Each is a trust and design call.
 
-**A graphics mode past 13h** (Bochs VBE framebuffer),
+**The desktop, stages 2 to 4.** Stage 1 is done: GRUB's 1024x768
+framebuffer, the console drawn in it (`src/drivers/console.c`, the
+`console` kernel task), native graphics at full size (`GFX_NATIVE`,
+`SYS_GFX_PUT`, `src/drivers/gfx.c`) and kenoma rebuilt on it. What is left,
+in order, each one usable on its own:
+
+- A window server. One user program owns the screen (it already can, with
+  `GFX_NATIVE`) and composites windows; clients draw into memory they
+  share with it and send it damage rectangles over a pipe or a socket.
+  Shared memory is the new kernel piece: a call that maps the same frames
+  into two address spaces, freed when both let go. Input goes to the
+  server, which routes keys to the focused window and the pointer to the
+  one under it.
+- Pseudo-terminals and a terminal window. A pty pair in the kernel (the
+  tty's line discipline on one side, a plain pipe-like end on the other),
+  `tty_size` answering per pty, SIGWINCH on resize, then a terminal
+  program that runs saklas on the pty and draws the cells in a window
+  with the console font. After that the shell, Octavo and gauge run in
+  windows unchanged.
+- A small toolkit (buttons, lists, text fields, menus) on the shared
+  buffers, a taskbar, and kenoma's launcher as a window-server client.
+  Then a file browser and a settings window.
+
+Decide the window protocol before writing either side: who owns damage
+tracking, whether clients may resize themselves, and what happens when
+a client stops answering.
+
 **fork/exec**, **finer kernel locks**, **IPv6**, and **TLS session resumption**: each one
 reaches into the scheduler, memory, the syscall interface or the protocol
 state machine, where a quiet mistake costs days.

@@ -9,8 +9,8 @@
 // is answered at once even in the middle of a refresh interval.
 #include "ulib.h"
 
-#define ROWS 25
-#define COLS 80
+static int ROWS = 25, COLS = 80;  // the terminal's, when live
+#define MAX_COLS 240
 #define BAR 30            // width of a usage bar
 #define MAX_TASKS 32      // what the kernel's task table reports
 #define TICKS_PER_SEC 100  // what SYS_TICKS counts in
@@ -146,7 +146,7 @@ static void take(snap_t* s) {
 #define A_BAD   "\x1b[0;91m"
 #define A_INFO  "\x1b[0;96m"
 
-static char frame[8192];
+static char frame[32768];  // a whole screen, escapes and all
 
 typedef struct { sbuf_t sb; int ansi, col; } view_t;
 
@@ -162,7 +162,7 @@ static void put(view_t* v, const char* attr, const char* text) {
 }
 
 static void put_n(view_t* v, const char* attr, char ch, int n) {
-    char s[COLS + 1];
+    char s[MAX_COLS + 1];
     if (n > COLS) n = COLS;
     if (n < 0) n = 0;
     memset(s, ch, (size_t)n);
@@ -330,6 +330,11 @@ static int live(void) {
     if (old < 0) {
         printf("gauge: cannot use the terminal: %s\n", strerror(old));
         return 1;
+    }
+    tty_size_t z;
+    if (sys_tty_size(STDOUT_FILENO, &z) == 0 && z.cols >= 80 && z.rows >= 25) {
+        COLS = MIN(z.cols, MAX_COLS);
+        ROWS = z.rows;
     }
     print("\x1b[0m\x1b[2J\x1b[?25l");
 

@@ -14,7 +14,9 @@ first; nothing on the build's image changes. Python standard library only.
 """
 import argparse
 import os
+import re
 import shutil
+import subprocess
 import struct
 import sys
 import tempfile
@@ -77,7 +79,7 @@ class Shooter:
             self.key(names.get(ch, ch.lower()) if not ch.isupper() else "shift-" + ch.lower())
 
     def mouse(self, x, y):
-        """Move the pointer by x, y in screen pixels (the desktop is 320x200)."""
+        """Move the pointer by x, y in screen pixels, in steps QEMU sends whole."""
         while x or y:
             dx, dy = max(-100, min(100, x)), max(-100, min(100, y))
             self.m.monitor_cmd(f"mouse_move {dx} {dy}")
@@ -95,9 +97,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--iso", default="build/x86_64/ringtail.iso")
     ap.add_argument("--disk", default="build/x86_64/disk.img")
+    ap.add_argument("--kernel", default="build/x86_64/ringtail.bin", help="the kernel's ELF file, for its symbols")
     ap.add_argument("--out", default="docs")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    nm = subprocess.run(["nm", args.kernel], capture_output=True, text=True, check=True).stdout
+    qemu_test.Machine.CELLS = int(re.search(r"^([0-9a-f]+) [BbDd] console_cells$", nm, re.M).group(1), 16)
 
     work = tempfile.mkdtemp(prefix="ringtail-shots-")
     disk = os.path.join(work, "disk.img")
@@ -124,19 +129,20 @@ def main():
 
         # The editor, on the welcome file that comes on the disk.
         m.send("run octavo WELCOME.TXT\r")
-        m.wait_row(24, "Octavo", 20)  # the whole screen takes a few seconds over serial
+        m.wait_row(m.rows - 1, "Octavo", 20)  # the whole screen takes a few seconds over serial
         time.sleep(1)
         s.shot("octavo")
         m.send("\x11")  # Ctrl+Q
         m.expect(qemu_test.PROMPT, 10)
 
-        # The desktop, with its About window open. The pointer starts in
-        # the middle of the 320x200 screen.
+        # The desktop, with its About window open: About is the first
+        # icon, top left.
         m.send("run kenoma\r")
-        time.sleep(3)
-        s.mouse(-125, -55)
-        s.click()
-        s.mouse(30, 40)
+        qemu_test.kenoma_up(m)
+        time.sleep(1)
+        qemu_test.kenoma_click(m, 76, 90)
+        s.mouse(900, 330)  # beside the window, over no icon
+        time.sleep(1)
         s.shot("desktop")
         s.key("esc")
         m.expect(qemu_test.PROMPT, 10)

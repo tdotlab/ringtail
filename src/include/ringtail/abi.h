@@ -16,7 +16,7 @@
 #define SYS_WRITE       6   // (fd, buf, len)          -> bytes written
 #define SYS_CLOSE       7   // (fd)                    -> 0
 #define SYS_DELETE      8   // (path)                  -> 0; files only, rmdir takes directories
-#define SYS_GFX_BEGIN   9   // ()                      -> 0, caller owns the display
+#define SYS_GFX_BEGIN   9   // (GFX_CLASSIC or GFX_NATIVE) -> 0, caller owns the display
 #define SYS_GFX_END     10  // ()                      -> 0
 #define SYS_GFX_PIXEL   11  // (x, y, color)
 #define SYS_GFX_CLEAR   12  // (color)
@@ -72,7 +72,10 @@
 #define SYS_SIGACTION   62  // (signal, const sigaction_t* or NULL, sigaction_t* old or NULL) -> 0
 #define SYS_SIGMASK     63  // (SIG_BLOCK, SIG_UNBLOCK or SIG_SETMASK, mask) -> the mask before
 #define SYS_SIGRETURN   64  // () -> does not return: a handler's way back (sigaction_t.restorer)
-#define NUM_SYSCALLS    65
+#define SYS_GFX_INFO    65  // (gfx_info_t*)           -> 0; the size native graphics draws at
+#define SYS_GFX_PUT     66  // (const gfx_put_t*)      -> 0; native only: pixels to the screen
+#define SYS_TTY_SIZE    67  // (fd, tty_size_t*)       -> 0, or -ENOTTY if fd is not the terminal
+#define NUM_SYSCALLS    68
 
 // Signals, numbered as on Linux. Each one's default action is to end
 // the program, which then reports EXIT_SIGNAL(sig). A program can
@@ -263,6 +266,7 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 #define EINVAL        22
 #define ENFILE        23
 #define EMFILE        24
+#define ENOTTY        25
 #define EFBIG         27
 #define ENOSPC        28
 #define EPIPE         32
@@ -286,6 +290,16 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 #define EHOSTUNREACH  113
 #define EALREADY      114
 
+// Graphics comes in two modes, chosen by SYS_GFX_BEGIN. GFX_CLASSIC is
+// 320x200 in 256 colours, drawn with SYS_GFX_PIXEL and the rest; colours
+// 0-15 are the text colours, 16-31 greys from black to white, and 32-247
+// a 6x6x6 cube (32 + 36*r + 6*g + b, each 0-5). GFX_NATIVE is the
+// screen's own size (SYS_GFX_INFO) in 24-bit colour: a program draws
+// into memory of its own and shows rectangles of it with SYS_GFX_PUT.
+// Pixels there are 0xRRGGBB; the top byte is ignored. The mouse is in
+// the mode's own pixels.
+#define GFX_CLASSIC 0
+#define GFX_NATIVE  1
 #define GFX_WIDTH  320
 #define GFX_HEIGHT 200
 
@@ -295,6 +309,12 @@ typedef struct { int x, y, w, h, color, filled; } gfx_rect_t;
 typedef struct { int x0, y0, x1, y1, color; } gfx_line_t;
 typedef struct { int x, y; const char* str; int color; } gfx_text_t;
 typedef struct { int x, y, buttons; } mouse_state_t;
+typedef struct { int width, height; } gfx_info_t;
+// w x h pixels to x, y; stride is how many pixels apart rows are in
+// `pixels`. What falls off the screen is dropped.
+typedef struct { int x, y, w, h, stride, pad; const unsigned* pixels; } gfx_put_t;
+// The terminal's size in characters.
+typedef struct { int cols, rows; } tty_size_t;
 
 // SYS_PING: send one ICMP echo request to ip (host order, so 10.0.2.2
 // is 0x0A000202) carrying `size` bytes of data (0 to PING_MAX_SIZE),

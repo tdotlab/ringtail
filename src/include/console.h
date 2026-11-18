@@ -1,4 +1,5 @@
-// Text console: VGA text mode plus a mirror on the serial port.
+// Text console: a grid of characters on the screen (VGA text, or drawn
+// on a framebuffer), plus a mirror on the serial port.
 // Output understands the common ANSI escape sequences: cursor moves
 // (CSI A B C D G H f, s u), erasing (CSI J K), colours (CSI m with
 // 0 1 7 22 27 30-37 39 40-47 49 90-97 100-107) and cursor visibility
@@ -17,7 +18,13 @@
 #define COLOR_ERROR   0x0C
 #define COLOR_OK      0x0A
 
-void console_init(void);
+void console_init(void);   // after kernel.c has read boot_info.fb
+void console_map(void);    // once paging is up: map the framebuffer and draw
+void console_start(void);  // once tasks run: draw from a task of its own
+int console_size(int* cols, int* rows);
+const char* console_describe(char* buf, size_t size);
+// A colour as a pixel of the framebuffer (boot_info.fb).
+uint32_t fb_pixel(uint8_t r, uint8_t g, uint8_t b);
 void console_clear(void);
 // Back to a clean slate after a full-screen program: default colours,
 // visible cursor, empty screen.

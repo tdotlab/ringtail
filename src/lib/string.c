@@ -142,6 +142,7 @@ const char* strerror(int err) {
     case EINVAL: return "invalid argument";
     case ENFILE: return "too many files in use";
     case EMFILE: return "too many open files";
+    case ENOTTY: return "not a terminal";
     case EFBIG: return "file too large";
     case ENOSPC: return "disk full";
     case EPIPE: return "broken pipe";

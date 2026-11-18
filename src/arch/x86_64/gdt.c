@@ -81,6 +81,17 @@ static void syscall_init(void) {
     wrmsr(MSR_FMASK, 0x100 | 0x200 | 0x400 | 0x3000 | 0x4000 | 0x40000);
 }
 
+// The page attribute table, which the PWT, PCD and PAT bits of a page
+// entry index. Its power-on value has write-through at index 1 (PWT
+// alone); that becomes write-combining, for the framebuffer
+// (mmio_map_wc): writes to it are gathered into bursts instead of going
+// out one at a time, uncached, which is many times slower. Nothing
+// else uses PWT alone. Every CPU needs the same table.
+#define MSR_PAT 0x277
+#define PAT_VALUE 0x0007040600070106ull  // WB, WC, UC-, UC, then the same again
+
+static void pat_init(void) { wrmsr(MSR_PAT, PAT_VALUE); }
+
 cpu_t* cpu_get(int index) { return &cpus[index].cpu; }
 
 void gdt_init_cpu(int index, void* ist_stacks) {
@@ -106,6 +117,7 @@ void gdt_init_cpu(int index, void* ist_stacks) {
     c->gdt_ptr.base = (uintptr_t)gdt;
     gdt_load(&c->gdt_ptr);
     syscall_init();
+    pat_init();
     // gs's base is this CPU's block from here on, in the kernel; the
     // program's is 0, kept in KERNEL_GS_BASE while the kernel runs and
     // swapped in on the way out. Programs cannot change theirs but by

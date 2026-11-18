@@ -3,8 +3,9 @@
 A small 64-bit x86 (x86_64) operating system written from scratch in
 freestanding C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
 FAT16 disk in separate, protected address spaces, and it has a preemptive
-scheduler, a shell, a text editor, and a mouse-driven desktop in VGA mode
-13h. It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
+scheduler, a shell, a text editor, and a mouse-driven desktop. GRUB sets
+a 1024x768 framebuffer, and the console is drawn in it with an 8x16 font.
+It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
 UDP and TCP, an address from DHCP, a DNS resolver, an SNTP client to
 set the clock and a TLS 1.3 client, so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
@@ -31,8 +32,9 @@ a status line.
 
 ![kenoma, the desktop, with its About window open and the mouse pointer beside it](docs/desktop.png)
 
-`run kenoma` is the desktop: VGA mode 13h, a PS/2 mouse, a launcher with an icon
-for every program and a window you can click. Esc leaves.
+`run kenoma` is the desktop: drawn at the screen's full size, with a PS/2
+mouse, a clock, a launcher with an icon for every program and a window you
+can click. Esc leaves.
 
 These pictures are taken from the real ISO by `tools/screenshots.py`, which
 boots it in QEMU, drives it the way the test suite does and saves what the
@@ -49,6 +51,7 @@ compiler is used when one is installed; otherwise the host gcc of any
 make            # kernel, programs, disk image, bootable ISO, all in build/x86_64/
 make run        # boot it in QEMU; the serial console mirrors to this terminal
 make run-serial # serial only, no window
+make text-iso   # build/x86_64/ringtail-text.iso: the same system in VGA text mode
 make test       # host unit tests, then the QEMU integration suite
 make clean
 ```
@@ -64,6 +67,13 @@ programs in `src/programs` plus `WELCOME.TXT`, and files you write in the OS per
 across boots. Running `make` again rebuilds it from scratch, so copy it
 somewhere else if you want to keep what you wrote. `mdir -i build/x86_64/disk.img`
 and `fsck.fat -n build/x86_64/disk.img` both read it.
+
+The display is a linear framebuffer from GRUB, 1024x768 at 32 bits a
+pixel, which makes the console 128 columns by 48 rows; the boot banner's
+`Display:` line says what it got. When GRUB cannot set a graphics mode
+the kernel falls back to VGA text, 80 by 25, and the desktop to mode 13h.
+The text ISO forces that fallback (`set gfxpayload=text` in its grub.cfg),
+and the test suite boots it too, so both paths stay working.
 
 ## Testing
 
@@ -147,11 +157,12 @@ after a `syscall` and an `int 0x80` (with NMIs arriving meanwhile, from
 the QEMU monitor), stack growth and
 overflow, malloc, signals (`sigtest`: handlers, masks, nesting, faults caught
 and not, and every register around an asynchronous one), Ctrl+C on foreground jobs, background jobs, raw
-terminal mode, ANSI output (read back from VGA memory through the QEMU
-monitor), an editing session in Octavo, file and directory commands,
+terminal mode, ANSI output (read back from the console's character grid through
+the QEMU monitor), an editing session in Octavo, file and directory commands,
 the timer rate (against the host's clock), the network card's
 interrupts,
-the switch into graphics mode and back, reboot persistence and poweroff,
+the switch into graphics mode and back (on the framebuffer and,
+from the text ISO, in VGA text mode and mode 13h), reboot persistence and poweroff,
 and the network through QEMU's user network: DHCP at boot, `ping`,
 loopback, UDP and TCP sockets (`udptest`, `tcptest`), the random number
 generator (`rndtest`), `fetch` and `nc`
@@ -267,7 +278,11 @@ catches SIGQUIT. `poll`
 waits up to a given number of ticks for input, so a program can redraw on a
 timer and still answer a key at once. The console understands the common ANSI escapes for cursor
 motion, erasing, colours and hiding the cursor, on screen and on serial
-alike. Opening `/dev/tty` (`DEV_TTY`) gives the terminal itself, read-only for
+alike. On a framebuffer the screen is redrawn by a kernel task,
+`console`, from a grid of characters and colours, so a burst of output
+costs one redraw of the cells that changed rather than one per byte.
+`tty_size` tells a program how many columns and rows it has, and
+Octavo, `more` and `gauge` use the whole screen. Opening `/dev/tty` (`DEV_TTY`) gives the terminal itself, read-only for
 keys or write-only for output, whatever standard input and output are
 redirected to; that is how `more` can wait for a key at the end of a pipe.
 
@@ -478,7 +493,8 @@ src/arch       what differs between machines, one folder each (x86_64): the mult
                register frame and FPU state (include/arch/)
 src/kernel     kernel_main, interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
 src/mm         heap, physical frames and checked user copies
-src/drivers    console (VGA text + serial), tty, keyboard, mouse, timer, ATA, VGA graphics, PCI, e1000,
+src/drivers    console (framebuffer, VGA text, serial), the 8x16 font, tty, keyboard, mouse, timer, ATA,
+               graphics (gfx.c), PCI, e1000,
                ACPI tables and the APICs
 src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
@@ -490,7 +506,8 @@ src/programs   user programs in folders, their C library (lib/: runtime, malloc,
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
   util         small tools for building command lines: echo, seq, factor, sleep, xargs, cal, hello and the like
-tools          mkdisk.py, the FAT16 image builder; screenshots.py, which takes the pictures above
+tools          mkdisk.py, the FAT16 image builder; screenshots.py, which takes the pictures above;
+               mkfont.py, which makes the console font from unscii-16
 docs           the screenshots
 tests          host unit tests, the QEMU integration suite, test programs
 ```
@@ -670,8 +687,10 @@ so nobody can vouch for it: someone in the middle, or a lying DHCP
 server, can set the clock to any time after the system was built. There is no
 `fork`/`exec` (programs start other programs with `spawn`). Signals
 are a small set (no siginfo, no SA_RESTART, so an interrupted call returns
-EINTR, no job control or SIGCHLD, and sockets do not send SIGPIPE). Only one CPU at a time runs in the kernel. The only display modes are VGA text and
-mode 13h. The network has no IPv6, and the resolver does not retry over
+EINTR, no job control or SIGCHLD, and sockets do not send SIGPIPE). Only one CPU at a time runs in the kernel. The display is one
+1024x768 framebuffer that GRUB sets (or VGA text and mode 13h when it
+cannot); there is no mode setting after boot, no windows yet, and one
+program owns the graphics at a time. The network has no IPv6, and the resolver does not retry over
 TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already

@@ -83,7 +83,11 @@ static inline int sys_join(int id) { return SC1(SYS_JOIN, id); }
 static inline int sys_getpid(void) { return SC0(SYS_GETPID); }
 static inline uint32_t sys_ticks(void) { return (uint32_t)SC0(SYS_TICKS); }
 
-static inline int sys_gfx_begin(void) { return SC0(SYS_GFX_BEGIN); }
+static inline int sys_gfx_begin(void) { return SC1(SYS_GFX_BEGIN, GFX_CLASSIC); }
+static inline int sys_gfx_begin_native(void) { return SC1(SYS_GFX_BEGIN, GFX_NATIVE); }
+static inline int sys_gfx_info(gfx_info_t* i) { return SC1(SYS_GFX_INFO, i); }
+static inline int sys_gfx_put(const gfx_put_t* p) { return SC1(SYS_GFX_PUT, p); }
+static inline int sys_tty_size(int fd, tty_size_t* s) { return SC2(SYS_TTY_SIZE, fd, s); }
 static inline int sys_gfx_end(void) { return SC0(SYS_GFX_END); }
 static inline int sys_gfx_pixel(int x, int y, int color) { return SC3(SYS_GFX_PIXEL, x, y, color); }
 static inline int sys_gfx_clear(int color) { return SC1(SYS_GFX_CLEAR, color); }

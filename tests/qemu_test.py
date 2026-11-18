@@ -4,6 +4,10 @@ shell over the serial port, the way a person at a terminal would.
 
     python3 tests/qemu_test.py --iso build/x86_64/ringtail.iso --disk build/x86_64/test-disk.img
 
+The screen is read through QEMU's monitor. On a framebuffer the text
+is the kernel's own grid of character cells (console_cells, found with
+nm in the kernel, --kernel); in VGA text mode it is the VGA's memory.
+
 The disk image is copied first, so the build's image is never
 modified. After the session the copy is checked with fsck.fat (when
 installed), which proves the kernel left a consistent FAT16 volume
@@ -36,6 +40,8 @@ QEMU = "qemu-system-x86_64"
 
 
 class Machine:
+    CELLS = None  # where the kernel keeps the console's characters (main sets it)
+
     # net: QEMU arguments for the network card; by default QEMU gives an
     # e1000 on its user network, where 10.0.2.2 is the gateway.
     # drive: the whole -drive value, to put a slow or failing disk under
@@ -171,24 +177,73 @@ class Machine:
                 break
         return out.decode(errors="replace")
 
+    def display(self):
+        """(framebuffer?, columns, rows), from the boot banner's Display line."""
+        d = re.search(rb"Display: (VGA text, |\d+x\d+, \d+ bits a pixel, )(\d+)x(\d+)", self.log)
+        if not d:
+            return False, 80, 25
+        return not d.group(1).startswith(b"VGA"), int(d.group(2)), int(d.group(3))
+
+    @property
+    def cols(self):
+        return self.display()[1]
+
+    @property
+    def rows(self):
+        return self.display()[2]
+
     def screen_row(self, row):
-        """One row of the VGA text screen as (text, attributes)."""
-        out = self.monitor_cmd(f"xp /80hx {0xb8000 + row * 160:#x}")
-        cells = [int(v, 16) for v in re.findall(r"0x([0-9a-f]{4})\b", out.split("\n", 1)[-1])][:80]
+        """One row of the text screen as (text, attributes)."""
+        fb, cols, _ = self.display()
+        if fb:  # a virtual address: the kernel's half is mapped the same in every address space
+            out = self.monitor_cmd(f"x /{cols}hx {Machine.CELLS + row * cols * 2:#x}")
+        else:
+            out = self.monitor_cmd(f"xp /{cols}hx {0xb8000 + row * cols * 2:#x}")
+        cells = [int(v, 16) for v in re.findall(r"0x([0-9a-f]{4})\b", out.split("\n", 1)[-1])][:cols]
         return "".join(chr(c & 0xFF) for c in cells), [c >> 8 for c in cells]
 
-    def screen_size(self):
+    def screenshot(self):
+        """The screen as (width, height, RGB bytes)."""
         path = os.path.join(self.dir, "screen.ppm")
         if os.path.exists(path):
             os.remove(path)
         self.monitor_cmd(f"screendump {path}")
-        for _ in range(20):
-            if os.path.exists(path) and os.path.getsize(path) > 20:
-                break
+        data = b""
+        for _ in range(30):
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    data = f.read()
+                head = data.split(maxsplit=4)
+                if len(head) == 5 and len(head[4]) >= int(head[1]) * int(head[2]) * 3:
+                    break
             time.sleep(0.1)
-        with open(path, "rb") as f:
-            header = f.read(20).split()
-        return int(header[1]), int(header[2])
+        head = data.split(maxsplit=4)
+        w, h = int(head[1]), int(head[2])
+        return w, h, head[4][:w * h * 3]
+
+    def screen_size(self):
+        w, h, _ = self.screenshot()
+        return w, h
+
+    def pixel(self, x, y, shot=None):
+        w, h, px = shot or self.screenshot()
+        return tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
+
+    def console_shown(self):
+        """Whether the screen shows the console, not graphics. In VGA text
+        mode QEMU dumps 720x400. On a framebuffer, the last prompt's
+        "ringtail" must be on the screen in its bright green."""
+        shot = self.screenshot()
+        fb, cols, rows = self.display()
+        if not fb:
+            return shot[:2] == (720, 400)
+        lines = [self.screen_row(r)[0] for r in range(rows)]
+        r = max((i for i, l in enumerate(lines) if l.startswith("ringtail:/")), default=None)
+        if r is None:
+            return False
+        left, top = (shot[0] - cols * 8) // 2, (shot[1] - rows * 16) // 2
+        return any(self.pixel(left + x, top + r * 16 + y, shot) == (0x55, 0xFF, 0x55)
+                   for x in range(8 * 8) for y in range(16))
 
     def wait_row(self, row, text, timeout=5):
         """Wait until a screen row contains text; return the row."""
@@ -246,6 +301,59 @@ def tick_rate_ok(m, seconds=3):
     time.sleep(seconds)
     t1, h1 = ticks()
     return t0 is not None and t1 is not None and abs((t1 - t0) / 100 / (h1 - h0) - 1) < 0.05
+
+
+# Kenoma's top bar, a colour nothing else on the screen has.
+KENOMA_BAR = (0xD8, 0xDC, 0xE2)
+
+
+def kenoma_up(m, want=True):
+    """Wait until kenoma's desktop is (or is not) on the screen."""
+    for _ in range(40):
+        fb = m.display()[0]
+        shown = m.pixel(250, 3) == KENOMA_BAR if fb else m.screen_size() == (640, 400)
+        if shown == want:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def kenoma_click(m, x, y):
+    """Click at x, y. Mouse moves are relative, so the pointer is pinned
+    to the top left corner first. QEMU sends a move as packets of at most
+    127 pixels and queues only a few at a time; what does not fit waits
+    for the next move and would eat it, so the steps stay small."""
+    for _ in range(6):
+        m.monitor_cmd("mouse_move -250 -250")
+        time.sleep(0.05)
+    m.monitor_cmd(f"mouse_move {x} {y}")
+    time.sleep(0.3)
+    m.monitor_cmd("mouse_button 1")
+    time.sleep(0.2)
+    m.monitor_cmd("mouse_button 0")
+
+
+def kenoma_tests(m, t):
+    """The desktop, in native graphics: on a framebuffer at the screen's
+    size, in VGA text mode at 320x200 in mode 13h (QEMU dumps that
+    pixel-doubled, as 640x400)."""
+    fb = m.display()[0]
+    m.send("run kenoma\r")
+    t.check("kenoma takes the screen in native graphics", kenoma_up(m), f"screen is {m.screen_size()}")
+    if fb:
+        w, h, _ = m.screenshot()
+        t.check("at the screen's own size", (w, h) == (1024, 768), f"{w}x{h}")
+        # The first column of icons: About, then the WELCOME page.
+        kenoma_click(m, 24 + 52, 48 + 96 + 20)
+    else:
+        kenoma_click(m, 10 + 40, 26 + 58 + 15)
+    row = m.wait_row(0, "Welcome to RingTail.")
+    t.check("a text file on the desktop opens in Octavo", row.startswith("Welcome to RingTail."), repr(row))
+    m.send("\x11")  # Ctrl+Q, nothing changed so no question
+    t.check("closing Octavo goes straight back to the desktop", kenoma_up(m), f"screen is {m.screen_size()}")
+    m.monitor_cmd("sendkey esc")
+    m.expect(PROMPT, 5)
+    t.check("Esc leaves kenoma and the console returns", m.console_shown())
 
 
 def card_interrupts(net_out):
@@ -413,7 +521,7 @@ def tests(m, t):
     t.check("runaway recursion is stopped at the stack limit", "task killed" in out, out)
     out = m.run("run gfxfault")
     t.check("a fault in graphics mode is reported", "task killed" in out, out)
-    t.check("and the screen is back in text mode", m.screen_size() == (720, 400))
+    t.check("and the screen is back in text mode", m.console_shown())
     out = m.run("run sysregs tf")
     t.check("a syscall with the trap flag set traps in the program, not the kernel",
             re.search(r"sysregs: debug at rip=4[0-9a-f]{7} - task killed", out) and "PANIC" not in out, out)
@@ -497,7 +605,7 @@ def tests(m, t):
     out = m.expect(PROMPT, 5)
     t.check("Ctrl+C stops the whole pipeline", "^C" in out and time.time() - start < 2, out)
     out = m.run("tasks")
-    t.check("and leaves nothing behind", "sleep" not in out and "wc" not in out, out)
+    t.check("and leaves nothing behind", not re.search(r"\s(sleep|wc)$", plain(out), re.M), out)
     m.run("rm out.txt")
     m.run("rm count.txt")
 
@@ -748,16 +856,17 @@ def tests(m, t):
 
     # A line longer than the screen is wide, edited across the wrap, as
     # the VGA memory shows it.
-    long = "echo " + "a" * 85
+    n = m.cols + 5
+    long = "echo " + "a" * n
     m.edit(long + LEFT * 20 + "Z" + DEL + DEL)
-    rows = [m.screen_row(r)[0] for r in range(25)]
-    start = next((i for i in reversed(range(25)) if rows[i].startswith("ringtail:/> echo")), None)
+    rows = [m.screen_row(r)[0] for r in range(m.rows)]
+    start = next((i for i in reversed(range(m.rows)) if rows[i].startswith("ringtail:/> echo")), None)
     shown = "".join(rows[start:start + 2]).rstrip() if start is not None else ""
-    want = "ringtail:/> echo " + "a" * 65 + "Z" + "a" * 18
+    want = "ringtail:/> echo " + "a" * (n - 20) + "Z" + "a" * 18
     t.check("editing across a screen wrap redraws correctly", shown == want, shown)
     m.send("\r")
     out = plain(m.expect(PROMPT, 5))
-    t.check("and the wrapped line runs as edited", "a" * 65 + "Z" + "a" * 18 in out, out)
+    t.check("and the wrapped line runs as edited", "a" * (n - 20) + "Z" + "a" * 18 in out, out)
 
     # The clock and file timestamps. QEMU's RTC starts on the host's UTC.
     out = plain(m.run("date"))
@@ -865,13 +974,13 @@ def tests(m, t):
 
     # Octavo: type, save, undo, replace, quit.
     m.send("run octavo notes.txt\r")
-    t.check("octavo starts on a new file", "notes.txt" in m.wait_row(24, "notes.txt"))
+    t.check("octavo starts on a new file", "notes.txt" in m.wait_row(m.rows - 1, "notes.txt"))
     m.send("hello world\rsecond line")
     row0 = m.wait_row(0, "hello world")
     t.check("octavo shows typed text", row0.rstrip() == "hello world", repr(row0))
-    t.check("and the caret readout follows", "Ln 2, Col 12" in m.wait_row(24, "Ln 2, Col 12"))
+    t.check("and the caret readout follows", "Ln 2, Col 12" in m.wait_row(m.rows - 1, "Ln 2, Col 12"))
     m.send("\x13")
-    t.check("Ctrl+S saves", "Saved notes.txt" in m.wait_row(23, "Saved"))
+    t.check("Ctrl+S saves", "Saved notes.txt" in m.wait_row(m.rows - 2, "Saved"))
     m.send("\x1b[1;5F extra")  # Ctrl+End, then type
     m.wait_row(1, "extra")
     m.send("\x1a")  # Ctrl+Z undoes the whole typed run
@@ -883,16 +992,16 @@ def tests(m, t):
         row1, _ = m.screen_row(1)
     t.check("Ctrl+Z undoes a typed run in one step", row1.rstrip() == "second line", repr(row1))
     m.send("\x12world\rthere\r")  # Ctrl+R: find, replace with
-    m.wait_row(23, "Replace this one")
+    m.wait_row(m.rows - 2, "Replace this one")
     m.send("a")
-    t.check("replace all reports the count", "1 occurrence matched." in m.wait_row(23, "occurrence"))
+    t.check("replace all reports the count", "1 occurrence matched." in m.wait_row(m.rows - 2, "occurrence"))
     m.send("\x01\x03\x1b[1;5F\r\x16")  # select all, copy, Ctrl+End, Enter, paste
     row3 = m.wait_row(3, "second line")
     row2, _ = m.screen_row(2)
     t.check("copy and paste", row2.rstrip() == "hello there" and row3.rstrip() == "second line",
             repr(row2 + row3))
     m.send("\x11")
-    t.check("quitting with changes asks first", "Save changes before closing" in m.wait_row(23, "Save changes"))
+    t.check("quitting with changes asks first", "Save changes before closing" in m.wait_row(m.rows - 2, "Save changes"))
     m.send("y")
     out = m.expect(PROMPT, 5)
     out = m.run("cat notes.txt")
@@ -901,19 +1010,20 @@ def tests(m, t):
             "hello there\nsecond line\nhello there\nsecond line" in out, repr(out))
 
     m.send("run octavo\r")
-    m.wait_row(24, "Untitled")
-    m.send("lemur " * 20)
+    m.wait_row(m.rows - 1, "Untitled")
+    words = m.cols // 6 + 4  # more than a row
+    m.send("lemur " * words)
     row1 = m.wait_row(1, "lemur")
     t.check("long lines wrap at a word", m.screen_row(0)[0].rstrip().endswith("lemur") and
             row1.startswith("lemur"), repr(row1))
     m.send("\x13")
-    m.wait_row(23, "Save as")
+    m.wait_row(m.rows - 2, "Save as")
     m.send("zoo\r")
-    t.check("an untitled document is saved as a lemur", "Saved zoo.lemur" in m.wait_row(23, "Saved"))
+    t.check("an untitled document is saved as a lemur", "Saved zoo.lemur" in m.wait_row(m.rows - 2, "Saved"))
     m.send("\x11")
     m.expect(PROMPT, 5)
     out = m.run("cat ZOO.LEMUR")
-    t.check("and the file is there", out.count("lemur") == 20, repr(out))
+    t.check("and the file is there", out.count("lemur") == words, repr(out))
 
     # History recall with the Up arrow.
     m.run("echo first")
@@ -961,7 +1071,7 @@ def tests(m, t):
     t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.28.0"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
-    t.check("and the footer lists the keys", "q quit" in m.wait_row(24, "q quit"))
+    t.check("and the footer lists the keys", "q quit" in m.wait_row(m.rows - 1, "q quit"))
     bar, battr = m.screen_row(2)
     t.check("usage bars are drawn with block characters", "\xb0" in bar or "\xdb" in bar, repr(bar))
     t.check("memory and the tasks are on screen", "Frames" in bar and "gauge" in "".join(
@@ -982,24 +1092,24 @@ def tests(m, t):
     t.check("gauge refreshes by itself", after >= before + 2, f"{before} -> {after}")
     m.send("p")
     settle(0.5)
-    t.check("p pauses it", "PAUSED" in m.screen_row(24)[0], repr(m.screen_row(24)[0]))
+    t.check("p pauses it", "PAUSED" in m.screen_row(m.rows - 1)[0], repr(m.screen_row(m.rows - 1)[0]))
     frozen = uptime_on_screen()
     settle(2.5)
     t.check("a paused gauge stands still", uptime_on_screen() == frozen, f"{frozen} -> {uptime_on_screen()}")
     m.send("p")
     settle(1.5)
-    t.check("and p starts it again", uptime_on_screen() > frozen and "PAUSED" not in m.screen_row(24)[0],
+    t.check("and p starts it again", uptime_on_screen() > frozen and "PAUSED" not in m.screen_row(m.rows - 1)[0],
             f"{frozen} -> {uptime_on_screen()}")
     m.send("-")
     settle(0.5)
-    t.check("- slows it down", "every 2 s" in m.screen_row(24)[0], repr(m.screen_row(24)[0]))
+    t.check("- slows it down", "every 2 s" in m.screen_row(m.rows - 1)[0], repr(m.screen_row(m.rows - 1)[0]))
     m.send("++")
     settle(0.5)
-    t.check("+ speeds it up", "every 0.5 s" in m.screen_row(24)[0], repr(m.screen_row(24)[0]))
+    t.check("+ speeds it up", "every 0.5 s" in m.screen_row(m.rows - 1)[0], repr(m.screen_row(m.rows - 1)[0]))
     m.send("q")
     m.expect(PROMPT, 5)
     row0, _ = m.screen_row(0)
-    t.check("q leaves gauge and clears the screen", "Gauge" not in row0 and "q quit" not in m.screen_row(24)[0], repr(row0))
+    t.check("q leaves gauge and clears the screen", "Gauge" not in row0 and "q quit" not in m.screen_row(m.rows - 1)[0], repr(row0))
     out = m.run("echo cooked again")
     t.check("the terminal is cooked again after gauge", "cooked again" in out, out)
     m.send("gauge\r")
@@ -1009,37 +1119,7 @@ def tests(m, t):
     out = m.run("echo after ctrl-c")
     t.check("Ctrl+C quits gauge too, leaving a usable terminal", "after ctrl-c" in out, out)
 
-    # The desktop: graphics mode, then Esc back to text.
-    m.send("run kenoma\r")
-    # QEMU shows mode 13h pixel-doubled, so 320x200 dumps as 640x400.
-    size = None
-    for _ in range(30):
-        time.sleep(0.2)
-        size = m.screen_size()
-        if size == (640, 400):
-            break
-    t.check("kenoma switches to mode 13h graphics", size == (640, 400), f"screen is {size}")
-    # Click the WELCOME page icon (the first slot, at 80,26): the pointer
-    # is pinned to the corner first, since mouse moves are relative.
-    m.monitor_cmd("mouse_move -400 -400")
-    m.monitor_cmd("mouse_move 95 40")
-    time.sleep(0.3)
-    m.monitor_cmd("mouse_button 1")
-    time.sleep(0.2)
-    m.monitor_cmd("mouse_button 0")
-    row = m.wait_row(0, "Welcome to RingTail.")
-    t.check("a text file on the desktop opens in Octavo", row.startswith("Welcome to RingTail."), repr(row))
-    m.send("\x11")  # Ctrl+Q, nothing changed so no question
-    size = None
-    for _ in range(30):
-        time.sleep(0.2)
-        size = m.screen_size()
-        if size == (640, 400):
-            break
-    t.check("closing Octavo goes straight back to the desktop", size == (640, 400), f"screen is {size}")
-    m.monitor_cmd("sendkey esc")
-    m.expect(PROMPT, 5)
-    t.check("Esc leaves kenoma and text mode returns", m.screen_size() == (720, 400))
+    kenoma_tests(m, t)
 
     out = m.run("mem")
     t.check("mem", "Frames:" in out and "Heap:" in out, out)
@@ -3824,27 +3904,33 @@ def tcp_tests(m, t):
 
 
 def _rows(m):
-    """The screen, as its 25 rows without trailing blanks."""
-    return [m.screen_row(i)[0].rstrip() for i in range(25)]
+    """The screen, as its rows without trailing blanks."""
+    return [m.screen_row(i)[0].rstrip() for i in range(m.rows)]
 
 
 def text_tests(m, t):
-    """head, tail and more, on 30 lines of help (all of it, then as many of
-    its first lines again as make 30) and a few small files."""
+    """head, tail and more, on six lines more than the screen has rows
+    (all of help, then as many of its first lines again as it takes)
+    and a few small files."""
     def run(c, timeout=20):  # output as it is, indentation included
         return re.sub(r"\x1b\[[0-9;]*m", "", m.run(c, timeout=timeout)).replace("\r", "").rstrip()
 
     # help leaves its three footer lines off when it is redirected, so
     # the file is the reference, not what help prints on the screen.
     t.check("help > h.txt (setting up)", run("help > h.txt") == "")
-    again = 30 - int(run("help | wc -l"))
+    N, P = m.rows + 6, m.rows - 1  # lines to page; lines a page shows, above the prompt
+    help_lines = int(run("help | wc -l"))
+    while help_lines < N - help_lines:  # a tall screen needs help more than twice
+        t.check("help >> h.txt (setting up)", run("help >> h.txt") == "")
+        help_lines *= 2
+    again = N - int(run("wc -l h.txt").split()[0])
     t.check("help | head >> h.txt (setting up)", run("help | head -n %d >> h.txt" % again) == "")
     text = run("cat h.txt")
     lines = text.split("\n")
     full = text + "\n"
-    t.check("the text to page is 30 lines", len(lines) == 30 and all(l == l.rstrip() for l in lines), str(len(lines)))
+    t.check(f"the text to page is {N} lines", len(lines) == N and all(l == l.rstrip() for l in lines), str(len(lines)))
     for c in ["head -n 24 h.txt > h24.txt", "head -c 5 h.txt > nonl.txt",
-              "write w150.txt " + "x" * 150, "write w80.txt " + "y" * 80]:
+              "write w150.txt " + "x" * 150, "write w80.txt " + "y" * m.cols]:
         t.check(f"{c[:30]} (setting up)", run(c) == "", c)
     j = "\n".join
 
@@ -3888,46 +3974,46 @@ def text_tests(m, t):
     t.check("tail says when a file is missing", "tail: nosuch: no such file" in out and "exit status 1" in out, out)
 
     # more: the keys come from the terminal, so a pipe can feed it
-    first = sum(len(l) + 1 for l in lines[:24])
+    first = sum(len(l) + 1 for l in lines[:P])
     pct = lambda n: "--More--(%d%%)" % (sum(len(l) + 1 for l in lines[:n]) * 100 // len(full))
 
     def start(c, want="--More--"):
         m.send(c + "\r")
-        return m.wait_row(24, want, 10)
+        return m.wait_row(P, want, 10)
 
-    row = start("more h.txt", pct(24))
-    t.check("more stops after a screenful and says how far it has got", row.strip() == pct(24), row)
+    row = start("more h.txt", pct(P))
+    t.check("more stops after a screenful and says how far it has got", row.strip() == pct(P), row)
     rows = _rows(m)
-    t.check("the screen holds exactly the first 24 lines", rows[:24] == lines[:24], j(rows))
+    t.check("the screen holds exactly the first page of lines", rows[:P] == lines[:P], j(rows))
     m.send("\r")
-    row = m.wait_row(24, pct(25), 10)
+    row = m.wait_row(P, pct(P + 1), 10)
     rows = _rows(m)
-    t.check("Enter shows one more line", row.strip() == pct(25) and rows[:24] == lines[1:25], j(rows))
+    t.check("Enter shows one more line", row.strip() == pct(P + 1) and rows[:P] == lines[1:P + 1], j(rows))
     m.send("\x1b[B")
-    row = m.wait_row(24, pct(26), 10)
-    t.check("and so does Down", row.strip() == pct(26) and _rows(m)[:24] == lines[2:26], row)
+    row = m.wait_row(P, pct(P + 2), 10)
+    t.check("and so does Down", row.strip() == pct(P + 2) and _rows(m)[:P] == lines[2:P + 2], row)
     m.send(" ")
     m.expect(PROMPT, 10)
     rows = _rows(m)
-    t.check("Space shows the next screen, and more ends with the file", rows[:24] == lines[6:30] and rows[24].startswith("ringtail:/>"), j(rows))
-    start("more h.txt", pct(24))
+    t.check("Space shows the next screen, and more ends with the file", rows[:P] == lines[N - P:N] and rows[P].startswith("ringtail:/>"), j(rows))
+    start("more h.txt", pct(P))
     m.send("\x1b[6~")
     m.expect(PROMPT, 10)
-    t.check("PgDn does the same", _rows(m)[:24] == lines[6:30])
-    start("more h.txt", pct(24))
+    t.check("PgDn does the same", _rows(m)[:P] == lines[N - P:N])
+    start("more h.txt", pct(P))
     m.send("q")
     m.expect(PROMPT, 10)
     rows = _rows(m)
-    t.check("q quits and leaves the page on the screen", rows[:24] == lines[:24] and rows[24].startswith("ringtail:/>"), j(rows))
-    start("more h.txt", pct(24))
+    t.check("q quits and leaves the page on the screen", rows[:P] == lines[:P] and rows[P].startswith("ringtail:/>"), j(rows))
+    start("more h.txt", pct(P))
     m.send("\x03")
     m.expect(PROMPT, 10)
     rows = _rows(m)
     t.check("Ctrl+C at the prompt quits the same way, without wiping the screen",
-            rows[:24] == lines[:24] and not any("^C" in r for r in rows), j(rows))
+            rows[:P] == lines[:P] and not any("^C" in r for r in rows), j(rows))
     row = start("cat h.txt | more")
     t.check("more reads a pipe, and without a size gives no percentage", row.strip() == "--More--", row)
-    t.check("from the first line", _rows(m)[:24] == lines[:24])
+    t.check("from the first line", _rows(m)[:P] == lines[:P])
     m.send("q")
     m.expect(PROMPT, 10)
     t.check("quitting does not leave the pipeline running", "more" not in run("tasks"))
@@ -3936,7 +4022,8 @@ def text_tests(m, t):
     m.send("\x03")
     m.expect(PROMPT, 10)
     out = run("tasks")
-    t.check("Ctrl+C while the input is stalled ends the pipeline", "sleep" not in out and "more" not in out, out)
+    t.check("Ctrl+C while the input is stalled ends the pipeline",
+            not re.search(r"\s(sleep|more)$", plain(out), re.M), out)
     out = run("more h.txt | wc")
     t.check("more copies when its output is a pipe", re.search(r"^\s*%d\s+\d+\s+%d$" % (len(lines), len(full)), out), out)
     t.check("or a file", run("more h.txt > out.txt") == "" and
@@ -3949,15 +4036,18 @@ def text_tests(m, t):
     t.check("and has nothing to show without a file or a pipe", "usage: more" in out and "exit status 2" in out, out)
 
     # Counting rows the way the console lays them out: a 150-character
-    # line takes two, and an 80-character one only one.
-    for name, body in [("w150.txt", [80, 70]), ("w80.txt", [80])]:
-        names = [name] * 10
+    # line takes two on a screen narrower than that, and one exactly as
+    # wide as the screen only one.
+    C = m.cols
+    for name, body in [("w150.txt", [C, 150 - C] if C < 150 else [150]), ("w80.txt", [C])]:
+        count = P // (len(body) + 2) + 2  # enough to need a second page
+        names = [name] * count
         want = []
-        for k in range(10):
+        for k in range(count):
             want += ([""] if k else []) + ["==> %s <==" % name] + ["x" * n if name == "w150.txt" else "y" * n for n in body]
         row = start("more " + " ".join(names))
         rows = _rows(m)
-        t.check(f"more counts wrapped rows ({name} x10)", rows[:24] == want[:24] and row.startswith("--More--"), j(rows))
+        t.check(f"more counts wrapped rows ({name} x{count})", rows[:P] == want[:P] and row.startswith("--More--"), j(rows))
         m.send("q")
         m.expect(PROMPT, 10)
 
@@ -4076,6 +4166,35 @@ def interrupt_boots(iso, disk, work, t):
             vm.qemu.wait()
             with open(os.path.join(sub, "serial.log"), "wb") as f:
                 f.write(vm.log)
+
+
+def text_mode_boot(iso, disk, work, t):
+    """The fallback: GRUB told to leave the screen in VGA text mode. The
+    console writes the VGA's memory, programs see 80x25, and graphics
+    is mode 13h."""
+    sub = os.path.join(work, "text-mode")
+    os.mkdir(sub)
+    shutil.copy(disk, os.path.join(sub, "disk.img"))
+    vm = Machine(iso, os.path.join(sub, "disk.img"), sub)
+    try:
+        boot = vm.expect(PROMPT, 30).replace("\r\n", "\n")
+        t.check("[text mode] boots and says so", "\nDisplay: VGA text, 80x25\n" in boot, boot)
+        t.check("[text mode] the screen is VGA text", vm.screen_size() == (720, 400), str(vm.screen_size()))
+        out = vm.run("echo on the screen")
+        rows = _rows(vm)
+        t.check("[text mode] the console writes it", "on the screen" in rows, "\n".join(rows))
+        kenoma_tests(vm, t)
+        vm.send("run octavo\r")
+        t.check("[text mode] programs see 80x25", "Untitled" in vm.wait_row(24, "Untitled"))
+        vm.send("\x11")
+        vm.expect(PROMPT, 5)
+    except (TimeoutError, EOFError) as e:
+        t.check("[text mode] session finished", False, str(e))
+    finally:
+        vm.qemu.kill()
+        vm.qemu.wait()
+        with open(os.path.join(sub, "serial.log"), "wb") as f:
+            f.write(vm.log)
 
 
 def short_boots(iso, disk, work, t):
@@ -4260,10 +4379,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", default=QEMU, help="the QEMU system emulator for the target")
     ap.add_argument("--iso", default="build/x86_64/ringtail.iso")
+    ap.add_argument("--text-iso", default="build/x86_64/ringtail-text.iso", help="the same kernel, booted in VGA text mode")
+    ap.add_argument("--kernel", default="build/x86_64/ringtail.bin", help="the kernel's ELF file, for its symbols")
     ap.add_argument("--disk", default="build/x86_64/test-disk.img")
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     args = ap.parse_args()
     QEMU = args.qemu
+    nm = subprocess.run(["nm", args.kernel], capture_output=True, text=True, check=True).stdout
+    Machine.CELLS = int(re.search(r"^([0-9a-f]+) [BbDd] console_cells$", nm, re.M).group(1), 16)
 
     work = tempfile.mkdtemp(prefix="ringtail-test-")
     disk = os.path.join(work, "disk.img")
@@ -4329,6 +4452,7 @@ def main():
             with open(os.path.join(peer_dir, "serial.log"), "wb") as f:
                 f.write(pm.log)
 
+    text_mode_boot(args.text_iso, args.disk, work, t)
     short_boots(args.iso, args.disk, work, t)
     interrupt_boots(args.iso, args.disk, work, t)
     disk_tests(args.iso, args.disk, work, t)

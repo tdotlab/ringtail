@@ -167,10 +167,41 @@ static long sys_save(uintptr_t upath, uintptr_t ubuf, uintptr_t len) {
 
 static int is_owner(void) { return gfx_owner() == current->id; }
 
-static long sys_gfx_begin(uintptr_t a, uintptr_t b, uintptr_t c) {
-    (void)a; (void)b; (void)c;
-    if (is_owner()) return 0;
-    return gfx_acquire(current->id);
+// The classic calls draw only in classic mode.
+static int classic_owner(void) {
+    if (!is_owner()) return -EPERM;
+    return gfx_mode() == GFX_CLASSIC ? 0 : -EINVAL;
+}
+
+static long sys_gfx_begin(uintptr_t how, uintptr_t b, uintptr_t c) {
+    (void)b; (void)c;
+    if (how > GFX_NATIVE) return -EINVAL;
+    return gfx_acquire(current->id, (int)how);
+}
+
+static long sys_gfx_info(uintptr_t uarg, uintptr_t b, uintptr_t c) {
+    (void)b; (void)c;
+    gfx_info_t i;
+    gfx_size(GFX_NATIVE, &i.width, &i.height);
+    return copy_to_user((void*)uarg, &i, sizeof i);
+}
+
+static long sys_gfx_put(uintptr_t uarg, uintptr_t b, uintptr_t c) {
+    (void)b; (void)c;
+    if (!is_owner()) return -EPERM;
+    if (gfx_mode() != GFX_NATIVE) return -EINVAL;
+    gfx_put_t p;
+    if (copy_from_user(&p, (const void*)uarg, sizeof p)) return -EFAULT;
+    int sw, sh;
+    gfx_size(GFX_NATIVE, &sw, &sh);
+    if (p.w <= 0 || p.h <= 0) return 0;
+    if (p.w > sw || p.h > sh || p.stride < p.w || p.stride > 16384) return -EINVAL;
+    // Every row the program named must be its own memory, whether or
+    // not it lands on the screen.
+    uint64_t bytes = ((uint64_t)(p.h - 1) * (uint64_t)p.stride + (uint64_t)p.w) * 4;
+    if (user_range_ok((uintptr_t)p.pixels, bytes, 0)) return -EFAULT;
+    gfx_put(p.x, p.y, p.w, p.h, (const uint32_t*)p.pixels, p.stride);
+    return 0;
 }
 
 static long sys_gfx_end(uintptr_t a, uintptr_t b, uintptr_t c) {
@@ -179,21 +210,24 @@ static long sys_gfx_end(uintptr_t a, uintptr_t b, uintptr_t c) {
 }
 
 static long sys_gfx_pixel(uintptr_t x, uintptr_t y, uintptr_t color) {
-    if (!is_owner()) return -EPERM;
+    int e = classic_owner();
+    if (e) return e;
     gfx_pixel((int)x, (int)y, (uint8_t)color);
     return 0;
 }
 
 static long sys_gfx_clear(uintptr_t color, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    if (!is_owner()) return -EPERM;
+    int e = classic_owner();
+    if (e) return e;
     gfx_clear((uint8_t)color);
     return 0;
 }
 
 static long sys_gfx_rect(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    if (!is_owner()) return -EPERM;
+    int e = classic_owner();
+    if (e) return e;
     gfx_rect_t r;
     if (copy_from_user(&r, (const void*)uarg, sizeof r)) return -EFAULT;
     gfx_rect(r.x, r.y, r.w, r.h, (uint8_t)r.color, r.filled);
@@ -202,7 +236,8 @@ static long sys_gfx_rect(uintptr_t uarg, uintptr_t b, uintptr_t c) {
 
 static long sys_gfx_line(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    if (!is_owner()) return -EPERM;
+    int e = classic_owner();
+    if (e) return e;
     gfx_line_t l;
     if (copy_from_user(&l, (const void*)uarg, sizeof l)) return -EFAULT;
     gfx_line(l.x0, l.y0, l.x1, l.y1, (uint8_t)l.color);
@@ -211,7 +246,8 @@ static long sys_gfx_line(uintptr_t uarg, uintptr_t b, uintptr_t c) {
 
 static long sys_gfx_text(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    if (!is_owner()) return -EPERM;
+    int e = classic_owner();
+    if (e) return e;
     gfx_text_t t;
     if (copy_from_user(&t, (const void*)uarg, sizeof t)) return -EFAULT;
     char s[GFX_WIDTH / 8 + 1];  // more would be off screen anyway
@@ -227,7 +263,8 @@ static long sys_gfx_text(uintptr_t uarg, uintptr_t b, uintptr_t c) {
 
 static long sys_gfx_blit(uintptr_t upix, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    if (!is_owner()) return -EPERM;
+    int e = classic_owner();
+    if (e) return e;
     if (user_range_ok(upix, GFX_WIDTH * GFX_HEIGHT, 0)) return -EFAULT;
     gfx_blit((const uint8_t*)upix);
     return 0;
@@ -243,7 +280,7 @@ static long sys_gfx_font(uintptr_t ubuf, uintptr_t b, uintptr_t c) {
 static long sys_mouse_state(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     mouse_state_t m;
-    mouse_get(&m.x, &m.y, &m.buttons);
+    gfx_mouse(&m.x, &m.y, &m.buttons);
     return copy_to_user((void*)uarg, &m, sizeof m);
 }
 
@@ -258,7 +295,7 @@ static long sys_key_get(uintptr_t a, uintptr_t b, uintptr_t c) {
 // saw, or a key is waiting for it.
 static int input_ready(int lx, int ly, int lb) {
     int x, y, btn;
-    mouse_get(&x, &y, &btn);
+    gfx_mouse(&x, &y, &btn);
     if (x != lx || y != ly || btn != lb) return 1;
     if (is_owner()) return keyboard_raw_pending();
     return current->job == tty_foreground() && tty_pending();
@@ -371,6 +408,16 @@ static long sys_pollfd(uintptr_t ufds, uintptr_t n, uintptr_t timeout_ms) {
 static long sys_fdtype(uintptr_t fd, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     return file_fdtype((int)fd);
+}
+
+static long sys_tty_size(uintptr_t fd, uintptr_t uarg, uintptr_t c) {
+    (void)c;
+    int t = file_fdtype((int)fd);
+    if (t < 0) return t;
+    if (t != FDTYPE_TTY) return -ENOTTY;
+    tty_size_t z;
+    console_size(&z.cols, &z.rows);
+    return copy_to_user((void*)uarg, &z, sizeof z);
 }
 
 static long sys_random(uintptr_t ubuf, uintptr_t len, uintptr_t c) {
@@ -698,6 +745,9 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_POLLFD] = sys_pollfd,
     [SYS_FDTYPE] = sys_fdtype,
     [SYS_RANDOM] = sys_random,
+    [SYS_GFX_INFO] = sys_gfx_info,
+    [SYS_GFX_PUT] = sys_gfx_put,
+    [SYS_TTY_SIZE] = sys_tty_size,
 };
 
 void syscall_handle(regs_t* r) {

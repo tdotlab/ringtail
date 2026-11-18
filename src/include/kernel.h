@@ -26,10 +26,22 @@ typedef struct {
     uint32_t type; // 1 = usable RAM
 } mmap_entry_t;
 
+// The screen as the bootloader left it: a linear framebuffer in a
+// direct-colour mode, or (addr 0) VGA text.
+typedef struct {
+    uint64_t addr;                  // physical
+    uint32_t pitch;                 // bytes from one row to the next
+    uint32_t width, height;
+    uint8_t bpp;                    // 32, 24, 16 or 15
+    uint8_t red_pos, red_bits, green_pos, green_bits, blue_pos, blue_bits;
+} framebuffer_t;
+
 typedef struct {
     uint32_t mmap_count;
+    int have_mmap;
     mmap_entry_t mmap[BOOT_MMAP_MAX];
     char cmdline[128];
+    framebuffer_t fb;
 } boot_info_t;
 
 extern boot_info_t boot_info;

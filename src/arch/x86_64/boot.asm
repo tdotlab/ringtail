@@ -16,14 +16,23 @@
 ; until then.
 
 MAGIC equ 0x1BADB002
-FLAGS equ 0x03              ; page-aligned modules, and the memory map
+FLAGS equ 0x07              ; page-aligned modules, the memory map, a video mode
 CHECKSUM equ -(MAGIC + FLAGS)
 
+; The video mode asked for: a linear framebuffer, 1024x768, 32 bits a
+; pixel. GRUB sets the nearest it can and says what it set in the info
+; block (kernel.c reads it), or leaves the screen in text mode, which
+; the kernel copes with too ("set gfxpayload=text" in grub.cfg asks for
+; that). The address fields before it are only for kernels that are not
+; ELF, but have to be there.
 section .multiboot
 align 4
     dd MAGIC
     dd FLAGS
     dd CHECKSUM
+    dd 0, 0, 0, 0, 0        ; header, load, load end, bss end, entry: unused
+    dd 0                    ; mode type: 0 is a linear graphics mode
+    dd 1024, 768, 32        ; width, height, bits a pixel
 
 section .boot progbits alloc exec nowrite align=16
 bits 32

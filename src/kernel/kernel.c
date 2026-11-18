@@ -14,18 +14,49 @@
 #define MULTIBOOT_MAGIC 0x2BADB002u
 #define MB_FLAG_CMDLINE (1u << 2)
 #define MB_FLAG_MMAP    (1u << 6)
+#define MB_FLAG_FB      (1u << 12)
+#define MB_FB_RGB       1           // direct colour; 0 is a palette, 2 is EGA text
 
 boot_info_t boot_info;
 
+// The framebuffer GRUB set up, if it set one up and it is a kind the
+// console can draw on: direct colour, 15 to 32 bits a pixel, at least
+// 640x400 (80x25 characters).
+static void read_framebuffer(const uint32_t* m) {
+    const uint8_t* b = (const uint8_t*)m;
+    framebuffer_t f = { 0 };
+    f.addr = (uint64_t)m[22] | (uint64_t)m[23] << 32;
+    f.pitch = m[24];
+    f.width = m[25];
+    f.height = m[26];
+    f.bpp = b[108];
+    if (b[109] != MB_FB_RGB || !f.addr) return;
+    if (f.bpp != 32 && f.bpp != 24 && f.bpp != 16 && f.bpp != 15) return;
+    if (f.width < 640 || f.height < 400 || f.pitch < f.width * ((f.bpp + 7u) / 8)) return;
+    // The multiboot spec puts the colour layout at byte 110, but GRUB's
+    // own header declares it in a union that also holds a 32-bit
+    // field, so the compiler aligned it to 112, and 112 is what GRUB
+    // fills in.
+    f.red_pos = b[112], f.red_bits = b[113];
+    f.green_pos = b[114], f.green_bits = b[115];
+    f.blue_pos = b[116], f.blue_bits = b[117];
+    if (!f.red_bits || f.red_bits > 8 || !f.green_bits || f.green_bits > 8 || !f.blue_bits || f.blue_bits > 8) return;
+    boot_info.fb = f;
+}
+
 // Copy what we need out of the multiboot structures, which live in
-// memory the frame allocator is about to hand out.
+// memory the frame allocator is about to hand out. This runs before
+// the console, which needs to know what the screen is, so it cannot
+// complain; kernel_main does once the console is up.
 // The bootloader hands over 32-bit physical addresses.
 static void read_boot_info(uint32_t mbi) {
     const uint32_t* m = phys_to_virt(mbi);
     uint32_t flags = m[0];
     if (flags & MB_FLAG_CMDLINE)
         strlcpy(boot_info.cmdline, phys_to_virt(m[4]), sizeof boot_info.cmdline);
-    if (!(flags & MB_FLAG_MMAP)) panic("bootloader gave no memory map");
+    if (flags & MB_FLAG_FB) read_framebuffer(m);
+    if (!(flags & MB_FLAG_MMAP)) return;
+    boot_info.have_mmap = 1;
     uint32_t p = m[12], end = m[12] + m[11];
     while (p < end && boot_info.mmap_count < BOOT_MMAP_MAX) {
         const uint8_t* q = phys_to_virt(p);
@@ -79,6 +110,7 @@ static void banner(void) {
     kprintf("Memory: %u KB heap, %u KB for programs\n", h.total / 1024, free_frames * 4);
     char buf[64];
     kprintf("Interrupts: %s\n", irq_controller(buf, sizeof buf));
+    kprintf("Display: %s\n", console_describe(buf, sizeof buf));
 }
 
 static void start_disk(void) {
@@ -106,17 +138,19 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     gdt_init();
     kernel_lock();
     serial_init();
+    if (magic == MULTIBOOT_MAGIC) read_boot_info(mbi);
     console_init();
     if (magic != MULTIBOOT_MAGIC) panic("not loaded by a multiboot loader (magic %08x)", magic);
-    read_boot_info(mbi);
+    if (!boot_info.have_mmap) panic("bootloader gave no memory map");
 
     idt_init();
     fpu_init();
     random_init();
     setup_memory();
     irq_controller_init();  // the APICs' registers go through the page tables
+    console_map();          // and so does the framebuffer
     task_init();
-    gfx_init_font();  // needs text mode, so before anything can switch
+    gfx_init();  // on VGA, reads the font while still in text mode
 
     banner();
     // The mouse shares the keyboard controller; set it up first so
@@ -134,6 +168,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     pci_init();
     net_init();
 
+    console_start();  // from here the console draws in a task of its own
     if (task_create_kernel("init", init_main, 0) < 0) panic("cannot start init");
     // Idle: the scheduler runs us only when nothing else is ready, and
     // then the other CPUs may have the kernel.

@@ -155,7 +155,7 @@ int kernel_mapped(uintptr_t va) {
     return (e & PTE_PRESENT) != 0;
 }
 
-void* mmio_map(uintptr_t phys, uint32_t size) {
+static void* map_device(uintptr_t phys, uint32_t size, pte_t cache) {
     uintptr_t off = phys & (PAGE_SIZE - 1);
     uintptr_t pages = (off + size + PAGE_SIZE - 1) / PAGE_SIZE;
     if (!size || pages > (MMIO_WINDOW + MMIO_WINDOW_SIZE - mmio_next) / PAGE_SIZE) return 0;
@@ -163,13 +163,17 @@ void* mmio_map(uintptr_t phys, uint32_t size) {
     for (uintptr_t i = 0; i < pages; i++) {
         uintptr_t v = va + i * PAGE_SIZE;
         kpt_mmio[PD_INDEX(v) - PD_INDEX(MMIO_WINDOW)][PT_INDEX(v)] =
-            (ALIGN_DOWN(phys, PAGE_SIZE) + i * PAGE_SIZE) | PTE_PRESENT | PTE_WRITE | PTE_PCD | PTE_PWT |
-            global_flag | nx_flag;
+            (ALIGN_DOWN(phys, PAGE_SIZE) + i * PAGE_SIZE) | PTE_PRESENT | PTE_WRITE | cache | global_flag | nx_flag;
         invlpg(v);
     }
     mmio_next += pages * PAGE_SIZE;
     return (void*)(va + off);
 }
+
+// Registers: uncached (PAT index 3). Memory such as a framebuffer:
+// write-combining (index 1, which gdt.c sets up as WC).
+void* mmio_map(uintptr_t phys, uint32_t size) { return map_device(phys, size, PTE_PCD | PTE_PWT); }
+void* mmio_map_wc(uintptr_t phys, uint32_t size) { return map_device(phys, size, PTE_PWT); }
 
 uintptr_t as_create(void) {
     uintptr_t pml4 = frame_alloc();

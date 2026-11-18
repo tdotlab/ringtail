@@ -1,6 +1,7 @@
 // PS/2 mouse on the keyboard controller's auxiliary port, IRQ 12.
 // Standard 3-byte packets: buttons and sign bits, then X and Y
-// movement. The position is kept in graphics coordinates (320x200).
+// movement. The position is kept in screen pixels (gfx.c scales it
+// for programs in classic mode).
 #include "kernel.h"
 #include "arch.h"
 #include "interrupt.h"
@@ -15,6 +16,7 @@
 #define KBC_TIMEOUT 100000
 
 static volatile int mx = GFX_WIDTH / 2, my = GFX_HEIGHT / 2, mbuttons;
+static int range_w = GFX_WIDTH, range_h = GFX_HEIGHT;
 static uint8_t pkt[3];
 static int pkt_idx;
 static uint32_t last_byte_tick;
@@ -73,11 +75,11 @@ static void mouse_irq(void) {
     mbuttons = pkt[0] & 0x07;
     if (!(pkt[0] & 0x40)) {  // skip overflowed movement
         int dx = pkt[1] - ((pkt[0] & 0x10) ? 256 : 0);
-        mx = MAX(0, MIN(GFX_WIDTH - 1, mx + dx));
+        mx = MAX(0, MIN(range_w - 1, mx + dx));
     }
     if (!(pkt[0] & 0x80)) {
         int dy = pkt[2] - ((pkt[0] & 0x20) ? 256 : 0);
-        my = MAX(0, MIN(GFX_HEIGHT - 1, my - dy));  // PS/2 Y grows upwards
+        my = MAX(0, MIN(range_h - 1, my - dy));  // PS/2 Y grows upwards
     }
     task_wakeup(&input_chan);
 }
@@ -99,6 +101,13 @@ int mouse_init(void) {
 fail:
     drain();
     return -1;
+}
+
+void mouse_set_range(int w, int h) {
+    uint32_t f = irq_save();
+    range_w = w, range_h = h;
+    mx = w / 2, my = h / 2;
+    irq_restore(f);
 }
 
 void mouse_get(int* x, int* y, int* buttons) {

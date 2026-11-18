@@ -124,11 +124,12 @@ static const call_t calls[] = {
     { SYS_LISTEN, "listen" }, { SYS_ACCEPT, "accept" }, { SYS_CONNECT, "connect" }, { SYS_SHUTDOWN, "shutdown" },
     { SYS_SOCKADDR, "sockaddr" }, { SYS_POLLFD, "pollfd" }, { SYS_FDTYPE, "fdtype" },
     { SYS_SETTIME, "settime" },  // random words are never a date after the build, so it only fails
+    { SYS_GFX_INFO, "gfx_info" }, { SYS_GFX_PUT, "gfx_put" }, { SYS_TTY_SIZE, "tty_size" },
     { 0, "unknown" },
 };
 #define NCALLS ((int)(sizeof calls / sizeof calls[0]))
 
-static uint32_t stat_ok[64], stat_fault[64], stat_other[64];
+static uint32_t stat_ok[NUM_SYSCALLS], stat_fault[NUM_SYSCALLS], stat_other[NUM_SYSCALLS];
 static int gfx_on;  // the fuzzer asked for the display and has not let go
 static int last_sock = -1;  // the socket calls mostly go to the newest socket, or they would never find one
 static int last_tcp = -1;   // the same for TCP, which never connects anywhere
@@ -306,7 +307,7 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     if (iter >= verbose_from) out("  #%u %s(%lx, %lx, %lx)\n", iter, c->name, (unsigned long)a, (unsigned long)b, (unsigned long)d);
     long r = syscall3(n, a, b, d);
 
-    if ((unsigned)n < 64) {
+    if ((unsigned)n < NUM_SYSCALLS) {
         if (r >= 0) stat_ok[n]++;
         else if (r == -EFAULT) stat_fault[n]++;
         else stat_other[n]++;

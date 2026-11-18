@@ -8,8 +8,8 @@
 // replace that match case by default, and a two-line footer with a
 // shortcut hint above the caret readout.
 //
-// What changed is the surface. It draws an 80x25 terminal with ANSI
-// escapes instead of GDI, keeping a copy of what is on screen so each
+// What changed is the surface. It draws on the terminal, at whatever
+// size it is, with ANSI escapes instead of GDI, keeping a copy of what is on screen so each
 // keystroke sends only the cells that changed. A few shortcuts moved
 // because a terminal cannot tell them apart: Ctrl+H is Backspace, so
 // Replace is Ctrl+R, and Ctrl+Shift+S arrives as Ctrl+S, so Save as
@@ -19,11 +19,16 @@
 //   run octavo [file]
 #include "ulib.h"
 
-#define COLS 80
-#define ROWS 25
-#define TEXT_ROWS 23
-#define HINT_ROW 23
-#define STATUS_ROW 24
+// The terminal's size, asked for at the start (80x25 if it will not
+// say), and the most this handles.
+#define MAX_COLS 240
+#define MAX_ROWS 100
+static int term_cols = 80, term_rows = 25;
+#define COLS term_cols
+#define ROWS term_rows
+#define TEXT_ROWS ((uint32_t)ROWS - 2)
+#define HINT_ROW (ROWS - 2)
+#define STATUS_ROW (ROWS - 1)
 #define WRAP_COLS (COLS - 1)  // leave a column for the caret after a full row
 #define TAB_COLS 4
 #define MAX_FILE (1024u * 1024u)  // what SYS_SAVE accepts
@@ -63,7 +68,7 @@ static uint32_t doc_id, saved_id, next_id;
 static char* clip;
 static uint32_t clip_len;
 
-static char message[COLS + 1];
+static char message[MAX_COLS + 1];
 static int quit;
 
 static char find_term[64], replace_term[64];
@@ -422,7 +427,7 @@ enum { A_TEXT, A_SEL, A_HINT, A_MSG, A_BAR, A_PROMPT, A_COUNT };
 static const char* const sgr[A_COUNT] = {
     "\x1b[0m", "\x1b[0;30;47m", "\x1b[0;37m", "\x1b[0;93m", "\x1b[0;97;44m", "\x1b[0;97m",
 };
-static uint16_t back[ROWS][COLS], front[ROWS][COLS];
+static uint16_t back[MAX_ROWS][MAX_COLS], front[MAX_ROWS][MAX_COLS];
 
 static char out[16384];
 static uint32_t out_len;
@@ -499,7 +504,7 @@ static void draw_text(int* caret_r, int* caret_c) {
     *caret_c = MIN(cc - left, COLS - 1);
 
     uint32_t sf = sel_from(), st = sel_to();
-    for (int i = 0; i < TEXT_ROWS; i++) {
+    for (int i = 0; i < (int)TEXT_ROWS; i++) {
         fill_row(i, A_TEXT);
         uint32_t r = top + (uint32_t)i;
         if (r >= nrows) continue;
@@ -762,7 +767,7 @@ static int save_as(const char* label, const char* default_ext) {
         strlcpy(name + strlen(name), default_ext, sizeof name - strlen(name));
     int r = write_file(name);
     if (r < 0) {
-        char m[COLS + 1];
+        char m[MAX_COLS + 1];
         snprintf(m, sizeof m, "Could not save %s: %s. Your text is still here.", name, save_error(r));
         strlcpy(message, m, sizeof message);
         return 0;
@@ -778,7 +783,7 @@ static int save(void) {
     if (!filename[0]) return save_as("Save as", ".lemur");
     int r = write_file(filename);
     if (r < 0) {
-        char m[COLS + 1];
+        char m[MAX_COLS + 1];
         snprintf(m, sizeof m, "Could not save %s: %s. Your text is still here.", filename, save_error(r));
         strlcpy(message, m, sizeof message);
         return 0;
@@ -805,7 +810,7 @@ static void open_file(void) {
     if (!prompt("Open", name, sizeof name, 0) || !name[0]) return;
     int r = load(name);
     if (r < 0) {
-        char m[COLS + 1];
+        char m[MAX_COLS + 1];
         snprintf(m, sizeof m, "Could not open %s: %s. The current document is kept.", name,
                  r == -EINVAL ? "it is not text" : r == -EFBIG ? "it is over 1 MB" : strerror(r));
         strlcpy(message, m, sizeof message);
@@ -858,7 +863,7 @@ static int search(uint32_t from, int forward) {
 }
 
 static void not_found(void) {
-    char m[COLS + 1];
+    char m[MAX_COLS + 1];
     snprintf(m, sizeof m, "%s%s", match_case ? "No exact match found for: " : "No match found for: ",
              find_term);
     strlcpy(message, m, sizeof message);
@@ -923,7 +928,7 @@ static void replace_dialog(void) {
             anchor = cur;
         } else if (k == 'a') {
             int count = replace_all();
-            char m[COLS + 1];
+            char m[MAX_COLS + 1];
             snprintf(m, sizeof m, "%d %s", count, count == 1 ? "occurrence matched." : "occurrences matched.");
             strlcpy(message, m, sizeof message);
             return;
@@ -1030,13 +1035,18 @@ int main(int argc, char** argv) {
         printf("octavo: the terminal is not ours (run it in the foreground)\n");
         return 1;
     }
+    tty_size_t z;
+    if (sys_tty_size(STDOUT_FILENO, &z) == 0 && z.cols >= 40 && z.rows >= 10) {
+        term_cols = MIN(z.cols, MAX_COLS);
+        term_rows = MIN(z.rows, MAX_ROWS);
+    }
     reset_view();
     if (argc > 1) {
         strlcpy(filename, argv[1], sizeof filename);
         int r = load(argv[1]);
         if (r == -ENOENT) set_message("New file: %s", filename);
         else if (r < 0) {
-            char m[COLS + 1];
+            char m[MAX_COLS + 1];
             snprintf(m, sizeof m, "Could not open %s: %s", argv[1],
                      r == -EINVAL ? "it is not text" : r == -EFBIG ? "it is over 1 MB" : strerror(r));
             strlcpy(message, m, sizeof message);

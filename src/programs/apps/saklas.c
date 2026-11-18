@@ -631,7 +631,9 @@ static void list_cands(const char* buf, int n) {
         if (w > width) width = w;
     }
     width += 2;
-    int cols = 78 / width;
+    tty_size_t z;
+    int room = sys_tty_size(STDOUT_FILENO, &z) == 0 ? z.cols - 2 : 78;
+    int cols = room / width;
     if (cols < 1) cols = 1;
     print("\n");
     for (int i = 0; i < ncand; i++) {

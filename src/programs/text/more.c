@@ -17,13 +17,14 @@
 // kills more, and the pipeline behind it, if the input has stalled.
 //
 // Counting screens means knowing what the console will do with each
-// byte, so `model` follows its rules: 80 columns, tabs to the next
-// multiple of 8, a line that fills the last column wrapping only when
-// another character comes, and escape sequences taking no room.
+// byte, so `model` follows its rules: the terminal's width (from
+// SYS_TTY_SIZE), tabs to the next multiple of 8, a line that fills the
+// last column wrapping only when another character comes, and escape
+// sequences taking no room.
 #include "ulib.h"
 
-#define COLS 80
-#define PAGE 24              // the 25th row is the prompt's
+static int COLS = 80;        // the terminal's size, once asked
+static uint32_t PAGE = 24;   // its last row is the prompt's
 
 static int usage(void) {
     dprintf(STDERR_FILENO, "usage: more [FILE...]\n");
@@ -37,7 +38,7 @@ static uint32_t on;
 
 static int col, pending, esc;  // the console, as far as we can tell
 static uint32_t rows;          // lines started since the last prompt
-static uint32_t allowance = PAGE;
+static uint32_t allowance = 24;  // PAGE, until the first prompt
 static uint32_t shown, size;   // bytes of this file shown; its size, 0 if unknown
 
 static void flush(void) {
@@ -199,6 +200,11 @@ int main(int argc, char** argv) {
     if (sys_fdtype(STDOUT_FILENO) == FDTYPE_TTY) {
         tty = sys_open(DEV_TTY, O_RDONLY);
         paging = tty >= 0;
+        tty_size_t z;
+        if (sys_tty_size(STDOUT_FILENO, &z) == 0 && z.cols > 8 && z.rows > 2) {
+            COLS = z.cols;
+            PAGE = allowance = (uint32_t)z.rows - 1;
+        }
     }
 
     int files = argc - a, bad = 0;

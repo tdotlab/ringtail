@@ -79,8 +79,10 @@ TEST_PROGRAM_BINS := $(TEST_PROGRAMS:%=$(BUILD)/test-programs/%)
 DISK := $(BUILD)/disk.img
 TEST_DISK := $(BUILD)/test-disk.img
 ISO := $(BUILD)/ringtail.iso
+# The same kernel, booted in VGA text mode: for testing the fallback.
+TEXT_ISO := $(BUILD)/ringtail-text.iso
 
-.PHONY: all kernel programs disk test-disk iso run run-serial test test-host test-qemu clean FORCE
+.PHONY: all kernel programs disk test-disk iso text-iso run run-serial test test-host test-qemu clean FORCE
 all: iso disk
 
 kernel: $(KERNEL)
@@ -147,11 +149,25 @@ $(TEST_DISK): $(PROGRAM_BINS) $(TEST_PROGRAM_BINS) disk/welcome.txt disk/roots.p
 	    SH:$(BUILD)/programs/saklas \
 	    $(foreach p,$(TEST_PROGRAMS),$(call upper,$(p)):$(BUILD)/test-programs/$(p))
 
+# GRUB sets up the framebuffer the kernel's multiboot header asks for.
+# gfxpayload=text makes it leave the screen in VGA text mode instead; it
+# has to come after the multiboot command, which sets gfxpayload from
+# the header.
+# $(call make_iso,dir,extra grub.cfg line)
+define make_iso
+	@mkdir -p $(1)/boot/grub
+	cp $(KERNEL) $(1)/boot/ringtail.bin
+	printf 'set timeout=0\nset default=0\ninsmod all_video\nmenuentry "RingTail" {\n  multiboot /boot/ringtail.bin\n$(2)  boot\n}\n' > $(1)/boot/grub/grub.cfg
+	grub-mkrescue -o $@ $(1) 2>/dev/null
+endef
+
 $(ISO): $(KERNEL)
-	@mkdir -p $(BUILD)/isodir/boot/grub
-	cp $(KERNEL) $(BUILD)/isodir/boot/ringtail.bin
-	printf 'set timeout=0\nset default=0\nmenuentry "RingTail" {\n  multiboot /boot/ringtail.bin\n  boot\n}\n' > $(BUILD)/isodir/boot/grub/grub.cfg
-	grub-mkrescue -o $@ $(BUILD)/isodir 2>/dev/null
+	$(call make_iso,$(BUILD)/isodir,)
+
+text-iso: $(TEXT_ISO)
+
+$(TEXT_ISO): $(KERNEL)
+	$(call make_iso,$(BUILD)/isodir-text,  set gfxpayload=text\n)
 
 QEMU_ARGS := -cdrom $(ISO) -drive file=$(DISK),format=raw,if=ide,index=0 -boot d -m 64
 
@@ -167,8 +183,8 @@ test: test-host test-qemu
 test-host:
 	$(MAKE) -C tests run
 
-test-qemu: all $(TEST_DISK)
-	$(PYTHON) tests/qemu_test.py --qemu $(QEMU) --iso $(ISO) --disk $(TEST_DISK)
+test-qemu: all $(TEST_DISK) $(TEXT_ISO)
+	$(PYTHON) tests/qemu_test.py --qemu $(QEMU) --iso $(ISO) --text-iso $(TEXT_ISO) --kernel $(KERNEL) --disk $(TEST_DISK)
 
 clean:
 	rm -rf build

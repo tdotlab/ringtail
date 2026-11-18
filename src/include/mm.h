@@ -74,8 +74,8 @@ void frame_stats(uint32_t* total, uint32_t* free);
 //                  text and read-only data read-only here too
 //   KERNEL_VMA + 1 MB   the kernel image (-2 GB): text executable and
 //                  read-only, read-only data, then data and .bss
-//   MMIO_WINDOW    device registers (mmio_map, -1 GB): kernel only,
-//                  uncached
+//   MMIO_WINDOW    device registers and the framebuffer (mmio_map,
+//                  -1 GB): kernel only, uncached or write-combining
 // The upper half is the same in every address space (as_create copies
 // its PML4 entries, and the tables under them never change places).
 #define USER_BASE        0x40000000u
@@ -103,13 +103,16 @@ uintptr_t kernel_pd(void);
 // fault (the panic backtrace).
 int kernel_mapped(uintptr_t va);
 
-// Device registers. Kernel only, uncached, mapped at boot before any
-// program starts (the window's page table is shared by every address
-// space). Returns the virtual address of phys, or 0 when the window
-// (MMIO_WINDOW_SIZE in all) is full.
+// Device memory. Kernel only, mapped at boot before any program starts
+// (the window's page tables are shared by every address space).
+// Returns the virtual address of phys, or 0 when the window
+// (MMIO_WINDOW_SIZE in all, room for a framebuffer of 1920x1200 at 32
+// bits and the registers) is full. mmio_map is uncached, for
+// registers; mmio_map_wc is write-combining, for a framebuffer.
 #define MMIO_WINDOW      0xFFFFFFFFC0000000ull
-#define MMIO_WINDOW_SIZE 0x00400000u
+#define MMIO_WINDOW_SIZE 0x02000000u
 void* mmio_map(uintptr_t phys, uint32_t size);
+void* mmio_map_wc(uintptr_t phys, uint32_t size);
 
 // An address space is named by the physical address of its top-level
 // table (the PML4): what goes in CR3.
