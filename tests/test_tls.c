@@ -31,7 +31,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -404,7 +403,9 @@ static int sock_read(void* ctx, void* buf, uint32_t n) {
 static int sock_write(void* ctx, const void* buf, uint32_t n) {
     const uint8_t* p = buf;
     while (n) {
-        ssize_t w = write(*(int*)ctx, p, n);
+        // MSG_NOSIGNAL: a server that hangs up must not kill the test with
+        // SIGPIPE. (No <signal.h> here: -I../src/include finds the kernel's.)
+        ssize_t w = send(*(int*)ctx, p, n, MSG_NOSIGNAL);
         if (w <= 0) break;  // the server has gone: carry on as a replay would
         p += w;
         n -= (uint32_t)w;
@@ -421,7 +422,6 @@ static int live_random(void* ctx, void* out, uint32_t n) { return fake_random(&(
 
 static int live(int port, uint32_t seed, const char* host, const char* req_hex, const char* again_hex,
                 const char* verdict) {
-    signal(SIGPIPE, SIG_IGN);
     live_t l = { socket(AF_INET, SOCK_STREAM, 0), { seed, 0 } };
     struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
