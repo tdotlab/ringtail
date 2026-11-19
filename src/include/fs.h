@@ -53,11 +53,14 @@ int diskfs_name_ok(const char* name);
 
 // ---- File descriptors ----
 
-typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W, FD_SOCKET, FD_TCP } fd_kind_t;
+typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W, FD_SOCKET, FD_TCP,
+               FD_CHAN, FD_CHAN_LISTEN } fd_kind_t;
 
 struct pipe;
 struct socket;
 struct tcp;
+struct chan;
+struct chan_listener;
 // An open file: what open, pipe, socket and accept make, and what a
 // task's descriptors point at. Copies of a descriptor, by dup2 or
 // handed to a child by spawn, point at the same one, so they share its
@@ -73,6 +76,9 @@ typedef struct ofile {
     struct pipe* pipe;   // FD_PIPE_R, FD_PIPE_W
     struct socket* sock; // FD_SOCKET (UDP)
     struct tcp* tcp;     // FD_TCP
+    struct chan* chan;   // FD_CHAN
+    int side;            // FD_CHAN: 0 connected, 1 accepted
+    struct chan_listener* listener;  // FD_CHAN_LISTEN
 } ofile_t;
 
 // Pipes (pipe.c). pipe_new returns a pipe with one reader and one
@@ -85,6 +91,19 @@ void pipe_unref(struct pipe* p, int writer);  // frees it with the last end
 int pipe_read(struct pipe* p, uint8_t* kbuf, uint32_t len);
 int pipe_write(struct pipe* p, const uint8_t* kbuf, uint32_t len);
 int pipe_events(struct pipe* p, int writer);  // POLL*
+
+// Channels (chan.c). The read and write calls take kernel buffers and
+// may block; chan_accept waits as SYS_ACCEPT says.
+int chan_name_ok(const char* name);
+int chan_listen(const char* name, struct chan_listener** out);
+void chan_unlisten(struct chan_listener* l);  // closes the connections still waiting
+int chan_connect(const char* name, struct chan** out);
+int chan_accept(struct chan_listener* l, struct chan** out, int timeout_ms);
+void chan_close(struct chan* c, int side);  // frees it with the second side
+int chan_read(struct chan* c, int side, uint8_t* kbuf, uint32_t len);
+int chan_write(struct chan* c, int side, const uint8_t* kbuf, uint32_t len);
+int chan_events(struct chan* c, int side);
+int chan_listener_events(struct chan_listener* l);
 
 // SYS_POLLFD sleeps until something it may be waiting for changes:
 // whatever makes a descriptor readable or writable calls poll_notify
@@ -113,6 +132,8 @@ int file_socket(int type);           // a new socket's descriptor, TCP or UDP
 int file_get_socket(int fd, struct socket** s);
 int file_get_tcp(int fd, struct tcp** c);
 int file_accept(int fd, sock_addr_t* uaddr, int timeout_ms);  // the new connection's fd
+int file_chan_listen(const char* uname);
+int file_chan_connect(const char* uname);
 int file_pollfd(pollfd_t* ufds, uint32_t n, int timeout_ms);
 int file_fdtype(int fd);             // FDTYPE_*
 // Path calls for the current task, relative to its directory. These

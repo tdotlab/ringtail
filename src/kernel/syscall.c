@@ -277,8 +277,18 @@ static long sys_gfx_font(uintptr_t ubuf, uintptr_t b, uintptr_t c) {
 
 // ---- Input ----
 
+// The mouse packet count when the display's owner last asked where the
+// mouse is: one after it means POLLFD_INPUT is readable.
+static uint32_t mouse_seen;
+
+int gfx_input_events(void) {
+    if (!is_owner()) return 0;
+    return keyboard_raw_pending() || mouse_seq() != mouse_seen ? POLLIN : 0;
+}
+
 static long sys_mouse_state(uintptr_t uarg, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
+    if (is_owner()) mouse_seen = mouse_seq();  // first, so a packet after it counts
     mouse_state_t m;
     gfx_mouse(&m.x, &m.y, &m.buttons);
     return copy_to_user((void*)uarg, &m, sizeof m);
@@ -410,6 +420,47 @@ static long sys_fdtype(uintptr_t fd, uintptr_t b, uintptr_t c) {
     return file_fdtype((int)fd);
 }
 
+// Shared memory (abi.h). The mapping is made before the copy out; a
+// bad pointer undoes it, so the caller is never left holding memory it
+// was not told about.
+static long shm_reply(long r, const shm_info_t* info, uintptr_t uinfo) {
+    if (r < 0) return r;
+    if (copy_to_user((void*)uinfo, info, sizeof *info)) {
+        shm_unmap((uintptr_t)info->addr);
+        return -EFAULT;
+    }
+    return r;
+}
+
+static long sys_shm_new(uintptr_t size, uintptr_t uinfo, uintptr_t c) {
+    (void)c;
+    if (size > SHM_MAX) return -EINVAL;
+    shm_info_t info;
+    return shm_reply(shm_new((uint32_t)size, &info), &info, uinfo);
+}
+
+static long sys_shm_map(uintptr_t id, uintptr_t uinfo, uintptr_t c) {
+    (void)c;
+    if (id > 0xFFFFFFFFu) return -ENOENT;
+    shm_info_t info;
+    return shm_reply(shm_map((uint32_t)id, &info), &info, uinfo);
+}
+
+static long sys_shm_unmap(uintptr_t addr, uintptr_t b, uintptr_t c) {
+    (void)b; (void)c;
+    return shm_unmap(addr);
+}
+
+static long sys_chan_listen(uintptr_t uname, uintptr_t b, uintptr_t c) {
+    (void)b; (void)c;
+    return file_chan_listen((const char*)uname);
+}
+
+static long sys_chan_connect(uintptr_t uname, uintptr_t b, uintptr_t c) {
+    (void)b; (void)c;
+    return file_chan_connect((const char*)uname);
+}
+
 static long sys_tty_size(uintptr_t fd, uintptr_t uarg, uintptr_t c) {
     (void)c;
     int t = file_fdtype((int)fd);
@@ -520,9 +571,10 @@ static long sys_spawn(uintptr_t uname, uintptr_t uargv, uintptr_t uopts) {
     char name[PATH_MAX];
     int n = copy_path(name, uname);
     if (n < 0) return n;
-    // While the caller holds the display the child could not print
-    // anything visible, and could not take the display either.
-    if (is_owner()) return -EBUSY;
+    // The display's owner may start programs (a window server starts
+    // its clients). What they print goes to the console, unseen until
+    // the display is let go, and to the serial port; they cannot take
+    // the display while it is held.
     spawn_opts_t o = { 0, 0, { -1, -1, -1 }, -1 };
     if (uopts && copy_from_user(&o, (const void*)uopts, sizeof o)) return -EFAULT;
     int job = spawn_job(&o);
@@ -748,6 +800,11 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_GFX_INFO] = sys_gfx_info,
     [SYS_GFX_PUT] = sys_gfx_put,
     [SYS_TTY_SIZE] = sys_tty_size,
+    [SYS_SHM_NEW] = sys_shm_new,
+    [SYS_SHM_MAP] = sys_shm_map,
+    [SYS_SHM_UNMAP] = sys_shm_unmap,
+    [SYS_CHAN_LISTEN] = sys_chan_listen,
+    [SYS_CHAN_CONNECT] = sys_chan_connect,
 };
 
 void syscall_handle(regs_t* r) {

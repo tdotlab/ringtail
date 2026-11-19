@@ -37,6 +37,13 @@ Every task ends the same way, or it is not done:
 
 ## Things that bit before
 
+- Host tests built with `-I../src/include` get the kernel's headers
+  for any name the two share: `<signal.h>` there is the kernel's, which
+  wants `arch/regs.h`. `test_tls` included it and stopped building when
+  signals came in, and nobody saw for three days because `make` kept
+  the old binary. A host test must not include a system header that
+  has a namesake in `src/include`; `make -C tests clean` before a full
+  run finds such breaks.
 - The disk takes DOS 8.3 names only (`tools/mkdisk.py` refuses the rest),
   so a program's name is at most 8 characters.
 - Older error cases in `gen_text_cases.py` end in `| cat`, from before
@@ -370,19 +377,18 @@ to change hands when a job stops as well as when it ends.
 **Clock discipline and better time.** Several servers and a choice between
 them, slewing instead of stepping, NTS. Each is a trust and design call.
 
-**The desktop, stages 2 to 4.** Stage 1 is done: GRUB's 1024x768
-framebuffer, the console drawn in it (`src/drivers/console.c`, the
-`console` kernel task), native graphics at full size (`GFX_NATIVE`,
-`SYS_GFX_PUT`, `src/drivers/gfx.c`) and kenoma rebuilt on it. What is left,
-in order, each one usable on its own:
+**The desktop, stages 3 and 4.** Stages 1 and 2 are done. Stage 1:
+GRUB's 1024x768 framebuffer, the console drawn in it
+(`src/drivers/console.c`, the `console` kernel task), native graphics at
+full size (`GFX_NATIVE`, `SYS_GFX_PUT`, `src/drivers/gfx.c`) and kenoma
+rebuilt on it. Stage 2: shared memory (`SYS_SHM_*`, `src/mm/shm.c`),
+named message channels (`SYS_CHAN_*`, `src/fs/chan.c`), the
+scancode translation shared by the keyboard driver and programs
+(`src/lib/keymap.c`), and pleroma, the window server, with its protocol
+(`lib/wsys.h`), client library (`lib/win.c`), window manager core
+(`lib/wm.c`) and two clients, wclock and wpaint. What is left, in
+order, each one usable on its own:
 
-- A window server. One user program owns the screen (it already can, with
-  `GFX_NATIVE`) and composites windows; clients draw into memory they
-  share with it and send it damage rectangles over a pipe or a socket.
-  Shared memory is the new kernel piece: a call that maps the same frames
-  into two address spaces, freed when both let go. Input goes to the
-  server, which routes keys to the focused window and the pointer to the
-  one under it.
 - Pseudo-terminals and a terminal window. A pty pair in the kernel (the
   tty's line discipline on one side, a plain pipe-like end on the other),
   `tty_size` answering per pty, SIGWINCH on resize, then a terminal
@@ -390,12 +396,15 @@ in order, each one usable on its own:
   with the console font. After that the shell, Octavo and gauge run in
   windows unchanged.
 - A small toolkit (buttons, lists, text fields, menus) on the shared
-  buffers, a taskbar, and kenoma's launcher as a window-server client.
-  Then a file browser and a settings window.
+  buffers, and kenoma's launcher as a window-server client. Then a file
+  browser and a settings window.
 
-Decide the window protocol before writing either side: who owns damage
-tracking, whether clients may resize themselves, and what happens when
-a client stops answering.
+Smaller things the window system lacks: resizing (a CONFIGURE event
+and a client remapping bigger memory), minimising to the bar, the
+pointer leaving a window (no event says so), a pointer shape per
+window, and a way for the menu to list more than its three fixed
+entries. pleroma runs in mode 13h too but is cramped at 320x200; it
+could refuse below some size.
 
 **fork/exec**, **finer kernel locks**, **IPv6**, and **TLS session resumption**: each one
 reaches into the scheduler, memory, the syscall interface or the protocol

@@ -356,6 +356,168 @@ def kenoma_tests(m, t):
     t.check("Esc leaves kenoma and the console returns", m.console_shown())
 
 
+def find_colour(shot, rgb):
+    """The box (x0, y0, x1, y1) from the first to the last pixel of a
+    colour, or None: for a solid rectangle, its corners."""
+    w, h, px = shot
+    b = bytes(rgb)
+    first = px.find(b)
+    while first >= 0 and first % 3:  # a match must start on a pixel
+        first = px.find(b, first + 1)
+    if first < 0:
+        return None
+    last = px.rfind(b)
+    while last % 3:
+        last = px.rfind(b, 0, last + 2)
+    return first // 3 % w, first // 3 // w, last // 3 % w, last // 3 // w
+
+
+def pointer_to(m, x, y):
+    """Like kenoma_click without the click, in steps small enough that
+    none is lost."""
+    for _ in range(10):
+        m.monitor_cmd("mouse_move -250 -250")
+        time.sleep(0.03)
+    while x or y:
+        dx, dy = max(-100, min(100, x)), max(-100, min(100, y))
+        m.monitor_cmd(f"mouse_move {dx} {dy}")
+        time.sleep(0.05)
+        x, y = x - dx, y - dy
+    time.sleep(0.2)
+
+
+def buttons(m, *states):
+    for b in states:
+        m.monitor_cmd(f"mouse_button {b}")
+        time.sleep(0.2)
+
+
+WT_GREEN, WT_PURPLE = (0x00, 0xA0, 0x50), (0x50, 0x00, 0xA0)  # wintest's colours
+PAINT_YELLOW = (0xF1, 0xC4, 0x0F)  # one of wpaint's swatches
+
+
+def pleroma_tests(m, t):
+    """The window system: pleroma with wintest as its client, which
+    prints each event it gets; then the menu's programs, closing,
+    ending a client that will not close, and leaving."""
+    out = m.run("run wintest none")
+    t.check("with no window server, a window is refused", "wintest: all" in out and "FAIL" not in out, out)
+    m.send("run pleroma wintest\r")
+    try:
+        out = m.expect(rb"wintest: up", 20)
+    except TimeoutError as e:
+        out = str(e)
+    t.check("pleroma starts wintest, which checks what the server refuses and opens a window",
+            "wintest: all 9 checks passed" in out, out)
+    m.expect(rb"wintest: focus 1", 5)
+    shot = m.screenshot()
+    box = find_colour(shot, WT_GREEN)
+    t.check("the desktop has its bar, and the window its pixels",
+            m.pixel(500, 3, shot) == KENOMA_BAR and box and (box[2] - box[0], box[3] - box[1]) == (119, 79),
+            f"bar {m.pixel(500, 3, shot)}, window {box}")
+    if not box:
+        box = (0, 40, 119, 119)
+    x0, y0 = box[0], box[1]
+
+    pointer_to(m, x0 + 10, y0 + 20)
+    out = m.expect(rb"wintest: mouse 10 20 0\r\n", 5)
+    t.check("the pointer over a window is told to it, in its own coordinates", True, out)
+    buttons(m, 1, 0)
+    out = m.expect(rb"wintest: mouse 10 20 0\r\n", 5)
+    t.check("and so are its buttons", "wintest: mouse 10 20 1" in out, out)
+    buttons(m, 1)
+    m.monitor_cmd("mouse_move -50 0")
+    time.sleep(0.2)
+    buttons(m, 0)
+    out = m.expect(rb"wintest: mouse -40 20 0\r\n", 5)
+    t.check("a press inside holds the pointer to the window until the buttons are up",
+            "wintest: mouse -40 20 1" in out, out)
+
+    m.monitor_cmd("sendkey a")
+    out = m.expect(rb"wintest: key 1e 0 0 0\r\n", 5)
+    t.check("keys go to the focused window, pressed and let go, with what they type",
+            "wintest: key 1e 1 0 97" in out, out)
+    m.monitor_cmd("sendkey f")
+    m.expect(rb"wintest: key 21 0 0 0\r\n", 5)
+    time.sleep(0.5)
+    box2 = find_colour(m.screenshot(), WT_PURPLE)
+    t.check("what a client draws and says changed is shown", box2 == box, f"{box2} after {box}")
+
+    pointer_to(m, x0 + 20, y0 - 12)  # the title bar
+    buttons(m, 1)
+    m.monitor_cmd("mouse_move 100 50")
+    time.sleep(0.2)
+    buttons(m, 0)
+    time.sleep(0.3)
+    box3 = find_colour(m.screenshot(), WT_PURPLE)
+    t.check("dragging the title bar moves the window",
+            box3 == (box[0] + 100, box[1] + 50, box[2] + 100, box[3] + 50), f"{box3} after {box}")
+    x0, y0 = x0 + 100, y0 + 50
+
+    pointer_to(m, 600, 300)
+    buttons(m, 2, 0)  # right on the desktop: the menu, its corner here
+    shot = m.screenshot()
+    t.check("a right click on the desktop opens the menu there",
+            m.pixel(700, 340, shot) == (0xF4, 0xF5, 0xF7), m.pixel(700, 340, shot))
+    pointer_to(m, 620, 313)  # its first item
+    buttons(m, 1, 0)
+    out = m.expect(rb"wintest: focus 0\r\n", 10)
+    time.sleep(0.5)
+    shot = m.screenshot()
+    # The third window placed, so the cascade's third place: its title
+    # frame at 32 + 28 * 2 across and 28 + 16 + 28 * 2 down; inside its border.
+    t.check("Clock from the menu opens a window on top, which takes the keys",
+            m.pixel(91, 113, shot) == (0x2E, 0x5C, 0x9A), m.pixel(91, 113, shot))
+
+    pointer_to(m, 20, 12)  # the bar's menu button
+    buttons(m, 1, 0)
+    pointer_to(m, 20, 28 + 2 + 22 + 11)  # Paint, the second item
+    buttons(m, 1, 0)
+    time.sleep(2)
+    sw = find_colour(m.screenshot(), PAINT_YELLOW)
+    t.check("Paint from the bar's menu", sw is not None, sw)
+    if sw:
+        ox, oy = sw[0] - 88, sw[1] - 2  # its content's corner
+        pointer_to(m, ox + 100, oy + 100)
+        buttons(m, 1)
+        m.monitor_cmd("mouse_move 100 0")
+        time.sleep(0.3)
+        buttons(m, 0)
+        time.sleep(0.5)
+        shot = m.screenshot()
+        t.check("draws where the pointer is dragged", m.pixel(ox + 150, oy + 100, shot) == (0x1C, 0x24, 0x30),
+                m.pixel(ox + 150, oy + 100, shot))
+        pointer_to(m, ox + 420 - 12, oy - 12)  # its close button
+        buttons(m, 1, 0)
+        time.sleep(1.5)
+        t.check("its close button closes it", find_colour(m.screenshot(), PAINT_YELLOW) is None)
+
+    pointer_to(m, 104 + 70, 14)  # wintest's button on the bar
+    buttons(m, 1, 0)
+    m.expect(rb"wintest: focus 1\r\n", 5)
+    m.monitor_cmd("sendkey s")  # it will not close now
+    m.expect(rb"wintest: key 1f 0 0 0\r\n", 5)
+    pointer_to(m, x0 + 119 - 9, y0 - 12)
+    buttons(m, 1, 0)
+    m.expect(rb"wintest: close ignored\r\n", 5)
+    buttons(m, 1, 0)
+    m.expect(rb"wintest: close ignored\r\n", 5)
+    time.sleep(0.5)
+    t.check("a window asked twice at once to close is only asked",
+            find_colour(m.screenshot(), WT_PURPLE) is not None)
+    time.sleep(2)
+    buttons(m, 1, 0)
+    time.sleep(1)
+    t.check("but asked again two seconds on, a program pleroma started is ended",
+            find_colour(m.screenshot(), WT_PURPLE) is None and b"wintest: close" not in m.buf)
+
+    m.monitor_cmd("sendkey ctrl-alt-backspace")
+    m.expect(PROMPT, 10)
+    t.check("Ctrl+Alt+Backspace leaves pleroma and the console returns", m.console_shown())
+    out = m.run("run wintest none")
+    t.check("and the window server's name is free again", "wintest: all" in out and "FAIL" not in out, out)
+
+
 def card_interrupts(net_out):
     got = re.search(r", irq \d+ \((\d+) interrupts\)", net_out)
     return int(got.group(1)) if got else -1
@@ -412,7 +574,7 @@ def tests(m, t):
     t.check("and the new shell works", "0.28.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn", "fdshare", "sigtest",
-                 "udptest", "tcptest", "rndtest", "sysregs"]:
+                 "udptest", "tcptest", "rndtest", "sysregs", "shmtest", "chantest"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")
@@ -1130,6 +1292,7 @@ def tests(m, t):
     t.check("Ctrl+C quits gauge too, leaving a usable terminal", "after ctrl-c" in out, out)
 
     kenoma_tests(m, t)
+    pleroma_tests(m, t)
 
     out = m.run("mem")
     t.check("mem", "Frames:" in out and "Heap:" in out, out)

@@ -51,6 +51,7 @@ typedef struct task {
     void* arg;
     uintptr_t user_ip, user_sp;
     uintptr_t brk_start, brk;  // user heap: from the end of the image to the break
+    struct shm_map { struct shm* obj; uintptr_t va; } shm[SHM_PER_TASK];  // obj 0: a free slot
 
     char name[TASK_NAME_MAX];
     ofile_t* fds[MAX_FDS];  // 0 where closed

@@ -75,7 +75,12 @@
 #define SYS_GFX_INFO    65  // (gfx_info_t*)           -> 0; the size native graphics draws at
 #define SYS_GFX_PUT     66  // (const gfx_put_t*)      -> 0; native only: pixels to the screen
 #define SYS_TTY_SIZE    67  // (fd, tty_size_t*)       -> 0, or -ENOTTY if fd is not the terminal
-#define NUM_SYSCALLS    68
+#define SYS_SHM_NEW     68  // (size, shm_info_t*)     -> id; the new memory is mapped, zeroed
+#define SYS_SHM_MAP     69  // (id, shm_info_t*)       -> 0; maps memory another task made
+#define SYS_SHM_UNMAP   70  // (addr)                  -> 0
+#define SYS_CHAN_LISTEN 71  // (name)                  -> fd that accept takes connections on
+#define SYS_CHAN_CONNECT 72 // (name)                  -> fd of a new channel to the listener
+#define NUM_SYSCALLS    73
 
 // Signals, numbered as on Linux. Each one's default action is to end
 // the program, which then reports EXIT_SIGNAL(sig). A program can
@@ -316,6 +321,42 @@ typedef struct { int x, y, w, h, stride, pad; const unsigned* pixels; } gfx_put_
 // The terminal's size in characters.
 typedef struct { int cols, rows; } tty_size_t;
 
+// Shared memory. SYS_SHM_NEW makes size bytes (rounded up to pages, at
+// most SHM_MAX) of zeroed memory, maps it into the caller and returns
+// its id; SYS_SHM_MAP maps memory with that id into another task (or
+// the same one again). Both fill in the info. The memory lives as long
+// as some task has it mapped: SYS_SHM_UNMAP with the address a map
+// gave, or exiting, lets go. Mappings go in their own part of the
+// address space, from SHM_BASE up; a task has at most SHM_PER_TASK.
+// Ids are never reused. Errors: -EINVAL (size 0 or over SHM_MAX, an
+// address no map gave), -ENOENT (no memory with that id), -EMFILE (too
+// many mappings), -ENOMEM.
+#define SHM_MAX      (16u * 1024 * 1024)
+#define SHM_PER_TASK 16
+#define SHM_BASE     0x80000000u
+typedef struct { unsigned id, size; void* addr; } shm_info_t;
+
+// Channels: two-way message pipes between tasks, found by name.
+// SYS_CHAN_LISTEN takes a name (1 to CHAN_NAME_MAX characters, any but
+// '/') and returns a descriptor that SYS_ACCEPT takes connections on;
+// the name is free again when that descriptor closes. -EADDRINUSE if
+// someone already listens there. SYS_CHAN_CONNECT returns a channel to
+// the listener, which accept returns the other end of; -ECONNREFUSED if
+// nobody listens or CHAN_BACKLOG connections are already waiting.
+// A channel carries messages, not a byte stream: a write of up to
+// CHAN_MSG_MAX bytes is one message (-EMSGSIZE if larger), and a read
+// returns one whole message (a read too small for it gets the start,
+// and the rest is dropped). Each direction holds CHAN_QUEUE messages; a
+// write waits while it is full. When the other end is gone, a read
+// returns 0 once the messages that came are read, and a write fails
+// with -EPIPE (no SIGPIPE). Poll: POLLIN for a message or the other end
+// gone, POLLOUT for room for one message, POLLHUP for the other end
+// gone. A listener is POLLIN while a connection waits.
+#define CHAN_NAME_MAX 31
+#define CHAN_MSG_MAX  256
+#define CHAN_QUEUE    16
+#define CHAN_BACKLOG  8
+
 // SYS_PING: send one ICMP echo request to ip (host order, so 10.0.2.2
 // is 0x0A000202) carrying `size` bytes of data (0 to PING_MAX_SIZE),
 // and wait up to timeout_ms (at most 10 seconds) for the reply. On
@@ -389,7 +430,11 @@ typedef struct { unsigned ip; int port; } sock_addr_t;
 // not; a negative fd is skipped. The terminal is readable once a key
 // is waiting for a program in the foreground (in cooked mode a read
 // still waits for the whole line). POLLOUT on a TCP connection means
-// a write of 4 KB would not wait.
+// a write of 4 KB would not wait. An entry whose fd is POLLFD_INPUT is
+// the display's input: POLLIN for its owner while a scancode waits for
+// SYS_KEY_GET or the mouse has changed since it last asked
+// SYS_MOUSE_STATE; never for anyone else.
+#define POLLFD_INPUT (-2)
 #define POLLIN   1
 #define POLLOUT  4
 #define POLLERR  8
@@ -403,6 +448,7 @@ typedef struct { int fd, events, revents; } pollfd_t;
 #define FDTYPE_PIPE 3
 #define FDTYPE_UDP  4
 #define FDTYPE_TCP  5
+#define FDTYPE_CHAN 6  // a channel, or a channel listener
 
 // SYS_RANDOM: bytes nobody can predict, for keys and anything else an
 // attacker must not guess. They come from the kernel's generator, which

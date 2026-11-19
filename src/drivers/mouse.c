@@ -8,6 +8,7 @@
 #include "drivers.h"
 #include "tty.h"
 #include "task.h"
+#include "fs.h"  // poll_notify
 #include "ringtail/abi.h"
 
 #define KBC_STATUS 0x64
@@ -20,6 +21,7 @@ static int range_w = GFX_WIDTH, range_h = GFX_HEIGHT;
 static uint8_t pkt[3];
 static int pkt_idx;
 static uint32_t last_byte_tick;
+static volatile uint32_t seq;  // packets so far
 
 static int wait_input_empty(void) {
     for (int i = 0; i < KBC_TIMEOUT; i++)
@@ -81,8 +83,12 @@ static void mouse_irq(void) {
         int dy = pkt[2] - ((pkt[0] & 0x20) ? 256 : 0);
         my = MAX(0, MIN(range_h - 1, my - dy));  // PS/2 Y grows upwards
     }
+    seq++;
     task_wakeup(&input_chan);
+    if (gfx_owner() >= 0) poll_notify();  // POLLFD_INPUT
 }
+
+uint32_t mouse_seq(void) { return seq; }
 
 int mouse_init(void) {
     uint8_t cfg, b;

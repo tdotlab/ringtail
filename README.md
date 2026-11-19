@@ -148,6 +148,16 @@ where they differ from RFC 5280), the generator says why. A mutation
 sweep (every early return in `x509.c` disabled in turn) found the
 cases that were missing. It also reads every root in `disk/roots.pem`.
 
+`tests/test_keymap.c` checks the scancode translation that the keyboard
+driver and the window server share (`src/lib/keymap.c`): Shift, Caps
+Lock, Ctrl and Alt, the E0 keys and the keypad, and the fake Shifts
+some keyboards send around them. `tests/test_wm.c` checks pleroma's
+window manager (`src/programs/lib/wm.c`) on a 640x480 frame: where
+windows go and how far they can be dragged, what is under each point,
+how damage rectangles merge, that drawing one touches nothing outside
+it, stacking and shadows, the bar's buttons and the menu. A mutation
+sweep checked that both notice when the code they cover is broken.
+
 `tests/qemu_test.py` boots the real ISO in QEMU, on a machine with two
 CPUs, and drives the shell over a serial socket. It uses `build/x86_64/test-disk.img`, which adds the test
 programs in `tests/programs` to the normal disk. It checks the boot
@@ -162,7 +172,12 @@ the QEMU monitor), an editing session in Octavo, file and directory commands,
 the timer rate (against the host's clock), the network card's
 interrupts,
 the switch into graphics mode and back (on the framebuffer and,
-from the text ISO, in VGA text mode and mode 13h), reboot persistence and poweroff,
+from the text ISO, in VGA text mode and mode 13h), the window system
+(pleroma with a test client that prints every event it gets: the
+pointer, buttons and keys reaching the right window, a drag, the menu,
+Clock and Paint, closing, and ending a client that will not close,
+all read back from screenshots), shared memory and channels (`shmtest`,
+`chantest`), reboot persistence and poweroff,
 and the network through QEMU's user network: DHCP at boot, `ping`,
 loopback, UDP and TCP sockets (`udptest`, `tcptest`), the random number
 generator (`rndtest`), `fetch` and `nc`
@@ -332,6 +347,32 @@ original, as in POSIX: they share one offset, so a program and its
 parent writing to the same redirected file each write after the other,
 and the file stays open until the last copy is closed.
 
+Shared memory and channels: `shm_new` makes zeroed memory (up to 16 MB)
+and maps it, and any task that knows its id can map the same frames
+with `shm_map`; the memory lasts until the last task lets go or exits.
+Channels are two-way message pipes found by name: a server
+`chan_listen`s on a name and `accept`s, a client `chan_connect`s, and
+each write of up to 256 bytes arrives as one message. Both ends work
+with `pollfd`, `read`, `write` and `close` like any descriptor, and a
+display owner can wait on its keys and mouse in the same `pollfd`
+(`POLLFD_INPUT`).
+
+Windows: `pleroma` is the window server, an ordinary program that owns
+the display. A client makes shared memory for its pixels, connects to
+the channel `pleroma`, asks for a window and then draws whenever it
+likes, telling the server which rectangle changed; the server copies
+from the client's memory when it draws that part of the screen, and
+sends the client its pointer, button, key, focus and close events. The
+protocol is `src/programs/lib/wsys.h`, and `win.c` wraps it (open,
+draw, say what changed, read events). The server never waits on a
+client: when a client's queue is full, its events are dropped. Only the
+parts of the screen that changed are drawn and copied out. A client
+asked to close that has not gone two seconds later is ended with
+SIGKILL when the close button is pressed again, if pleroma started it.
+The display's owner may start programs (that is how pleroma starts
+its clients), and their output goes to the serial port and to the
+console behind the desktop.
+
 Filesystem: FAT16 with subdirectories and Windows-style long names
 (VFAT). A name is up to 255 printable ASCII characters, none of
 `\ / : * ? " < > |`, not starting with a space or ending in a space or
@@ -493,16 +534,17 @@ src/arch       what differs between machines, one folder each (x86_64): the mult
                page tables, starting the other CPUs (smp.c, trampoline.asm), the saved
                register frame and FPU state (include/arch/)
 src/kernel     kernel_main, interrupts, tasks, syscalls, ELF loader, faults, power, random numbers
-src/mm         heap, physical frames and checked user copies
+src/mm         heap, physical frames, shared memory and checked user copies
 src/drivers    console (framebuffer, VGA text, serial), the 8x16 font, tty, keyboard, mouse, timer, ATA,
                graphics (gfx.c), PCI, e1000,
                ACPI tables and the APICs
 src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
-src/fs         FAT16 (diskfs.c) and file descriptors (file.c)
+src/fs         FAT16 (diskfs.c), file descriptors (file.c) and channels (chan.c)
 src/lib        string and printf subset, SHA-256, ChaCha20 and calendar dates, shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
-src/programs   user programs in folders, their C library (lib/: runtime, malloc, DNS, SNTP, TLS) and linker script
-  apps         the big interactive programs: saklas (the shell), kenoma, octavo, gauge
+src/programs   user programs in folders, their C library (lib/: runtime, malloc, DNS, SNTP, TLS, windows) and linker script
+  apps         the big interactive programs: saklas (the shell), kenoma, octavo, gauge,
+               pleroma (the window server) and its clients wclock and wpaint
   files        files and directories as things: ls, cp, mv, rm, mkdir, rmdir, touch, find, du, df, basename, dirname
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
@@ -578,6 +620,9 @@ Programs on the disk:
 | Program | What it does |
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
+| pleroma | The window system: a desktop with a bar (a menu, a button for each window, a clock) and windows that can be dragged by their title bars and closed. `run pleroma [PROGRAM...]` starts it with those programs in windows. Its menu (the RingTail button, or a right click on the desktop) starts Clock and Paint, or leaves; so does Ctrl+Alt+Backspace. |
+| wclock | An analog clock in a window, for pleroma. |
+| wpaint | Painting in a window, for pleroma: drag with the left button to draw, the right to erase; pick a colour from the strip or with 1 to 8, and c or Clear clears. |
 | kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
 | saklas | The command line (the shell). init starts it at boot and again whenever it ends. It is on the disk a second time as `sh`, the name scripts use. |
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
@@ -690,8 +735,10 @@ server, can set the clock to any time after the system was built. There is no
 are a small set (no siginfo, no SA_RESTART, so an interrupted call returns
 EINTR, no job control or SIGCHLD, and sockets do not send SIGPIPE). Only one CPU at a time runs in the kernel. The display is one
 1024x768 framebuffer that GRUB sets (or VGA text and mode 13h when it
-cannot); there is no mode setting after boot, no windows yet, and one
-program owns the graphics at a time. The network has no IPv6, and the resolver does not retry over
+cannot); there is no mode setting after boot, and one program owns the
+graphics at a time. Windows in pleroma cannot be resized or minimised,
+the shell and the other terminal programs do not run in a window yet,
+and kenoma is a separate desktop rather than a client of it. The network has no IPv6, and the resolver does not retry over
 TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already

@@ -131,6 +131,7 @@ void keyboard_raw_flush(void);
 int mouse_init(void);
 void mouse_get(int* x, int* y, int* buttons);  // in screen pixels
 void mouse_set_range(int w, int h);            // the screen's size; centres the pointer
+uint32_t mouse_seq(void);                      // counts packets: a change shows as a new number
 
 // ---- ATA disk (primary master, PIO) ----
 int ata_init(void);
@@ -170,6 +171,7 @@ void gfx_init(void);                     // after console_map: find out what the
 int gfx_acquire(int task_id, int mode);  // 0, -EBUSY, or -EINVAL for a bad mode
 int gfx_release(int task_id);            // 0, or -EPERM if not the owner
 int gfx_owner(void);                     // owner task id, or -1
+int gfx_input_events(void);              // POLLIN for POLLFD_INPUT (syscall.c)
 int gfx_mode(void);                      // the owner's mode
 void gfx_task_exit(int task_id);
 void gfx_emergency_text(void);           // for panic: back to text, no questions

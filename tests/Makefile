@@ -9,8 +9,10 @@
 # factors and number reading of factor (against GNU factor's), the
 # cryptography (against the RFCs' and Project Wycheproof's vectors) and
 # the TLS client (against recorded conversations with a scripted
-# server and with OpenSSL), under the address and undefined-behaviour
-# sanitizers. They are built for the host, which has to be 64-bit like
+# server and with OpenSSL), the ATA driver (against a simulated drive)
+# the keyboard's scancode translation and the window manager's core
+# (windows, hit testing, damage, compositing), under the address and
+# undefined-behaviour sanitizers. They are built for the host, which has to be 64-bit like
 # the target, so the pointer sizes match. The disk image the run
 # leaves behind is checked with fsck.fat when it is installed.
 CC = gcc
@@ -59,7 +61,7 @@ SIG_LIB = ../src/programs/lib/sig.c ../src/programs/lib/sha512.c ../src/lib/sha2
 SIG_HDRS = ../src/programs/lib/sig.h ../src/programs/lib/sha512.h ../src/programs/lib/der.h
 X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 
-HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore sh_host test_sh test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509 test_ata
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore sh_host test_sh test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509 test_ata test_keymap test_wm
 
 all: $(HOST_TESTS)
 
@@ -121,6 +123,12 @@ test_x509: $(X509_SRCS) $(SIG_HDRS) ../src/programs/lib/x509.h ../src/programs/l
 test_ata: test_ata.c ../src/drivers/ata.c ata_shim/fake.h
 	$(CC) -Iata_shim $(NETMSG_CFLAGS) -o $@ test_ata.c ../src/drivers/ata.c
 
+test_keymap: test_keymap.c ../src/lib/keymap.c ../src/include/keymap.h ../src/include/tty.h
+	$(CC) $(NETMSG_CFLAGS) -o $@ test_keymap.c ../src/lib/keymap.c
+
+test_wm: test_wm.c ../src/programs/lib/wm.c ../src/programs/lib/wm.h
+	$(CC) $(NETMSG_CFLAGS) -o $@ test_wm.c ../src/programs/lib/wm.c
+
 run: $(HOST_TESTS)
 	./$(TEST)
 	./test_netmsg
@@ -139,6 +147,8 @@ run: $(HOST_TESTS)
 	./test_sig
 	./test_x509
 	./test_ata
+	./test_keymap
+	./test_wm
 	@if command -v fsck.fat >/dev/null; then \
 		fsck.fat -n test_disk.img >/dev/null && echo "fsck.fat: disk image is clean"; \
 	else echo "fsck.fat not installed, skipping the image check"; fi

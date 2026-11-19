@@ -32,6 +32,7 @@
 #define PTE_PWT 0x008
 #define PTE_PCD 0x010
 #define PTE_NX (1ull << 63)
+#define PTE_SHARED 0x200  // one of the bits the CPU leaves to software: the frame is a shm object's
 #define USER_PDPT_FIRST (int)(USER_BASE >> 30)  // 1
 #define USER_PDPT_END (int)(USER_TOP >> 30)     // 3
 #define KERNEL_HALF 256                          // the first PML4 entry of the upper half
@@ -205,7 +206,7 @@ void as_destroy(uintptr_t pml4) {
             if (!(pd[j] & PTE_PRESENT)) continue;
             pte_t* pt = phys_to_virt(FRAME(pd[j]));
             for (int k = 0; k < 512; k++)
-                if (pt[k] & PTE_PRESENT) frame_free(FRAME(pt[k]));
+                if ((pt[k] & PTE_PRESENT) && !(pt[k] & PTE_SHARED)) frame_free(FRAME(pt[k]));
             frame_free(FRAME(pd[j]));
         }
         frame_free(FRAME(l3[i]));
@@ -276,4 +277,24 @@ uintptr_t as_lookup(uintptr_t pml4, uintptr_t va, int* writable) {
     if (!pte || !(*pte & PTE_PRESENT)) return 0;
     if (writable) *writable = (*pte & PTE_WRITE) != 0;
     return FRAME(*pte);
+}
+
+int as_share(uintptr_t pml4, uintptr_t va, uintptr_t frame) {
+    if (va < USER_BASE || va >= USER_TOP || (va & (PAGE_SIZE - 1))) return -EINVAL;
+    pte_t* pte = pte_for(pml4, va, 1);
+    if (!pte) return -ENOMEM;
+    if (*pte & PTE_PRESENT) return -EEXIST;
+    *pte = frame | PTE_PRESENT | PTE_USER | PTE_WRITE | PTE_SHARED | nx_flag;
+    return 0;
+}
+
+void as_unshare(uintptr_t pml4, uintptr_t va) {
+    if (va < USER_BASE || va >= USER_TOP) return;
+    pte_t* pte = pte_for(pml4, va, 0);
+    if (!pte || !(*pte & PTE_SHARED)) return;
+    *pte = 0;
+    // Tasks are single threads, so only this CPU can hold the old
+    // translation, and only if pml4 is the one loaded; any other CPU
+    // loads CR3 afresh before it runs the task again.
+    if (read_cr3() == pml4) invlpg(va);
 }

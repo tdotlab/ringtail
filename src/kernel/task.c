@@ -325,6 +325,7 @@ void task_exit(int status) {
     // the display.
     files_close_all(t);
     gfx_task_exit(t->id);
+    shm_task_exit(t);
     cli();
     t->exit_status = status;
     t->state = TASK_DEAD;

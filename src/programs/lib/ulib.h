@@ -98,6 +98,11 @@ static inline int sys_gfx_blit(const uint8_t* pixels) { return SC1(SYS_GFX_BLIT,
 static inline int sys_gfx_font(uint8_t* buf) { return SC1(SYS_GFX_FONT, buf); }
 static inline int sys_mouse_state(mouse_state_t* m) { return SC1(SYS_MOUSE_STATE, m); }
 static inline int sys_key_get(void) { return SC0(SYS_KEY_GET); }
+static inline int sys_shm_new(uint32_t size, shm_info_t* i) { return SC2(SYS_SHM_NEW, size, i); }
+static inline int sys_shm_map(uint32_t id, shm_info_t* i) { return SC2(SYS_SHM_MAP, id, i); }
+static inline int sys_shm_unmap(uintptr_t addr) { return SC1(SYS_SHM_UNMAP, addr); }
+static inline int sys_chan_listen(const char* name) { return SC1(SYS_CHAN_LISTEN, name); }
+static inline int sys_chan_connect(const char* name) { return SC1(SYS_CHAN_CONNECT, name); }
 static inline int sys_wait(int x, int y, int buttons) { return SC3(SYS_WAIT, x, y, buttons); }
 
 // printf("addr " IPV4_FMT "\n", IPV4_ARGS(ip)) for an address in host order.

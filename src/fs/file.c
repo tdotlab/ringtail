@@ -66,6 +66,8 @@ static void ofile_put(ofile_t* f) {
     else if (f->kind == FD_PIPE_R || f->kind == FD_PIPE_W) pipe_unref(f->pipe, f->kind == FD_PIPE_W);
     else if (f->kind == FD_SOCKET) udp_socket_unref(f->sock);
     else if (f->kind == FD_TCP) tcpsock_unref(f->tcp);
+    else if (f->kind == FD_CHAN) chan_close(f->chan, f->side);
+    else if (f->kind == FD_CHAN_LISTEN) chan_unlisten(f->listener);
     f->kind = FD_NONE;
     kfree(f);
 }
@@ -232,7 +234,60 @@ int file_get_tcp(int fd, struct tcp** c) {
     return 0;
 }
 
+// A channel name from the caller.
+static int chan_name(const char* uname, char name[CHAN_NAME_MAX + 1]) {
+    int n = strncpy_from_user(name, uname, CHAN_NAME_MAX + 1);
+    if (n == -ENAMETOOLONG) return -EINVAL;
+    if (n < 0) return n;
+    return chan_name_ok(name) ? 0 : -EINVAL;
+}
+
+int file_chan_listen(const char* uname) {
+    char name[CHAN_NAME_MAX + 1];
+    int r = chan_name(uname, name);
+    if (r) return r;
+    int fd = free_fd(0);
+    if (fd < 0) return fd;
+    ofile_t* f = ofile_new(FD_CHAN_LISTEN, O_RDONLY);
+    if (!f) return -ENOMEM;
+    r = chan_listen(name, &f->listener);
+    if (r) { kfree(f); return r; }
+    current->fds[fd] = f;
+    return fd;
+}
+
+int file_chan_connect(const char* uname) {
+    char name[CHAN_NAME_MAX + 1];
+    int r = chan_name(uname, name);
+    if (r) return r;
+    int fd = free_fd(0);
+    if (fd < 0) return fd;
+    ofile_t* f = ofile_new(FD_CHAN, O_RDWR);
+    if (!f) return -ENOMEM;
+    r = chan_connect(name, &f->chan);
+    if (r) { kfree(f); return r; }
+    f->side = 0;
+    current->fds[fd] = f;
+    return fd;
+}
+
+// A channel listener's next connection; uaddr is not used.
+static int chan_accept_fd(ofile_t* lf, int timeout_ms) {
+    int nfd = free_fd(0);
+    if (nfd < 0) return nfd;
+    ofile_t* f = ofile_new(FD_CHAN, O_RDWR);
+    if (!f) return -ENOMEM;
+    int r = chan_accept(lf->listener, &f->chan, timeout_ms);
+    if (r) { kfree(f); return r; }
+    f->side = 1;
+    // nfd is still free: a task is one thread, and it was waiting.
+    current->fds[nfd] = f;
+    return nfd;
+}
+
 int file_accept(int fd, sock_addr_t* uaddr, int timeout_ms) {
+    ofile_t* lf = get_fd(fd);
+    if (lf && lf->kind == FD_CHAN_LISTEN) return chan_accept_fd(lf, timeout_ms);
     struct tcp* l;
     int r = file_get_tcp(fd, &l);
     if (r) return r;
@@ -266,6 +321,8 @@ int file_fdtype(int fd) {
     case FD_PIPE_W: return FDTYPE_PIPE;
     case FD_SOCKET: return FDTYPE_UDP;
     case FD_TCP: return FDTYPE_TCP;
+    case FD_CHAN:
+    case FD_CHAN_LISTEN: return FDTYPE_CHAN;
     default: return -EBADF;
     }
 }
@@ -290,6 +347,8 @@ static int fd_events(int fd) {
     case FD_PIPE_W: return pipe_events(f->pipe, 1);
     case FD_SOCKET: return udp_socket_events(f->sock);
     case FD_TCP: return tcpsock_events(f->tcp);
+    case FD_CHAN: return chan_events(f->chan, f->side);
+    case FD_CHAN_LISTEN: return chan_listener_events(f->listener);
     default: return POLLIN | POLLOUT;  // files and console output never wait
     }
 }
@@ -310,7 +369,8 @@ int file_pollfd(pollfd_t* ufds, uint32_t n, int timeout_ms) {
         uint32_t gen = poll_gen;
         count = 0;
         for (uint32_t i = 0; i < n; i++) {
-            p[i].revents = p[i].fd < 0 ? 0 : fd_events(p[i].fd) & (p[i].events | POLLERR | POLLHUP | POLLNVAL);
+            if (p[i].fd == POLLFD_INPUT) p[i].revents = gfx_input_events() & p[i].events;
+            else p[i].revents = p[i].fd < 0 ? 0 : fd_events(p[i].fd) & (p[i].events | POLLERR | POLLHUP | POLLNVAL);
             count += p[i].revents != 0;
         }
         if (count || timeout_ms == 0) break;
@@ -355,6 +415,13 @@ int file_read(int fd, void* ubuf, uint32_t len) {
     if (f->kind == FD_SOCKET) return -EINVAL;  // UDP sockets take SYS_RECVFROM
     if (len == 0) return 0;
     if (f->kind == FD_CONSOLE_IN) return console_read(ubuf, len);
+    if (f->kind == FD_CHAN) {
+        if (user_range_ok((uintptr_t)ubuf, MIN(len, CHAN_MSG_MAX), 1)) return -EFAULT;
+        uint8_t msg[CHAN_MSG_MAX];
+        int n = chan_read(f->chan, f->side, msg, MIN(len, CHAN_MSG_MAX));
+        if (n > 0 && copy_to_user(ubuf, msg, (size_t)n)) n = -EFAULT;  // the message is gone all the same
+        return n;
+    }
     if (f->kind != FD_FILE && f->kind != FD_PIPE_R && f->kind != FD_TCP) return -EBADF;
     if (user_range_ok((uintptr_t)ubuf, len, 1)) return -EFAULT;
 
@@ -390,6 +457,12 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
     if (!f || (f->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
     if (f->kind == FD_SOCKET) return -EINVAL;  // and SYS_SENDTO
     if (len == 0) return 0;
+    if (f->kind == FD_CHAN) {
+        if (len > CHAN_MSG_MAX) return -EMSGSIZE;
+        uint8_t msg[CHAN_MSG_MAX];
+        if (copy_from_user(msg, ubuf, len)) return -EFAULT;
+        return chan_write(f->chan, f->side, msg, len);
+    }
     if (user_range_ok((uintptr_t)ubuf, len, 0)) return -EFAULT;
 
     uint8_t* bounce = kmalloc(BOUNCE);

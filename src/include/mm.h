@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "ringtail/abi.h"  // SHM_BASE
 
 #define PAGE_SIZE 4096u
 
@@ -66,8 +67,9 @@ void frame_stats(uint32_t* total, uint32_t* free);
 // lower half ends at 128 TB and the upper half starts at -128 TB):
 //   0 - 1 GB       not mapped, so null pointers, and physical
 //                  addresses used as pointers, fault
-//   1 GB - 3 GB    user: program image, then a 1 MB stack region
-//                  just below 3 GB that grows on demand
+//   1 GB - 3 GB    user: program image and heap below 2 GB, shared
+//                  memory from 2 GB, then a 1 MB stack region just
+//                  below 3 GB that grows on demand
 //   the rest of the lower half   not mapped
 //   DIRECT_MAP     all RAM, and the first 4 MB whatever is there:
 //                  kernel only, never executable, the kernel image's
@@ -83,9 +85,11 @@ void frame_stats(uint32_t* total, uint32_t* free);
 #define USER_STACK_TOP   USER_TOP
 #define USER_STACK_MAX   (1024u * 1024u)
 #define USER_STACK_LOW   (USER_STACK_TOP - USER_STACK_MAX)
-// Program images must end below this, leaving a guard gap that is
-// never mapped between the image and the lowest possible stack page.
-#define USER_IMAGE_LIMIT (USER_STACK_LOW - PAGE_SIZE)
+// Program images and the heap end below the shared memory region
+// (SHM_BASE, 2 GB, abi.h), which ends a page below the lowest possible
+// stack page, so a guard gap that is never mapped is left there.
+#define USER_IMAGE_LIMIT SHM_BASE
+#define USER_SHM_TOP     (USER_STACK_LOW - PAGE_SIZE)
 
 // A page table entry is as wide as a pointer.
 typedef uintptr_t pte_t;
@@ -127,6 +131,20 @@ uintptr_t as_map(uintptr_t pd, uintptr_t va, int writable);
 uintptr_t as_lookup(uintptr_t pd, uintptr_t va, int* writable);
 // Count of user pages mapped, for the task list.
 uint32_t as_pages(uintptr_t pd);
+// Shared memory: frames that belong to a shared memory object, not to
+// the address space. as_share maps frame at va (which must be free);
+// as_unshare takes the mapping away again. as_destroy leaves the
+// frames of such pages alone. -ENOMEM if a page table could not be
+// made, -EEXIST if va is in use.
+int as_share(uintptr_t pd, uintptr_t va, uintptr_t frame);
+void as_unshare(uintptr_t pd, uintptr_t va);
+
+// ---- Shared memory objects (shm.c), SYS_SHM_* in abi.h ----
+struct task;
+long shm_new(uint32_t size, shm_info_t* info);   // for the current task
+long shm_map(uint32_t id, shm_info_t* info);
+long shm_unmap(uintptr_t addr);
+void shm_task_exit(struct task* t);  // lets go of everything t has mapped
 
 // Called for a page fault taken in user mode. Returns 1 if the
 // fault was a stack access that has now been satisfied by growing

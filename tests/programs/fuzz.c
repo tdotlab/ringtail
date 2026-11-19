@@ -125,6 +125,8 @@ static const call_t calls[] = {
     { SYS_SOCKADDR, "sockaddr" }, { SYS_POLLFD, "pollfd" }, { SYS_FDTYPE, "fdtype" },
     { SYS_SETTIME, "settime" },  // random words are never a date after the build, so it only fails
     { SYS_GFX_INFO, "gfx_info" }, { SYS_GFX_PUT, "gfx_put" }, { SYS_TTY_SIZE, "tty_size" },
+    { SYS_SHM_NEW, "shm_new" }, { SYS_SHM_MAP, "shm_map" }, { SYS_SHM_UNMAP, "shm_unmap" },
+    { SYS_CHAN_LISTEN, "chan_listen" }, { SYS_CHAN_CONNECT, "chan_connect" },
     { 0, "unknown" },
 };
 #define NCALLS ((int)(sizeof calls / sizeof calls[0]))
@@ -133,7 +135,9 @@ static uint32_t stat_ok[NUM_SYSCALLS], stat_fault[NUM_SYSCALLS], stat_other[NUM_
 static int gfx_on;  // the fuzzer asked for the display and has not let go
 static int last_sock = -1;  // the socket calls mostly go to the newest socket, or they would never find one
 static int last_tcp = -1;   // the same for TCP, which never connects anywhere
-static int last_port = 9;   // and sends now and then to the port it was bound to, so something arrives
+static int last_port = 9;
+static int last_chan_l = -1;  // a channel listener of its own, so connect and accept find someone
+static shm_info_t last_shm;  // the newest shared memory, so map and unmap find it now and then   // and sends now and then to the port it was bound to, so something arrives
 
 // Words at scratch+128 that look like the argument structs: small
 // coordinates and sizes, a valid string, now and then something nasty.
@@ -169,7 +173,28 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         if (rnd() & 1) sys_bind(last_tcp, 0);
     }
 
+    if ((n == SYS_CHAN_CONNECT || n == SYS_ACCEPT) && last_chan_l < 0) last_chan_l = sys_chan_listen("fz.chan");
+
     switch (n) {
+    case SYS_CHAN_LISTEN:
+    case SYS_CHAN_CONNECT:
+        if (rnd() % 2) a = (uintptr_t)"fz.chan";
+        break;
+    case SYS_SHM_NEW:
+        // Mostly small, so the run does not spend the machine's memory
+        // in its first few calls; now and then the largest, which runs
+        // out partway once a few are held.
+        if (rnd() % 16 == 0) a = SHM_MAX - (rnd() % 2) * 4095;
+        else if (rnd() % 4) a = rnd() % 65536;
+        if (rnd() % 2) b = (uintptr_t)&last_shm;
+        break;
+    case SYS_SHM_MAP:
+        if (rnd() % 2) a = last_shm.id + rnd() % 3 - 1;
+        if (rnd() % 2) b = (uintptr_t)&last_shm;
+        break;
+    case SYS_SHM_UNMAP:
+        if (rnd() % 2) a = (uintptr_t)last_shm.addr + (rnd() % 4 ? 0 : rnd() % 8192);
+        break;
     case SYS_READ: case SYS_WRITE: case SYS_SEEK: case SYS_CLOSE: case SYS_DUP2:
         a = fd_value();
         if (n == SYS_DUP2) b = fd_value();
@@ -244,7 +269,7 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         break;
     case SYS_ACCEPT:
         // Nothing ever connects to it, so only waits that end.
-        a = rnd() % 4 ? (uint32_t)last_tcp : fd_value();
+        a = rnd() % 4 ? (uint32_t)(rnd() % 2 ? last_tcp : last_chan_l) : fd_value();
         b = rnd() % 2 ? 0 : pointer();
         d = rnd() % 3;
         break;
@@ -302,6 +327,14 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
             *ptr = sc + (rnd() % 4000);
             *len %= 300;  // the pointer may have been one of the "must fail" ones above, with a huge length
         }
+    }
+
+    // A channel read with nothing to read, or a write to a full one,
+    // would wait for ever: nothing else in this program is at the other
+    // end. Those go to a descriptor that is not open instead.
+    if ((n == SYS_READ || n == SYS_WRITE) && a < MAX_FDS && sys_fdtype((int)a) == FDTYPE_CHAN) {
+        pollfd_t p = { (int)a, n == SYS_READ ? POLLIN : POLLOUT, 0 };
+        if (sys_pollfd(&p, 1, 0) != 1 || !(p.revents & p.events)) a = MAX_FDS;
     }
 
     if (iter >= verbose_from) out("  #%u %s(%lx, %lx, %lx)\n", iter, c->name, (unsigned long)a, (unsigned long)b, (unsigned long)d);
@@ -372,7 +405,7 @@ static void put_phase(uint32_t iters, uint32_t verbose_from) {
 
 static void drop_extra_fds(void) {
     for (int fd = 3; fd < MAX_FDS; fd++) sys_close(fd);
-    last_sock = last_tcp = -1;
+    last_sock = last_tcp = last_chan_l = -1;
 }
 
 // Empty a directory and remove it, however deep the fuzzer nested things.
@@ -462,6 +495,15 @@ static void clean_scratch(void) {
     }
 }
 
+// Unmap whatever shared memory the random calls left mapped, so the
+// kernel heap its objects take is back before the heap is counted.
+// First fit packs the mappings from SHM_BASE, so they lie within the
+// most the table can hold.
+static void drop_shm(void) {
+    uintptr_t end = SHM_BASE + (uintptr_t)SHM_PER_TASK * (SHM_MAX + 4096);
+    for (uintptr_t va = SHM_BASE; va < end; va += 4096) sys_shm_unmap(va);
+}
+
 static int heap_free_kb(void) {
     char text[256];
     sys_kinfo(KINFO_MEM, text, sizeof text);
@@ -517,6 +559,7 @@ int main(int argc, char** argv) {
     put_phase(iters / 4, verbose_from);
 
     drop_extra_fds();
+    drop_shm();
     clean_scratch();
     int strays = remove_strays();
     if (strays) out("fuzz: removed %d stray names from the root\n", strays);
