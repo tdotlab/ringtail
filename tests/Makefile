@@ -59,7 +59,7 @@ SIG_LIB = ../src/programs/lib/sig.c ../src/programs/lib/sha512.c ../src/lib/sha2
 SIG_HDRS = ../src/programs/lib/sig.h ../src/programs/lib/sha512.h ../src/programs/lib/der.h
 X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 
-HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore sh_host test_sh test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore sh_host test_sh test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509 test_ata
 
 all: $(HOST_TESTS)
 
@@ -116,6 +116,11 @@ test_sig: test_sig.c $(SIG_LIB) $(SIG_HDRS) sig_cases.h
 test_x509: $(X509_SRCS) $(SIG_HDRS) ../src/programs/lib/x509.h ../src/programs/lib/tls.h x509_cases.h
 	$(CC) $(CRYPTO_CFLAGS) -o $@ $(X509_SRCS)
 
+# The ATA driver against a simulated drive: ata_shim stands in for the
+# kernel headers, so the port I/O and the clock are the test's.
+test_ata: test_ata.c ../src/drivers/ata.c ata_shim/fake.h
+	$(CC) -Iata_shim $(NETMSG_CFLAGS) -o $@ test_ata.c ../src/drivers/ata.c
+
 run: $(HOST_TESTS)
 	./$(TEST)
 	./test_netmsg
@@ -133,6 +138,7 @@ run: $(HOST_TESTS)
 	./test_tls
 	./test_sig
 	./test_x509
+	./test_ata
 	@if command -v fsck.fat >/dev/null; then \
 		fsck.fat -n test_disk.img >/dev/null && echo "fsck.fat: disk image is clean"; \
 	else echo "fsck.fat not installed, skipping the image check"; fi

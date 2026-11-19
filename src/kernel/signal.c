@@ -27,6 +27,20 @@ void signal_exit(int sig) {
     task_exit(EXIT_SIGNAL(sig));
 }
 
+// A fault ends a task with one of these, and says so (interrupt.c), so
+// the shell prints nothing more for them. The same signal sent by kill
+// is no fault, and this is where that gets said.
+static const char* fault_name(int sig) {
+    switch (sig) {
+    case SIGSEGV: return "SIGSEGV";
+    case SIGILL: return "SIGILL";
+    case SIGFPE: return "SIGFPE";
+    case SIGBUS: return "SIGBUS";
+    case SIGTRAP: return "SIGTRAP";
+    default: return 0;
+    }
+}
+
 static int push(regs_t* r, int sig) {
     sigaction_t* a = &current->sig_action[sig];
     if (!arch_signal_push(r, (uintptr_t)a->handler, (uintptr_t)a->restorer, sig, current->sig_blocked)) return 0;
@@ -43,7 +57,11 @@ void signal_deliver(regs_t* r) {
         clear_pending(SIGBIT(sig));
         sighandler_t h = sig == SIGKILL ? SIG_DFL : current->sig_action[sig].handler;
         if (h == SIG_IGN) continue;  // ignored after it was sent
-        if (h == SIG_DFL) signal_exit(sig);
+        if (h == SIG_DFL) {
+            const char* f = fault_name(sig);
+            if (f) kprintf_color(COLOR_ERROR, "%s: %s sent by kill - task killed\n", current->name, f);
+            signal_exit(sig);
+        }
         if (!push(r, sig)) {
             kprintf_color(COLOR_ERROR, "%s: no room on the stack for a signal handler - task killed\n", current->name);
             signal_exit(SIGSEGV);

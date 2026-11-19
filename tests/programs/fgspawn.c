@@ -6,7 +6,7 @@
 
 static int spawn_as(const char* role, int flags) {
     const char* argv[] = { "fgspawn", role, 0 };
-    spawn_opts_t o = { flags, 0, { -1, -1, -1 } };
+    spawn_opts_t o = { flags, 0, { -1, -1, -1 }, -1 };
     return sys_spawn_opts("fgspawn", argv, &o);
 }
 

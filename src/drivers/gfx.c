@@ -389,6 +389,14 @@ void gfx_blit(const uint8_t* pixels) {
     present(0, 0, W, H);
 }
 
+// a + n for a span a program gave (n > 0), held at INT_MAX instead of
+// wrapping: x and w both come from the program, and a signed int that
+// wraps is undefined, so a check after the fact can be compiled away.
+static int end_of(int a, int n) {
+    int64_t e = (int64_t)a + n;
+    return e > 0x7FFFFFFF ? 0x7FFFFFFF : (int)e;
+}
+
 void gfx_line(int x0, int y0, int x1, int y1, uint8_t color) {
     // Bresenham. Endpoints are clamped to a generous box first so a
     // huge coordinate cannot make the loop run for billions of steps.
@@ -409,16 +417,15 @@ void gfx_line(int x0, int y0, int x1, int y1, uint8_t color) {
 
 void gfx_rect(int x, int y, int w, int h, uint8_t color, int filled) {
     if (w <= 0 || h <= 0) return;
+    int xe = end_of(x, w), ye = end_of(y, h);
     if (!filled) {
-        gfx_line(x, y, x + w - 1, y, color);
-        gfx_line(x, y + h - 1, x + w - 1, y + h - 1, color);
-        gfx_line(x, y, x, y + h - 1, color);
-        gfx_line(x + w - 1, y, x + w - 1, y + h - 1, color);
+        gfx_line(x, y, xe - 1, y, color);
+        gfx_line(x, ye - 1, xe - 1, ye - 1, color);
+        gfx_line(x, y, x, ye - 1, color);
+        gfx_line(xe - 1, y, xe - 1, ye - 1, color);
         return;
     }
-    int x0 = MAX(0, x), y0 = MAX(0, y);
-    int x1 = MIN(W, x + w), y1 = MIN(H, y + h);
-    if (x + w < x || y + h < y) { x1 = W; y1 = H; }  // overflowed: clip to the screen
+    int x0 = MAX(0, x), y0 = MAX(0, y), x1 = MIN(W, xe), y1 = MIN(H, ye);
     volatile uint8_t* px = classic_px();
     for (int yy = y0; yy < y1; yy++)
         if (x1 > x0) memset((void*)(px + yy * W + x0), color, (size_t)(x1 - x0));
@@ -447,7 +454,7 @@ void gfx_text(int x, int y, const char* s, uint8_t color) {
 // the whole of.
 void gfx_put(int x, int y, int w, int h, const uint32_t* pixels, int stride) {
     int sw = on_fb ? (int)fb_w : W, sh = on_fb ? (int)fb_h : H;
-    int x0 = MAX(0, x), y0 = MAX(0, y), x1 = MIN(sw, x + w), y1 = MIN(sh, y + h);
+    int x0 = MAX(0, x), y0 = MAX(0, y), x1 = MIN(sw, end_of(x, w)), y1 = MIN(sh, end_of(y, h));
     if (x1 <= x0 || y1 <= y0) return;
     for (int yy = y0; yy < y1; yy++) {
         const uint32_t* src = pixels + (size_t)(yy - y) * (size_t)stride + (x0 - x);

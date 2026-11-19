@@ -10,6 +10,10 @@ static inline void outl(uint16_t port, uint32_t v) { __asm__ volatile("outl %0, 
 static inline uint32_t inl(uint16_t port) { uint32_t v; __asm__ volatile("inl %1, %0" : "=a"(v) : "Nd"(port)); return v; }
 static inline uint8_t inb(uint16_t port) { uint8_t v; __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port)); return v; }
 static inline uint16_t inw(uint16_t port) { uint16_t v; __asm__ volatile("inw %1, %0" : "=a"(v) : "Nd"(port)); return v; }
+// n words from one port into buf.
+static inline void insw(uint16_t port, uint16_t* buf, uint32_t n) {
+    __asm__ volatile("rep insw" : "+D"(buf), "+c"(n) : "d"(port) : "memory");
+}
 // A write to an unused port takes about 1 microsecond: the classic
 // delay between PIC programming steps.
 static inline void io_wait(void) { outb(0x80, 0); }

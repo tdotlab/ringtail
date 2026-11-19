@@ -325,6 +325,51 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     return 0;
 }
 
+// gfx_put at full resolution. Random words are never a size that fits on
+// the screen, so the calls are built here instead: edges that have to
+// clip, coordinates near INT_MIN and INT_MAX that must not wrap, strides
+// and pixel pointers that do and do not cover what they name.
+static int pick_int(const int* v, int n) { return v[rnd() % (uint32_t)n]; }
+
+static void put_phase(uint32_t iters, uint32_t verbose_from) {
+    static uint32_t pixels[16384];  // 64 KB of this program's own memory
+    gfx_info_t gi;
+    if (sys_gfx_begin_native() < 0) return;
+    if (sys_gfx_info(&gi) < 0 || gi.width <= 0 || gi.height <= 0) { sys_gfx_end(); return; }
+    int sw = gi.width, sh = gi.height;
+    for (uint32_t i = 0; i < 16384; i++) pixels[i] = rnd();
+    out("fuzz: native gfx_put, %u calls\n", iters);
+    for (uint32_t i = 0; i < iters; i++) {
+        gfx_put_t p;
+        int sizes[] = { 1, 2, 3, (int)(rnd() % 128) + 1, sw, sw + 1, sh, 0, -1, 0x7FFFFFFF, (int)0x80000000 };
+        int ns = (int)(sizeof sizes / sizeof sizes[0]);
+        p.w = (rnd() % 4) ? (int)(rnd() % 128) + 1 : pick_int(sizes, ns);
+        p.h = (rnd() % 4) ? (int)(rnd() % 128) + 1 : pick_int(sizes, ns);
+        int at[] = { (int)0x80000000, (int)0x80000001, -p.w, -p.w + 1, -1, 0, 1, sw - 1, sh - 1, sw, sh,
+                     0x7FFFFFFE, 0x7FFFFFFF, (int)(rnd() % (uint32_t)sw), (int)rnd() };
+        int na = (int)(sizeof at / sizeof at[0]);
+        p.x = pick_int(at, na);
+        p.y = pick_int(at, na);
+        int strides[] = { p.w, p.w, p.w + (int)(rnd() % 8), p.w - 1, 0, -1, 16384, 16385, (int)rnd() };
+        p.stride = pick_int(strides, (int)(sizeof strides / sizeof strides[0]));
+        p.pad = (int)rnd();
+        switch (rnd() % 6) {
+        case 0: case 1: p.pixels = pixels; break;
+        case 2: p.pixels = pixels + 16384 - (rnd() % 64); break;  // runs off the end
+        case 3: p.pixels = (const unsigned*)scratch; break;
+        default: p.pixels = (const unsigned*)pointer(); break;
+        }
+        if (0x40000000u + i >= verbose_from)
+            out("  #%u gfx_put(%d, %d, %d, %d, stride %d, %p)\n", 0x40000000u + i, p.x, p.y, p.w, p.h, p.stride,
+                (const void*)p.pixels);
+        long r = (rnd() % 16) ? sys_gfx_put(&p) : syscall3(SYS_GFX_PUT, pointer(), 0, 0);
+        if (r >= 0) stat_ok[SYS_GFX_PUT]++;
+        else if (r == -EFAULT) stat_fault[SYS_GFX_PUT]++;
+        else stat_other[SYS_GFX_PUT]++;
+    }
+    sys_gfx_end();
+}
+
 static void drop_extra_fds(void) {
     for (int fd = 3; fd < MAX_FDS; fd++) sys_close(fd);
     last_sock = last_tcp = -1;
@@ -469,6 +514,7 @@ int main(int argc, char** argv) {
         if (one_call(0x80000000u + i, verbose_from, 1)) break;
     }
     if (gfx_on) sys_gfx_end();
+    put_phase(iters / 4, verbose_from);
 
     drop_extra_fds();
     clean_scratch();

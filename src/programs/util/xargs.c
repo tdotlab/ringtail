@@ -209,7 +209,7 @@ static void run(void) {
         dprintf(STDERR_FILENO, "%s", pending_err);
         pending_err = 0;
     }
-    spawn_opts_t o = { 0, 0, { null_in, -1, -1 } };
+    spawn_opts_t o = { 0, 0, { null_in, -1, -1 }, -1 };
     int id = sys_spawn_opts(av[0], av, &o);
     if (id < 0) {
         dprintf(STDERR_FILENO, "xargs: %s: %s\n", av[0], strerror(id));

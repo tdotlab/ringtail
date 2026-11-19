@@ -10,6 +10,7 @@ tests/test_crypto
 tests/test_tls
 tests/test_sig
 tests/test_x509
+tests/test_ata
 tests/test_b64
 tests/test_shasum
 tests/test_pfcore

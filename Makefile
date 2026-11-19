@@ -190,4 +190,7 @@ clean:
 	rm -rf build
 	$(MAKE) -C tests clean
 
--include $(KERNEL_OBJS:.o=.d) $(ULIB_OBJS:.o=.d)
+# The header each object was built from (-MMD), so changing a header
+# rebuilds every kernel file, library file and program that includes it.
+-include $(KERNEL_OBJS:.o=.d) $(ULIB_OBJS:.o=.d) $(PROGRAM_SRCS:%.c=$(BUILD)/u/%.d) \
+	$(patsubst %.c,$(BUILD)/u/%.d,$(wildcard tests/programs/*.c))

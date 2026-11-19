@@ -64,7 +64,10 @@ Every task ends the same way, or it is not done:
   test run. The disk is read before interrupts are on, so
   such waits use `stopwatch_ms`, which keeps time without the timer
   interrupt. The disk tests in the QEMU suite slow the disk and inject
-  errors to keep this honest.
+  errors to keep this honest. A drive that hangs and comes back is
+  tested on the host instead (`tests/test_ata.c`, a model drive on a
+  model clock), since three 30 s timeouts would add two minutes to the
+  suite; throttle the drive to 0 writes and lift it to try it by hand.
 - QEMU's IDE reset cancels an in-flight PIO request synchronously, so
   a test that suspends a request (blkdebug `break`) and lets the driver
   time out and reset freezes QEMU itself. Make a drive look hung with a
@@ -319,15 +322,13 @@ handler (it gets only the number; a fault handler cannot see the address);
 `sigsuspend`/`pause` and `alarm`; SIGPIPE from sockets (they return EPIPE
 only); `kill` of a whole job (a negative id); and a fresh FPU state for a
 handler (it starts with the interrupted code's MXCSR and x87 stack, where
-Linux gives it the default). The shell prints nothing when a task dies of a
-fault signal, since the kernel has said why; but `kill -SEGV` from outside
-is not a fault, and then nothing at all is said.
+Linux gives it the default).
 
-A smaller one in the same place: `lio_out` (lineio.h) writes in 1 KB pieces
-where glibc's stdio uses 4 KB for a pipe, so a tool with 1 to 4 KB of output
-in `xargs tool | head -n 1` dies of SIGPIPE here (and xargs says so) where
-the GNU one wrote everything before head left. Nothing in the suite does
-that; `cal`, which printed a line at a time and did, now writes once.
+A smaller one in the same place: a pipe holds 4 KB here and 64 KB on
+Linux. A tool that writes more than 4 KB in `xargs tool | head -n 1` can
+be killed by SIGPIPE here (and xargs says so) where on Linux the whole
+output fits in the pipe before head leaves. Up to 4 KB matches, since
+`lio_out` writes in glibc's 4 KB pieces.
 
 **ARM64.** The `src/arch` split is where a port starts, but it is far from
 all of it: the drivers talk to PC hardware (port I/O, PCI through 0xCF8,

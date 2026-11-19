@@ -923,6 +923,9 @@ def tests(m, t):
     m.send("\x03")
     out = m.expect(PROMPT, 5)
     t.check("a program can catch Ctrl+C's SIGINT", "got SIGINT" in out and "^C" not in out, out)
+    # The program's line and the shell's next prompt can come in either order.
+    def both(what):
+        return rb"(?s)(" + what + rb".*" + PROMPT + rb"|" + PROMPT + rb".*" + what + rb")"
     out = m.run("run sigtest wait &")
     bg = re.search(r"\[(\d+)\] started", out)
     t.check("a program catching signals starts in the background", bg, out)
@@ -930,9 +933,6 @@ def tests(m, t):
         time.sleep(0.5)
         out = m.run("kill -0 " + bg.group(1))
         t.check("kill -0 only asks whether a task is there", "Task %s is there" % bg.group(1) in out, out)
-        # The program's line and the shell's next prompt can come in either order.
-        def both(what):
-            return rb"(?s)(" + what + rb".*" + PROMPT + rb"|" + PROMPT + rb".*" + what + rb")"
         m.send("kill -USR1 " + bg.group(1) + "\r")
         out = m.expect(both(rb"got SIGUSR1"), 5)
         t.check("kill -USR1 calls its handler", "Sent SIGUSR1 to task " + bg.group(1) in out, out)
@@ -941,6 +941,16 @@ def tests(m, t):
         time.sleep(0.5)
         tasks = m.run("tasks")
         t.check("and kill -sigint ends it, by its handler", "Sent SIGINT" in out and "sigtest" not in tasks, (out, tasks))
+    # A fault says what it was itself, so the shell adds nothing; a fault
+    # signal sent by kill is no fault, and the kernel says that instead.
+    out = m.run("sleep 30 &")
+    bg = re.search(r"\[(\d+)\] started", out)
+    t.check("sleep starts in the background", bg, out)
+    if bg:
+        m.send("kill -SEGV " + bg.group(1) + "\r")
+        out = m.expect(both(rb"sleep: SIGSEGV sent by kill - task killed"), 5)
+        time.sleep(0.3)
+        t.check("a task ended by kill -SEGV says so", "page fault" not in out, out)
     out = m.run("kill -BOGUS 5")
     t.check("kill refuses a signal it does not know", "Unknown signal" in out, out)
     out = m.run("kill -l")
@@ -2705,6 +2715,11 @@ def gnu_text_tests(m, t):
     t.check("a run that exits 255 stops xargs with 124", out == "xargs: exitwith: exited with status 255; aborting" and rc == 124, out)
     out, rc = st("echo a b | xargs -n1 crash")
     t.check("a run that crashes stops xargs with 125", out.count("xargs: crash: terminated by a fault") == 1 and rc == 125, out)
+    # Output under 4 KB goes into the pipe in one write, as glibc's stdio
+    # sends it, so head leaving after its line does not kill the writer.
+    for _ in range(3):
+        out, rc = st("echo 1000 | xargs seq | head -n 1")
+        t.check("a run whose 3893 bytes head does not read is not killed", out == "1" and rc == 0, out)
     run("echo hi > nx")
     out, rc = st("echo a | xargs ./nx")
     t.check("a command that cannot start is 126", out.startswith("xargs: ./nx: ") and rc == 126, out)

@@ -9,13 +9,17 @@
 // FLUSH are all safe to repeat. A drive that stays busy through every
 // try is taken as gone, like Linux taking a device offline, and every
 // later command fails at once: otherwise each of the several commands
-// in one file write would wait out its own tries. One that answers
-// with an error (a bad sector) is still there and stays in use. Callers (the filesystem) serialise
+// in one file write would wait out its own tries. Every 10 s a command
+// that comes along looks at a gone drive again, with a reset and a
+// short wait, and one that answers is used again (a host that stalled
+// for a minute, say). One that answers with an error (a bad sector) is
+// still there and stays in use. Callers (the filesystem) serialise
 // access with their own lock, so the controller never sees two
 // commands at once.
 #include "kernel.h"
 #include "arch.h"
 #include "drivers.h"
+#include "console.h"
 #include "ringtail/abi.h"
 
 #define ATA_DATA    0x1F0
@@ -45,11 +49,16 @@
 // under QEMU, and one slow fsync on the host made a write fail.
 #define TIMEOUT_MS 30000
 #define TRIES 3
+// How often a drive taken as gone is looked at again, and how long it
+// then gets to show it is not busy.
+#define RECHECK_MS 10000
+#define RECHECK_WAIT_MS 1000
 #define CTRL_NIEN 0x02
 #define CTRL_SRST 0x04
 
 static int present;
 static int gone;  // stopped answering: see the top of the file
+static uint64_t gone_at;  // the tick it was last found gone
 static uint32_t sectors;
 
 // Reading the alternate status four times takes the 400 ns the drive
@@ -99,13 +108,36 @@ static void pause_ms(uint32_t ms) {
 
 // Software reset of the channel. SRST is held for well over the 5 us
 // the spec asks, then the drive gets 2 ms (here a tick or two) before
-// its status means anything, then as long as any command to finish.
-static void reset(void) {
+// its status means anything, then up to ms to stop being busy.
+static int reset_wait(uint32_t ms) {
     outb(ATA_CTRL, CTRL_SRST | CTRL_NIEN);
     for (int i = 0; i < 64; i++) (void)inb(ATA_CTRL);
     outb(ATA_CTRL, CTRL_NIEN);
     pause_ms(10);
-    (void)wait_not_busy(TIMEOUT_MS);
+    return wait_not_busy(ms);
+}
+
+static void reset(void) { (void)reset_wait(TIMEOUT_MS); }
+
+static void set_gone(void) {
+    if (!gone) kprintf_color(COLOR_ERROR, "Disk: stopped answering, trying it again every %d s\n", RECHECK_MS / 1000);
+    gone = 1;
+    gone_at = timer_ticks64();
+}
+
+// Whether a command may go to the drive. A gone one is tried again once
+// RECHECK_MS have passed since it was last found gone.
+static int usable(void) {
+    if (!present) return 0;
+    if (!gone) return 1;
+    if (timer_ticks64() - gone_at < (uint64_t)RECHECK_MS * TIMER_HZ / 1000) return 0;
+    if (reset_wait(RECHECK_WAIT_MS)) {
+        gone_at = timer_ticks64();
+        return 0;
+    }
+    gone = 0;
+    kprintf("Disk: answering again\n");
+    return 1;
 }
 
 static void issue(uint8_t cmd, uint32_t lba, uint8_t count) {
@@ -146,7 +178,6 @@ int ata_present(void) { return present; }
 uint32_t ata_sectors(void) { return sectors; }
 
 static int check_range(uint32_t lba, uint32_t count) {
-    if (!present || gone) return -EIO;
     if (count == 0 || lba >= sectors || count > sectors - lba) return -EIO;
     if (lba + count > 0x10000000) return -EIO;  // LBA28 limit
     return 0;
@@ -159,8 +190,8 @@ static int pio(uint8_t cmd, uint32_t lba, uint32_t n, uint16_t* p) {
         int r = wait_drq();
         if (r) return r;
         if (cmd == CMD_READ) {
-            uint32_t words = 256;
-            __asm__ volatile("rep insw" : "+D"(p), "+c"(words) : "d"(ATA_DATA) : "memory");
+            insw(ATA_DATA, p, 256);
+            p += 256;
         } else {
             for (int i = 0; i < 256; i++) outw(ATA_DATA, *p++);
         }
@@ -171,7 +202,7 @@ static int pio(uint8_t cmd, uint32_t lba, uint32_t n, uint16_t* p) {
 }
 
 static int transfer(uint8_t cmd, uint32_t lba, uint32_t count, uint16_t* p) {
-    if (check_range(lba, count)) return -EIO;
+    if (!present || check_range(lba, count) || !usable()) return -EIO;
     while (count) {
         uint32_t n = count > 256 ? 256 : count;
         int r = -EIO;
@@ -179,7 +210,7 @@ static int transfer(uint8_t cmd, uint32_t lba, uint32_t count, uint16_t* p) {
             if (t) reset();
             r = pio(cmd, lba, n, p);
         }
-        if (r == -ETIMEDOUT) gone = 1;
+        if (r == -ETIMEDOUT) set_gone();
         if (r) return -EIO;
         lba += n;
         count -= n;
@@ -198,7 +229,7 @@ int ata_write(uint32_t lba, uint32_t count, const void* buf) {
 }
 
 int ata_flush(void) {
-    if (!present || gone) return -EIO;
+    if (!usable()) return -EIO;
     int r = -EIO;
     for (int t = 0; t < TRIES && r; t++) {
         if (t) reset();
@@ -208,6 +239,6 @@ int ata_flush(void) {
         delay400();
         r = wait_ready();
     }
-    if (r == -ETIMEDOUT) gone = 1;
+    if (r == -ETIMEDOUT) set_gone();
     return r ? -EIO : 0;
 }

@@ -124,7 +124,7 @@ static void fill(int x, int y, int w, int h, uint32_t v) {
 // Bring the screen up to date with the grid: the cells that changed,
 // and the cursor. Called with draw_lock held (see draw_now).
 static void draw(void) {
-    dirty = 0;
+    __atomic_store_n(&dirty, 0, __ATOMIC_SEQ_CST);  // before the cells are read, even on another CPU
     if (!fb || detached) return;
     int n = COLS * ROWS;
     if (!shown_ok) {

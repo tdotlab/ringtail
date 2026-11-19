@@ -11,7 +11,7 @@ static void wait_ticks(uint32_t n) {
 }
 
 static int spawn_with(const char* const* argv, int in, int out) {
-    spawn_opts_t o = { 0, 0, { in, out, -1 } };
+    spawn_opts_t o = { 0, 0, { in, out, -1 }, -1 };
     return sys_spawn_opts("fdshare", argv, &o);
 }
 

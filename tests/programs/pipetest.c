@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
     // A child's output, through a pipe.
     sys_pipe(p);
     const char* hello[] = { "hello", 0 };
-    spawn_opts_t o = { SPAWN_NEW_JOB, 0, { -1, p[1], -1 } };
+    spawn_opts_t o = { SPAWN_NEW_JOB, 0, { -1, p[1], -1 }, -1 };
     int id = sys_spawn_opts("HELLO", hello, &o);
     sys_close(p[1]);
     got = slurp(p[0], buf, sizeof buf - 1);
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
     sys_pipe(p);
     sys_pipe(q);
     const char* wc[] = { "wc", 0 };
-    spawn_opts_t w = { SPAWN_NEW_JOB, 0, { p[0], q[1], -1 } };
+    spawn_opts_t w = { SPAWN_NEW_JOB, 0, { p[0], q[1], -1 }, -1 };
     id = sys_spawn_opts("WC", wc, &w);
     sys_close(p[0]);
     sys_close(q[1]);
@@ -93,11 +93,11 @@ int main(int argc, char** argv) {
     // A pipeline whose first program is gone before the second starts.
     sys_pipe(p);
     sys_pipe(q);
-    spawn_opts_t first = { SPAWN_NEW_JOB, 0, { -1, p[1], -1 } };
+    spawn_opts_t first = { SPAWN_NEW_JOB, 0, { -1, p[1], -1 }, -1 };
     int lead = sys_spawn_opts("HELLO", hello, &first);
     sys_join(lead);
     sys_sleep(1);  // long enough for it to be reaped
-    spawn_opts_t second = { SPAWN_JOIN, lead, { p[0], q[1], -1 } };
+    spawn_opts_t second = { SPAWN_JOIN, lead, { p[0], q[1], -1 }, -1 };
     int sec = sys_spawn_opts("WC", wc, &second);
     check(lead > 0 && sec > 0, "a job can still be joined after its leader ended");
     sys_close(p[0]);

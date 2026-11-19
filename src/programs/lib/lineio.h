@@ -15,7 +15,7 @@ typedef struct {
     int fd;
     const char* prog;  // for error messages
     uint32_t n;
-    char buf[1024];
+    char buf[4096];    // glibc's size for a pipe: output that fits goes in one write
 } lio_out_t;
 
 typedef struct {
