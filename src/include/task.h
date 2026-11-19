@@ -56,6 +56,7 @@ typedef struct task {
     char name[TASK_NAME_MAX];
     ofile_t* fds[MAX_FDS];  // 0 where closed
     int cwd;               // current directory, a diskfs node (0 is the root)
+    struct tty* tty;       // the controlling terminal; 0 is the console (tty.h)
     fpu_state_t fpu;       // floating-point registers, saved on every switch
 
     struct task* next;
@@ -112,6 +113,8 @@ int task_sleep_ticks(uint32_t ticks);
 int task_signal(int id, int sig);
 int task_signal_user(int id, int sig);  // for programs: -EPERM for kernel tasks
 void task_signal_job(int job, int sig);
+struct tty;
+void task_signal_tty(struct tty* tty, int sig);  // every task it is the terminal of
 // A signal the task must act on is pending: its blocking waits give up
 // with -EINTR.
 static inline int task_signalled(const task_t* t) { return (t->sig_pending & ~t->sig_blocked) != 0; }

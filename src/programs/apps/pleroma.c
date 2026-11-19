@@ -51,9 +51,9 @@ static int focused = -1;                 // the client last told it has the focu
 static int quit;
 static int started[32], nstarted;        // programs started here, which may be ended
 
-static const char* const menu_items[] = { "Clock", "Paint", "Leave" };
-static const char* const menu_programs[] = { "WCLOCK", "WPAINT", 0 };
-#define MENU_N 3
+static const char* const menu_items[] = { "Clock", "Paint", "Terminal", "Leave" };
+static const char* const menu_programs[] = { "WCLOCK", "WPAINT", "WTERM", 0 };
+#define MENU_N 4
 
 // ---- Clients ----
 
@@ -399,6 +399,12 @@ int main(int argc, char** argv) {
         printf("pleroma: no room for a %dx%d screen\n", W, H);
         return 1;
     }
+    // Ctrl+C and Ctrl+backslash are keys for the window that has the
+    // focus (a terminal's program, say), not signals for the desktop.
+    // Ctrl+Alt+Backspace leaves; three Ctrl+backslashes in two seconds
+    // still end it, whatever it ignores.
+    sys_tty_mode(TTY_NOSIG);
+    signal(SIGQUIT, SIG_IGN);
     sys_gfx_font(font);
     wm_init(&wm, W, H, frame, font);
     for (int c = 0; c < MAX_CLIENTS; c++) clients[c].fd = -1, clients[c].win = -1;

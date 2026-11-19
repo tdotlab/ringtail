@@ -103,6 +103,7 @@ static inline int sys_shm_map(uint32_t id, shm_info_t* i) { return SC2(SYS_SHM_M
 static inline int sys_shm_unmap(uintptr_t addr) { return SC1(SYS_SHM_UNMAP, addr); }
 static inline int sys_chan_listen(const char* name) { return SC1(SYS_CHAN_LISTEN, name); }
 static inline int sys_chan_connect(const char* name) { return SC1(SYS_CHAN_CONNECT, name); }
+static inline int sys_pty_open(int fds[2], const tty_size_t* size) { return SC2(SYS_PTY_OPEN, fds, size); }
 static inline int sys_wait(int x, int y, int buttons) { return SC3(SYS_WAIT, x, y, buttons); }
 
 // printf("addr " IPV4_FMT "\n", IPV4_ARGS(ip)) for an address in host order.

@@ -371,7 +371,23 @@ asked to close that has not gone two seconds later is ended with
 SIGKILL when the close button is pressed again, if pleroma started it.
 The display's owner may start programs (that is how pleroma starts
 its clients), and their output goes to the serial port and to the
-console behind the desktop.
+console behind the desktop. While pleroma runs, Ctrl+C and Ctrl+\ are
+keys for the focused window rather than signals for the desktop; three
+Ctrl+\ in two seconds still end it.
+
+Terminals: each terminal is a tty object with its own line editing,
+foreground job and mode, and each task has a controlling terminal, the
+one its standard input was when it started (the console otherwise).
+`pty_open` makes a pseudo-terminal: a master descriptor, which reads
+what programs write and whose writes are typed keys, and a slave that
+programs use as their terminal. A program started on the slave with
+`SPAWN_FOREGROUND` takes it if no live job has it. When every slave is
+closed the master reads end of file; when the master closes, the
+programs on it get SIGHUP, their reads return end of file and their
+writes EIO. `sys_print`, colours and `/dev/tty` follow the controlling
+terminal. wterm, the Terminal in pleroma's menu, runs saklas on a pty
+and draws it in a window with the console's own emulator (`src/lib/vt.c`)
+and font.
 
 Filesystem: FAT16 with subdirectories and Windows-style long names
 (VFAT). A name is up to 255 printable ASCII characters, none of
@@ -540,11 +556,11 @@ src/drivers    console (framebuffer, VGA text, serial), the 8x16 font, tty, keyb
                ACPI tables and the APICs
 src/net        ARP, IPv4, ICMP and loopback (net.c), UDP sockets (udp.c), TCP (tcp.c, tcpsock.c), the DHCP client (dhcp.c, dhcpmsg.c)
 src/fs         FAT16 (diskfs.c), file descriptors (file.c) and channels (chan.c)
-src/lib        string and printf subset, SHA-256, ChaCha20 and calendar dates, shared by the kernel and programs
+src/lib        string and printf subset, SHA-256, ChaCha20, calendar dates and the terminal emulator (vt.c), shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
 src/programs   user programs in folders, their C library (lib/: runtime, malloc, DNS, SNTP, TLS, windows) and linker script
   apps         the big interactive programs: saklas (the shell), kenoma, octavo, gauge,
-               pleroma (the window server) and its clients wclock and wpaint
+               pleroma (the window server) and its clients wclock, wpaint and wterm
   files        files and directories as things: ls, cp, mv, rm, mkdir, rmdir, touch, find, du, df, basename, dirname
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
@@ -620,9 +636,10 @@ Programs on the disk:
 | Program | What it does |
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
-| pleroma | The window system: a desktop with a bar (a menu, a button for each window, a clock) and windows that can be dragged by their title bars and closed. `run pleroma [PROGRAM...]` starts it with those programs in windows. Its menu (the RingTail button, or a right click on the desktop) starts Clock and Paint, or leaves; so does Ctrl+Alt+Backspace. |
+| pleroma | The window system: a desktop with a bar (a menu, a button for each window, a clock) and windows that can be dragged by their title bars and closed. `run pleroma [PROGRAM...]` starts it with those programs in windows. Its menu (the RingTail button, or a right click on the desktop) starts Clock, Paint and Terminal, or leaves; so does Ctrl+Alt+Backspace. |
 | wclock | An analog clock in a window, for pleroma. |
 | wpaint | Painting in a window, for pleroma: drag with the left button to draw, the right to erase; pick a colour from the strip or with 1 to 8, and c or Clear clears. |
+| wterm | A terminal in a window, for pleroma: 80 by 24, running saklas, or the program it is given (`wterm gauge`, typed in another terminal). It closes when the program ends; closing it hangs the program up. |
 | kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
 | saklas | The command line (the shell). init starts it at boot and again whenever it ends. It is on the disk a second time as `sh`, the name scripts use. |
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
@@ -737,7 +754,7 @@ EINTR, no job control or SIGCHLD, and sockets do not send SIGPIPE). Only one CPU
 1024x768 framebuffer that GRUB sets (or VGA text and mode 13h when it
 cannot); there is no mode setting after boot, and one program owns the
 graphics at a time. Windows in pleroma cannot be resized or minimised,
-the shell and the other terminal programs do not run in a window yet,
+a terminal window is 80 by 24 with no scrollback or copy and paste,
 and kenoma is a separate desktop rather than a client of it. The network has no IPv6, and the resolver does not retry over
 TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by

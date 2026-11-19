@@ -394,6 +394,109 @@ def buttons(m, *states):
 
 WT_GREEN, WT_PURPLE = (0x00, 0xA0, 0x50), (0x50, 0x00, 0xA0)  # wintest's colours
 PAINT_YELLOW = (0xF1, 0xC4, 0x0F)  # one of wpaint's swatches
+VGA_GREEN, VGA_GREY, VGA_BLUE = (0x55, 0xFF, 0x55), (0xAA, 0xAA, 0xAA), (0x00, 0x00, 0xAA)
+
+_SENDKEY = {" ": "spc", ".": "dot", ">": "shift-dot", "/": "slash", "-": "minus", "\n": "ret"}
+
+
+def type_keys(m, text):
+    """Type text on the PS/2 keyboard, as a person would (the serial
+    line only reaches the console)."""
+    for ch in text:
+        m.monitor_cmd("sendkey " + _SENDKEY.get(ch, ch))
+        time.sleep(0.06)
+
+
+def term_rows(shot, corner, rgb):
+    """The rows of an 80x24 terminal window, its content's top left at
+    corner, that have a pixel of rgb."""
+    w, h, px = shot
+    cx, cy = corner
+    b = bytes(rgb)
+    rows = set()
+    for r in range(24):
+        for y in range(cy + r * 16, cy + r * 16 + 16):
+            line = px[(y * w + cx) * 3:(y * w + cx + 640) * 3]
+            at = line.find(b)
+            while at >= 0 and at % 3:
+                at = line.find(b, at + 1)
+            if at >= 0:
+                rows.add(r)
+                break
+    return rows
+
+
+def wait_rows(m, corner, rgb, want, timeout=5):
+    """Wait until the rows with rgb include want; the rows."""
+    end = time.time() + timeout
+    while True:
+        rows = term_rows(m.screenshot(), corner, rgb)
+        if want <= rows or time.time() > end:
+            return rows
+        time.sleep(0.3)
+
+
+def terminal_tests(m, t):
+    """wterm under pleroma: the shell on a pty in a window, typed into
+    from the keyboard; a full-screen program; Ctrl+C for the window's
+    program, not the desktop; closing it ends the shell."""
+    pointer_to(m, 1000, 740)  # out of the way: the window's black is the first on the screen
+    pointer_to(m, 20, 12)  # the bar's menu button
+    buttons(m, 1, 0)
+    pointer_to(m, 20, 28 + 2 + 22 * 2 + 11)  # Terminal, the third item
+    buttons(m, 1, 0)
+    pointer_to(m, 1000, 740)
+    corner = None
+    for _ in range(20):
+        time.sleep(0.5)
+        w, h, px = m.screenshot()
+        first = px.find(b"\0\0\0")
+        while first >= 0 and first % 3:
+            first = px.find(b"\0\0\0", first + 1)
+        if first >= 0 and VGA_GREEN in [m.pixel(x, first // 3 // w + 16 + 8, (w, h, px))
+                                        for x in range(first // 3 % w, first // 3 % w + 88)]:
+            corner = (first // 3 % w, first // 3 // w)
+            break
+    t.check("Terminal from the menu opens a window with the shell's prompt in it", corner is not None)
+    if not corner:
+        return
+    cx, cy = corner
+    type_keys(m, "echo hello > wt.txt\n")
+    rows = wait_rows(m, corner, VGA_GREEN, {1, 2})
+    t.check("keys typed in it go to the shell, which prompts again on the next line", rows == {1, 2}, rows)
+    type_keys(m, "echo hi\n")
+    rows = wait_rows(m, corner, VGA_GREEN, {1, 2, 4})
+    t.check("and what a command prints is drawn in the window",
+            rows == {1, 2, 4} and 3 in term_rows(m.screenshot(), corner, VGA_GREY), rows)
+
+    type_keys(m, "octavo wt.txt\n")
+    time.sleep(1.5)
+    shot = m.screenshot()
+    t.check("a full-screen program fills the 80x24 window, its status bar on the last row",
+            m.pixel(cx + 4, cy + 23 * 16 + 8, shot) == VGA_BLUE and m.pixel(cx + 4, cy + 22 * 16 + 8, shot) != VGA_BLUE,
+            (m.pixel(cx + 4, cy + 23 * 16 + 8, shot), m.pixel(cx + 4, cy + 22 * 16 + 8, shot)))
+    m.monitor_cmd("sendkey ctrl-q")
+    rows = wait_rows(m, corner, VGA_GREEN, {0})
+    t.check("and when it ends the shell is back", 0 in rows and m.pixel(cx + 4, cy + 23 * 16 + 8) != VGA_BLUE, rows)
+
+    type_keys(m, "sleep 30\n")
+    time.sleep(0.5)
+    before = term_rows(m.screenshot(), corner, VGA_GREEN)
+    m.monitor_cmd("sendkey ctrl-c")
+    after = wait_rows(m, corner, VGA_GREEN, before | {max(before) + 2})
+    t.check("Ctrl+C interrupts the window's program, and the desktop stays",
+            max(after) == max(before) + 2 and m.pixel(760, 3) == KENOMA_BAR, (before, after, m.pixel(760, 3)))
+    m.monitor_cmd("sendkey ctrl-backslash")
+    time.sleep(0.5)
+    t.check("so does a Ctrl+backslash", m.pixel(760, 3) == KENOMA_BAR and m.pixel(cx + 4, cy + 4) == (0, 0, 0))
+
+    pointer_to(m, cx + 640 - 12, cy - 12)  # its close button
+    buttons(m, 1, 0)
+    pointer_to(m, 1000, 740)
+    time.sleep(1.5)
+    t.check("its close button closes it", m.pixel(cx + 4, cy + 4) != (0, 0, 0), m.pixel(cx + 4, cy + 4))
+
+
 
 
 def pleroma_tests(m, t):
@@ -492,6 +595,8 @@ def pleroma_tests(m, t):
         time.sleep(1.5)
         t.check("its close button closes it", find_colour(m.screenshot(), PAINT_YELLOW) is None)
 
+    terminal_tests(m, t)
+
     pointer_to(m, 104 + 70, 14)  # wintest's button on the bar
     buttons(m, 1, 0)
     m.expect(rb"wintest: focus 1\r\n", 5)
@@ -516,6 +621,11 @@ def pleroma_tests(m, t):
     t.check("Ctrl+Alt+Backspace leaves pleroma and the console returns", m.console_shown())
     out = m.run("run wintest none")
     t.check("and the window server's name is free again", "wintest: all" in out and "FAIL" not in out, out)
+    out = m.run("tasks")
+    t.check("the terminal's shell went with its window", "WTERM" not in out and "SAKLAS" not in out, out)
+    out = m.run("cat wt.txt")
+    t.check("having done what it was told", "hello" in out, out)
+    m.run("rm wt.txt")
 
 
 def card_interrupts(net_out):
@@ -574,7 +684,7 @@ def tests(m, t):
     t.check("and the new shell works", "0.28.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn", "fdshare", "sigtest",
-                 "udptest", "tcptest", "rndtest", "sysregs", "shmtest", "chantest"]:
+                 "udptest", "tcptest", "rndtest", "sysregs", "shmtest", "chantest", "ptytest"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")

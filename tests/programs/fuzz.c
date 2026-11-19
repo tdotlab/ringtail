@@ -126,7 +126,7 @@ static const call_t calls[] = {
     { SYS_SETTIME, "settime" },  // random words are never a date after the build, so it only fails
     { SYS_GFX_INFO, "gfx_info" }, { SYS_GFX_PUT, "gfx_put" }, { SYS_TTY_SIZE, "tty_size" },
     { SYS_SHM_NEW, "shm_new" }, { SYS_SHM_MAP, "shm_map" }, { SYS_SHM_UNMAP, "shm_unmap" },
-    { SYS_CHAN_LISTEN, "chan_listen" }, { SYS_CHAN_CONNECT, "chan_connect" },
+    { SYS_CHAN_LISTEN, "chan_listen" }, { SYS_CHAN_CONNECT, "chan_connect" }, { SYS_PTY_OPEN, "pty_open" },
     { 0, "unknown" },
 };
 #define NCALLS ((int)(sizeof calls / sizeof calls[0]))
@@ -137,6 +137,7 @@ static int last_sock = -1;  // the socket calls mostly go to the newest socket, 
 static int last_tcp = -1;   // the same for TCP, which never connects anywhere
 static int last_port = 9;
 static int last_chan_l = -1;  // a channel listener of its own, so connect and accept find someone
+static int had_pty;  // a pty was made, so the masters are emptied before each call
 static shm_info_t last_shm;  // the newest shared memory, so map and unmap find it now and then   // and sends now and then to the port it was bound to, so something arrives
 
 // Words at scratch+128 that look like the argument structs: small
@@ -153,8 +154,21 @@ static void shuffle_struct(void) {
     }
 }
 
+// What a pty's programs wrote waits for its master to read it, and a
+// write to the slave waits once 8 KB do. Nothing else here reads the
+// masters, so this does, before every call.
+static void drain_ptys(void) {
+    static char sink[4096];
+    for (int fd = 0; fd < MAX_FDS; fd++) {
+        if (sys_fdtype(fd) != FDTYPE_PTY) continue;
+        pollfd_t p = { fd, POLLIN, 0 };
+        while (sys_pollfd(&p, 1, 0) == 1 && (p.revents & POLLIN) && sys_read(fd, sink, sizeof sink) > 0) {}
+    }
+}
+
 static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
     shuffle_struct();
+    if (had_pty) drain_ptys();
     if (rnd() % 8 == 0) sys_chdir("/FZ");  // chdir(\"..\") may have left it
     if (rnd() % 6 == 0) sys_open("a", O_RDWR | O_CREAT);
     const call_t* c = &calls[rnd() % NCALLS];
@@ -298,6 +312,16 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         break;
     }
     case SYS_FDTYPE: a = fd_value(); break;
+    case SYS_PTY_OPEN: {
+        // Mostly a size that works; the struct words or a bad pointer now and then.
+        int* sz = (int*)(scratch + 896);
+        sz[0] = rnd() % 4 ? 1 + (int)(rnd() % 200) : (int)interesting();
+        sz[1] = rnd() % 4 ? 1 + (int)(rnd() % 100) : (int)interesting();
+        a = rnd() % 4 ? (uintptr_t)scratch + 904 : pointer();
+        b = rnd() % 4 ? (uintptr_t)sz : rnd() % 2 ? (uintptr_t)scratch + 128 : pointer();
+        had_pty = 1;
+        break;
+    }
     case SYS_NETCONF:
         // Reading the settings goes anywhere; a change only where it must
         // fail, or the machine would lose its address in the middle.
@@ -329,10 +353,11 @@ static int one_call(uint32_t iter, uint32_t verbose_from, int force_gfx) {
         }
     }
 
-    // A channel read with nothing to read, or a write to a full one,
-    // would wait for ever: nothing else in this program is at the other
-    // end. Those go to a descriptor that is not open instead.
-    if ((n == SYS_READ || n == SYS_WRITE) && a < MAX_FDS && sys_fdtype((int)a) == FDTYPE_CHAN) {
+    // A channel or terminal read with nothing to read, or a write to a
+    // full one, would wait for ever: nothing else in this program is at
+    // the other end. Those go to a descriptor that is not open instead.
+    int ft = (n == SYS_READ || n == SYS_WRITE) && a < MAX_FDS ? sys_fdtype((int)a) : -1;
+    if (ft == FDTYPE_CHAN || ft == FDTYPE_PTY || ft == FDTYPE_TTY) {
         pollfd_t p = { (int)a, n == SYS_READ ? POLLIN : POLLOUT, 0 };
         if (sys_pollfd(&p, 1, 0) != 1 || !(p.revents & p.events)) a = MAX_FDS;
     }

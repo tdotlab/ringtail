@@ -32,14 +32,17 @@ static long sys_print(uintptr_t ubuf, uintptr_t len, uintptr_t c) {
     if (user_range_ok(ubuf, len, 0)) return -EFAULT;
     char buf[256];
     uint32_t done = 0;
-    console_lock();  // one call's output comes out in one piece
+    struct tty* t = tty_current();
+    tty_lock_output(t);  // one call's output comes out in one piece
     while (done < len) {
         uint32_t n = MIN(len - done, sizeof buf);
         if (copy_from_user(buf, (const char*)(ubuf + done), n)) break;
-        console_write(buf, n);
-        done += n;
+        int w = tty_write(t, buf, n);
+        if (w <= 0) break;
+        done += (uint32_t)w;
+        if ((uint32_t)w < n) break;
     }
-    console_unlock();
+    tty_unlock_output(t);
     return (int)done;
 }
 
@@ -308,7 +311,7 @@ static int input_ready(int lx, int ly, int lb) {
     gfx_mouse(&x, &y, &btn);
     if (x != lx || y != ly || btn != lb) return 1;
     if (is_owner()) return keyboard_raw_pending();
-    return current->job == tty_foreground() && tty_pending();
+    return tty_has_input(tty_current());
 }
 
 static long sys_wait(uintptr_t lx, uintptr_t ly, uintptr_t lb) {
@@ -332,7 +335,7 @@ static long sys_poll(uintptr_t ticks, uintptr_t b, uintptr_t c) {
     if (ticks > 3600u * TIMER_HZ) ticks = 3600u * TIMER_HZ;
     uint32_t end = timer_ticks() + ticks;
     for (;;) {
-        if (current->job == tty_foreground() && tty_pending()) return 1;
+        if (tty_has_input(tty_current())) return 1;
         if (task_signalled(current)) return -EINTR;
         if ((int32_t)(timer_ticks() - end) >= 0) return 0;
         task_sleep_ticks(1);
@@ -461,13 +464,19 @@ static long sys_chan_connect(uintptr_t uname, uintptr_t b, uintptr_t c) {
     return file_chan_connect((const char*)uname);
 }
 
+static long sys_pty_open(uintptr_t ufds, uintptr_t usize, uintptr_t c) {
+    (void)c;
+    return file_pty((int*)ufds, (const tty_size_t*)usize);
+}
+
 static long sys_tty_size(uintptr_t fd, uintptr_t uarg, uintptr_t c) {
     (void)c;
     int t = file_fdtype((int)fd);
     if (t < 0) return t;
-    if (t != FDTYPE_TTY) return -ENOTTY;
+    if (t != FDTYPE_TTY && t != FDTYPE_PTY) return -ENOTTY;
     tty_size_t z;
-    console_size(&z.cols, &z.rows);
+    int r = file_tty_size((int)fd, &z.cols, &z.rows);
+    if (r) return r;
     return copy_to_user((void*)uarg, &z, sizeof z);
 }
 
@@ -610,13 +619,22 @@ static long sys_spawn(uintptr_t uname, uintptr_t uargv, uintptr_t uopts) {
     if (!r && argc == 0) r = -EINVAL;
     // A bare name is a program in the root; a path is taken as it is.
     int at = strchr(name, '/') ? file_cwd() : DISKFS_ROOT;
+    // The child's terminal: its standard input's, if that is one, or
+    // ours. Only the terminal's owner can pass it on, but a pty that no
+    // live job has goes to whoever starts one on it.
+    struct tty* tty = file_tty_of(std[0]);
+    if (!tty) tty = tty_current();
     int fg = (o.flags & SPAWN_FOREGROUND) != 0;
-    if (!r && fg && current->job != tty_foreground()) r = -EPERM;  // only the terminal's owner can pass it on
+    int claim = fg && current->job != tty_foreground(tty) && tty_unowned(tty);
+    if (!r && fg && !claim && current->job != tty_foreground(tty)) r = -EPERM;
+    if (!r && claim && job) r = -EPERM;  // it goes to a new job, not to one of ours
     if (!r) r = loader_spawn(at, name, argc, argv, job, std, fg);
     kfree(strings);
     if (r > 0 && fg) {
         // The child gets the terminal before its first instruction.
-        int h = tty_handover(job ? job : r);
+        int h = 0;
+        if (claim) tty_set_foreground(tty, r);
+        else h = tty_handover(tty, job ? job : r);
         if (h) task_signal(r, SIGKILL);  // never ran; it ends at once
         task_release(r);
         if (h) r = h;
@@ -626,7 +644,7 @@ static long sys_spawn(uintptr_t uname, uintptr_t uargv, uintptr_t uopts) {
 
 static long sys_tty_fg(uintptr_t job, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    return tty_handover((int)job);
+    return tty_handover(tty_current(), (int)job);
 }
 
 static long sys_wait_job(uintptr_t job, uintptr_t b, uintptr_t c) {
@@ -677,7 +695,7 @@ static long sys_kinfo(uintptr_t what, uintptr_t ubuf, uintptr_t size) {
 static long sys_set_color(uintptr_t color, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
     if (color > 0xFF || (color >> 4) == (color & 0x0F)) return -EINVAL;  // invisible text
-    console_set_color((uint8_t)color);
+    tty_set_color(tty_current(), (uint8_t)color);
     return 0;
 }
 
@@ -715,7 +733,7 @@ static long sys_sbrk(uintptr_t incr, uintptr_t b, uintptr_t c) {
 
 static long sys_tty_mode(uintptr_t mode, uintptr_t b, uintptr_t c) {
     (void)b; (void)c;
-    return tty_set_mode((int)mode);
+    return tty_set_mode(tty_current(), (int)mode);
 }
 
 static long sys_ticks(uintptr_t a, uintptr_t b, uintptr_t c) {
@@ -805,6 +823,7 @@ static const syscall_fn table[NUM_SYSCALLS] = {
     [SYS_SHM_UNMAP] = sys_shm_unmap,
     [SYS_CHAN_LISTEN] = sys_chan_listen,
     [SYS_CHAN_CONNECT] = sys_chan_connect,
+    [SYS_PTY_OPEN] = sys_pty_open,
 };
 
 void syscall_handle(regs_t* r) {

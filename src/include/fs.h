@@ -53,10 +53,11 @@ int diskfs_name_ok(const char* name);
 
 // ---- File descriptors ----
 
-typedef enum { FD_NONE = 0, FD_CONSOLE_IN, FD_CONSOLE_OUT, FD_FILE, FD_PIPE_R, FD_PIPE_W, FD_SOCKET, FD_TCP,
+typedef enum { FD_NONE = 0, FD_TTY, FD_PTY, FD_FILE, FD_PIPE_R, FD_PIPE_W, FD_SOCKET, FD_TCP,
                FD_CHAN, FD_CHAN_LISTEN } fd_kind_t;
 
 struct pipe;
+struct tty;
 struct socket;
 struct tcp;
 struct chan;
@@ -79,6 +80,7 @@ typedef struct ofile {
     struct chan* chan;   // FD_CHAN
     int side;            // FD_CHAN: 0 connected, 1 accepted
     struct chan_listener* listener;  // FD_CHAN_LISTEN
+    struct tty* tty;     // FD_TTY: a terminal; FD_PTY: a pty's master side
 } ofile_t;
 
 // Pipes (pipe.c). pipe_new returns a pipe with one reader and one
@@ -125,6 +127,9 @@ int file_read(int fd, void* ubuf, uint32_t len);
 int file_write(int fd, const void* ubuf, uint32_t len);
 int file_seek(int fd, int32_t off, int whence);
 int file_pipe(int* ufds);            // ufds[0] reads, ufds[1] writes
+int file_pty(int* ufds, const tty_size_t* usize);  // SYS_PTY_OPEN
+struct tty* file_tty_of(int fd);     // the terminal fd is, or 0
+int file_tty_size(int fd, int* cols, int* rows);
 int file_dup2(int oldfd, int newfd); // newfd becomes a copy of oldfd
 int file_socket(int type);           // a new socket's descriptor, TCP or UDP
 // The socket behind fd: 0 with *s set, -EBADF, -ENOTSOCK, or

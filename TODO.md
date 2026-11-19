@@ -377,7 +377,7 @@ to change hands when a job stops as well as when it ends.
 **Clock discipline and better time.** Several servers and a choice between
 them, slewing instead of stepping, NTS. Each is a trust and design call.
 
-**The desktop, stages 3 and 4.** Stages 1 and 2 are done. Stage 1:
+**The desktop, stage 4.** Stages 1 to 3 are done. Stage 1:
 GRUB's 1024x768 framebuffer, the console drawn in it
 (`src/drivers/console.c`, the `console` kernel task), native graphics at
 full size (`GFX_NATIVE`, `SYS_GFX_PUT`, `src/drivers/gfx.c`) and kenoma
@@ -386,15 +386,13 @@ named message channels (`SYS_CHAN_*`, `src/fs/chan.c`), the
 scancode translation shared by the keyboard driver and programs
 (`src/lib/keymap.c`), and pleroma, the window server, with its protocol
 (`lib/wsys.h`), client library (`lib/win.c`), window manager core
-(`lib/wm.c`) and two clients, wclock and wpaint. What is left, in
-order, each one usable on its own:
+(`lib/wm.c`) and two clients, wclock and wpaint. Stage 3: a tty object
+per terminal with a controlling terminal per task (`src/drivers/tty.c`),
+pseudo-terminals (`SYS_PTY_OPEN`), the console's escape-sequence
+emulator moved into `src/lib/vt.c` so the kernel and programs share it,
+and wterm, which runs saklas on a pty in an 80x24 window. The shell,
+Octavo and gauge run in it unchanged. What is left:
 
-- Pseudo-terminals and a terminal window. A pty pair in the kernel (the
-  tty's line discipline on one side, a plain pipe-like end on the other),
-  `tty_size` answering per pty, SIGWINCH on resize, then a terminal
-  program that runs saklas on the pty and draws the cells in a window
-  with the console font. After that the shell, Octavo and gauge run in
-  windows unchanged.
 - A small toolkit (buttons, lists, text fields, menus) on the shared
   buffers, and kenoma's launcher as a window-server client. Then a file
   browser and a settings window.
@@ -402,8 +400,10 @@ order, each one usable on its own:
 Smaller things the window system lacks: resizing (a CONFIGURE event
 and a client remapping bigger memory), minimising to the bar, the
 pointer leaving a window (no event says so), a pointer shape per
-window, and a way for the menu to list more than its three fixed
-entries. pleroma runs in mode 13h too but is cramped at 320x200; it
+window, and a way for the menu to list more than its four fixed
+entries. Once windows resize, a terminal needs SIGWINCH and a way to
+set a pty's size; wterm is 80x24 until then, has no scrollback, and
+cannot copy or paste. pleroma runs in mode 13h too but is cramped at 320x200; it
 could refuse below some size.
 
 **fork/exec**, **finer kernel locks**, **IPv6**, and **TLS session resumption**: each one

@@ -390,6 +390,16 @@ void task_signal_job(int job, int sig) {
     irq_restore(f);
 }
 
+void task_signal_tty(struct tty* tty, int sig) {
+    uint32_t f = irq_save();
+    task_t* t = task_list_head;
+    do {
+        if (t->tty == tty && t->state != TASK_DEAD && !t->is_idle) task_signal(t->id, sig);
+        t = t->next;
+    } while (t != task_list_head);
+    irq_restore(f);
+}
+
 int task_join(int id) {
     uint32_t f = irq_save();
     task_t* t = task_find(id);

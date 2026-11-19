@@ -61,7 +61,7 @@ SIG_LIB = ../src/programs/lib/sig.c ../src/programs/lib/sha512.c ../src/lib/sha2
 SIG_HDRS = ../src/programs/lib/sig.h ../src/programs/lib/sha512.h ../src/programs/lib/der.h
 X509_SRCS = test_x509.c ../src/programs/lib/x509.c $(SIG_LIB)
 
-HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore sh_host test_sh test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509 test_ata test_keymap test_wm
+HOST_TESTS = $(TEST) test_netmsg test_tcp test_regex test_diff test_b64 test_shasum test_pfcore sh_host test_sh test_spcore test_jncore test_fcore test_crypto test_tls test_sig test_x509 test_ata test_keymap test_wm test_vt
 
 all: $(HOST_TESTS)
 
@@ -126,6 +126,9 @@ test_ata: test_ata.c ../src/drivers/ata.c ata_shim/fake.h
 test_keymap: test_keymap.c ../src/lib/keymap.c ../src/include/keymap.h ../src/include/tty.h
 	$(CC) $(NETMSG_CFLAGS) -o $@ test_keymap.c ../src/lib/keymap.c
 
+test_vt: test_vt.c ../src/lib/vt.c ../src/include/vt.h
+	$(CC) $(NETMSG_CFLAGS) -o $@ test_vt.c ../src/lib/vt.c
+
 test_wm: test_wm.c ../src/programs/lib/wm.c ../src/programs/lib/wm.h
 	$(CC) $(NETMSG_CFLAGS) -o $@ test_wm.c ../src/programs/lib/wm.c
 
@@ -149,6 +152,7 @@ run: $(HOST_TESTS)
 	./test_ata
 	./test_keymap
 	./test_wm
+	./test_vt
 	@if command -v fsck.fat >/dev/null; then \
 		fsck.fat -n test_disk.img >/dev/null && echo "fsck.fat: disk image is clean"; \
 	else echo "fsck.fat not installed, skipping the image check"; fi

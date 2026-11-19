@@ -22,11 +22,11 @@ static int run(const char* prog, int argc, const char* const* argv, int* status)
     // read as a background job, fail, and end at once.
     int id = loader_spawn(DISKFS_ROOT, prog, argc, argv, 0, 0, 1);
     if (id < 0) return id;
-    tty_set_foreground(id);
+    tty_set_foreground(console_tty, id);
     task_release(id);
     *status = task_join(id);
     task_wait_job(id);
-    tty_set_foreground(current->job);  // clears up after one that died in raw mode
+    tty_set_foreground(console_tty, current->job);  // clears up after one that died in raw mode
     return 0;
 }
 

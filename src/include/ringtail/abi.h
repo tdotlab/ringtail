@@ -80,7 +80,8 @@
 #define SYS_SHM_UNMAP   70  // (addr)                  -> 0
 #define SYS_CHAN_LISTEN 71  // (name)                  -> fd that accept takes connections on
 #define SYS_CHAN_CONNECT 72 // (name)                  -> fd of a new channel to the listener
-#define NUM_SYSCALLS    73
+#define SYS_PTY_OPEN    73  // (int fds[2], const tty_size_t*) -> 0; a pty: fds[0] its master, fds[1] the terminal
+#define NUM_SYSCALLS    74
 
 // Signals, numbered as on Linux. Each one's default action is to end
 // the program, which then reports EXIT_SIGNAL(sig). A program can
@@ -234,9 +235,9 @@ typedef struct { unsigned year, month, day, hour, min, sec; } rtc_time_t;
 // file of that name; O_RDWR and the creating flags are refused.
 #define DEV_TTY "/dev/tty"
 
-#define STDIN_FILENO  0     // console input, foreground only; line at a time unless TTY_RAW
-#define STDOUT_FILENO 1     // console output
-#define STDERR_FILENO 2     // console output, for errors
+#define STDIN_FILENO  0     // terminal input, foreground only; line at a time unless TTY_RAW
+#define STDOUT_FILENO 1     // terminal output
+#define STDERR_FILENO 2     // terminal output, for errors
 #define MAX_FDS 16  // descriptors per program
 
 // open() flags. Values match Linux so they look familiar.
@@ -320,6 +321,28 @@ typedef struct { int width, height; } gfx_info_t;
 typedef struct { int x, y, w, h, stride, pad; const unsigned* pixels; } gfx_put_t;
 // The terminal's size in characters.
 typedef struct { int cols, rows; } tty_size_t;
+
+// Ptys (SYS_PTY_OPEN): a terminal that a program, not the screen and
+// keyboard, is at the other end of: a terminal window. Its size is
+// fixed when it is made. fds[1] is the terminal (read and write);
+// hand it to a program as its standard descriptors (spawn with
+// SPAWN_NEW_JOB | SPAWN_FOREGROUND), and the pty becomes that
+// program's controlling terminal and the new job its foreground: the
+// first job spawned so onto a pty nobody has gets it. From then on it
+// works as the console does: SYS_TTY_MODE, SYS_TTY_FG, SYS_POLL,
+// SYS_PRINT, SYS_SET_COLOR and /dev/tty act on the caller's own
+// terminal.
+//
+// fds[0], the master: what is written to it is typed at the terminal,
+// in the codes the console's queue carries: characters, Ctrl+letters
+// as control characters (Ctrl+C and Ctrl+backslash signal the
+// foreground job as keys do), '\n' for Enter, '\b' for Backspace, the
+// KEY_NAV codes (tty.h) for the navigation and function keys, and ESC
+// before a key for Alt. Reading it gives what the terminal shows: the
+// programs' output and the echo of typed lines, escape sequences and
+// all, for the window to draw. A read returns 0 once no terminal
+// descriptor is left open. Closing the master hangs the pty up: its
+// programs get SIGHUP, their reads return 0 and writes EIO.
 
 // Shared memory. SYS_SHM_NEW makes size bytes (rounded up to pages, at
 // most SHM_MAX) of zeroed memory, maps it into the caller and returns
@@ -449,6 +472,7 @@ typedef struct { int fd, events, revents; } pollfd_t;
 #define FDTYPE_UDP  4
 #define FDTYPE_TCP  5
 #define FDTYPE_CHAN 6  // a channel, or a channel listener
+#define FDTYPE_PTY  7  // a pty's master side
 
 // SYS_RANDOM: bytes nobody can predict, for keys and anything else an
 // attacker must not guess. They come from the kernel's generator, which

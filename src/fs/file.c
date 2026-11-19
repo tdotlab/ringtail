@@ -1,7 +1,8 @@
 // Per-task file descriptors and current directory. A program starts
 // with console input on fd 0 and console output on 1 and 2, or with
-// copies of its parent's descriptors; the rest are diskfs files and
-// pipe ends and sockets. It starts in its parent's directory. All
+// copies of its parent's descriptors; the rest are diskfs files, pipe
+// ends, sockets, channels and ptys. Its controlling terminal is its
+// parent's, or its standard input's when that is a terminal. It starts in its parent's directory. All
 // buffers passed in are user pointers; data moves through a kernel
 // bounce buffer, so the disk code never touches user memory.
 //
@@ -35,9 +36,12 @@
 
 #define BOUNCE 4096u
 
-// The console's open files, shared by every task and never freed.
-static ofile_t console_in = { .kind = FD_CONSOLE_IN, .flags = O_RDONLY };
-static ofile_t console_out = { .kind = FD_CONSOLE_OUT, .flags = O_WRONLY };
+// The console's open files, shared by every task and never freed. A
+// terminal file's tty is 0 for the console.
+static ofile_t console_in = { .kind = FD_TTY, .flags = O_RDONLY };
+static ofile_t console_out = { .kind = FD_TTY, .flags = O_WRONLY };
+
+static struct tty* ftty(const ofile_t* f) { return f->tty ? f->tty : console_tty; }
 
 static int ofile_static(const ofile_t* f) { return f == &console_in || f == &console_out; }
 
@@ -68,6 +72,8 @@ static void ofile_put(ofile_t* f) {
     else if (f->kind == FD_TCP) tcpsock_unref(f->tcp);
     else if (f->kind == FD_CHAN) chan_close(f->chan, f->side);
     else if (f->kind == FD_CHAN_LISTEN) chan_unlisten(f->listener);
+    else if (f->kind == FD_TTY) tty_slave_unref(ftty(f));
+    else if (f->kind == FD_PTY) pty_master_close(f->tty);
     f->kind = FD_NONE;
     kfree(f);
 }
@@ -79,6 +85,8 @@ void files_init_std(task_t* t) {
     t->fds[STDIN_FILENO] = &console_in;
     t->fds[STDOUT_FILENO] = &console_out;
     t->fds[STDERR_FILENO] = &console_out;
+    t->tty = current ? current->tty : 0;
+    tty_ref(t->tty);
 }
 
 int file_fd_ok(int fd) {
@@ -92,6 +100,12 @@ void files_inherit(task_t* child, task_t* parent, const int std[SPAWN_FDS]) {
         if (!f) continue;  // the caller checked; keep the console
         child->fds[i] = ofile_get(f);  // replaces a console one, which is not counted
     }
+    ofile_t* in = child->fds[STDIN_FILENO];
+    if (in->kind == FD_TTY && in->tty != child->tty) {
+        tty_ref(in->tty);
+        tty_unref(child->tty);
+        child->tty = in->tty;
+    }
 }
 
 void files_close_all(task_t* t) {
@@ -102,6 +116,9 @@ void files_close_all(task_t* t) {
     }
     diskfs_unref(t->cwd);
     t->cwd = DISKFS_ROOT;
+    struct tty* tty = t->tty;
+    t->tty = 0;
+    tty_unref(tty);
 }
 
 int file_cwd(void) { return current->cwd; }
@@ -141,7 +158,16 @@ int file_open(const char* uname, int flags) {
     // is a pipe. One direction per descriptor, as the standard ones are.
     if (strcmp(name, DEV_TTY) == 0) {
         if (acc == O_RDWR || (flags & ~O_ACCMODE)) return -EINVAL;
-        current->fds[fd] = acc == O_RDONLY ? &console_in : &console_out;
+        struct tty* t = tty_current();
+        if (tty_is_console(t)) {
+            current->fds[fd] = acc == O_RDONLY ? &console_in : &console_out;
+            return fd;
+        }
+        ofile_t* f = ofile_new(FD_TTY, flags);
+        if (!f) return -ENOMEM;
+        f->tty = t;
+        tty_slave_ref(t);
+        current->fds[fd] = f;
         return fd;
     }
 
@@ -197,6 +223,46 @@ int file_pipe(int* ufds) {
     r->pipe = w->pipe = p;
     current->fds[fds[0]] = r;
     current->fds[fds[1]] = w;
+    return 0;
+}
+
+struct tty* file_tty_of(int fd) {
+    ofile_t* f = get_fd(fd);
+    return f && f->kind == FD_TTY ? ftty(f) : 0;
+}
+
+int file_tty_size(int fd, int* cols, int* rows) {
+    ofile_t* f = get_fd(fd);
+    if (!f) return -EBADF;
+    if (f->kind != FD_TTY && f->kind != FD_PTY) return -ENOTTY;
+    return tty_size(ftty(f), cols, rows);
+}
+
+int file_pty(int* ufds, const tty_size_t* usize) {
+    tty_size_t z;
+    if (copy_from_user(&z, usize, sizeof z)) return -EFAULT;
+    int fds[2];
+    fds[0] = free_fd(0);
+    if (fds[0] < 0) return fds[0];
+    fds[1] = free_fd(fds[0] + 1);
+    if (fds[1] < 0) return fds[1];
+    if (user_range_ok((uintptr_t)ufds, sizeof fds, 1)) return -EFAULT;
+    if (z.cols < 1 || z.rows < 1 || z.cols > 1000 || z.rows > 1000) return -EINVAL;
+    struct tty* t = pty_new(z.cols, z.rows);
+    if (!t) return -ENOMEM;
+    ofile_t* m = ofile_new(FD_PTY, O_RDWR);
+    ofile_t* s = ofile_new(FD_TTY, O_RDWR);
+    int err = !m || !s ? -ENOMEM : copy_to_user(ufds, fds, sizeof fds) ? -EFAULT : 0;
+    if (err) {
+        kfree(m);
+        kfree(s);
+        pty_master_close(t);
+        return err;
+    }
+    m->tty = s->tty = t;
+    tty_slave_ref(t);
+    current->fds[fds[0]] = m;
+    current->fds[fds[1]] = s;
     return 0;
 }
 
@@ -314,8 +380,8 @@ int file_fdtype(int fd) {
     ofile_t* f = get_fd(fd);
     if (!f) return -EBADF;
     switch (f->kind) {
-    case FD_CONSOLE_IN:
-    case FD_CONSOLE_OUT: return FDTYPE_TTY;
+    case FD_TTY: return FDTYPE_TTY;
+    case FD_PTY: return FDTYPE_PTY;
     case FD_FILE: return FDTYPE_FILE;
     case FD_PIPE_R:
     case FD_PIPE_W: return FDTYPE_PIPE;
@@ -342,7 +408,14 @@ static int fd_events(int fd) {
     ofile_t* f = get_fd(fd);
     if (!f) return POLLNVAL;
     switch (f->kind) {
-    case FD_CONSOLE_IN: return current->job == tty_foreground() && tty_pending() ? POLLIN : 0;
+    case FD_TTY: {
+        struct tty* t = ftty(f);
+        int acc = f->flags & O_ACCMODE, ev = 0;
+        if (acc != O_WRONLY && tty_has_input(t)) ev |= POLLIN;
+        if (acc != O_RDONLY) ev |= tty_is_console(t) ? POLLIN | POLLOUT : tty_out_events(t);
+        return ev;
+    }
+    case FD_PTY: return pty_master_events(f->tty);
     case FD_PIPE_R: return pipe_events(f->pipe, 0);
     case FD_PIPE_W: return pipe_events(f->pipe, 1);
     case FD_SOCKET: return udp_socket_events(f->sock);
@@ -399,12 +472,12 @@ int file_dup2(int oldfd, int newfd) {
     return newfd;
 }
 
-static int console_read(void* ubuf, uint32_t len) {
-    if (current->job != tty_foreground()) return -EIO;  // background job
+static int terminal_read(struct tty* t, void* ubuf, uint32_t len) {
+    if (current->job != tty_foreground(t)) return -EIO;  // background job
     char buf[256];
     if (len > sizeof buf) len = sizeof buf;
     if (user_range_ok((uintptr_t)ubuf, len, 1)) return -EFAULT;
-    int n = tty_read(buf, len);
+    int n = tty_read(t, buf, len);
     if (n > 0 && copy_to_user(ubuf, buf, (size_t)n)) return -EFAULT;
     return n;
 }
@@ -414,7 +487,7 @@ int file_read(int fd, void* ubuf, uint32_t len) {
     if (!f || (f->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
     if (f->kind == FD_SOCKET) return -EINVAL;  // UDP sockets take SYS_RECVFROM
     if (len == 0) return 0;
-    if (f->kind == FD_CONSOLE_IN) return console_read(ubuf, len);
+    if (f->kind == FD_TTY) return terminal_read(ftty(f), ubuf, len);
     if (f->kind == FD_CHAN) {
         if (user_range_ok((uintptr_t)ubuf, MIN(len, CHAN_MSG_MAX), 1)) return -EFAULT;
         uint8_t msg[CHAN_MSG_MAX];
@@ -422,15 +495,16 @@ int file_read(int fd, void* ubuf, uint32_t len) {
         if (n > 0 && copy_to_user(ubuf, msg, (size_t)n)) n = -EFAULT;  // the message is gone all the same
         return n;
     }
-    if (f->kind != FD_FILE && f->kind != FD_PIPE_R && f->kind != FD_TCP) return -EBADF;
+    if (f->kind != FD_FILE && f->kind != FD_PIPE_R && f->kind != FD_TCP && f->kind != FD_PTY) return -EBADF;
     if (user_range_ok((uintptr_t)ubuf, len, 1)) return -EFAULT;
 
     uint8_t* bounce = kmalloc(BOUNCE);
     if (!bounce) return -ENOMEM;
-    if (f->kind == FD_PIPE_R || f->kind == FD_TCP) {
+    if (f->kind == FD_PIPE_R || f->kind == FD_TCP || f->kind == FD_PTY) {
         // Whatever is there now, waiting only if nothing is.
-        int n = f->kind == FD_TCP ? tcpsock_read(f->tcp, bounce, MIN(len, BOUNCE))
-                                  : pipe_read(f->pipe, bounce, MIN(len, BOUNCE));
+        int n = f->kind == FD_TCP   ? tcpsock_read(f->tcp, bounce, MIN(len, BOUNCE))
+                : f->kind == FD_PTY ? pty_master_read(f->tty, bounce, MIN(len, BOUNCE))
+                                    : pipe_read(f->pipe, bounce, MIN(len, BOUNCE));
         if (n > 0 && copy_to_user(ubuf, bounce, (size_t)n)) n = -EFAULT;
         kfree(bounce);
         return n;
@@ -469,21 +543,19 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
     if (!bounce) return -ENOMEM;
     uint32_t done = 0;
     int err = 0;
-    if (f->kind == FD_CONSOLE_OUT) console_lock();
+    if (f->kind == FD_TTY) tty_lock_output(ftty(f));
     if (f->kind == FD_FILE) mutex_lock(&f->lock);
     while (done < len) {
         uint32_t chunk = MIN(len - done, BOUNCE);
         if (copy_from_user(bounce, (const uint8_t*)ubuf + done, chunk)) { err = -EFAULT; break; }
-        if (f->kind == FD_CONSOLE_OUT) {
-            console_write((const char*)bounce, chunk);
-            done += chunk;
-            continue;
-        }
-        if (f->kind == FD_PIPE_W || f->kind == FD_TCP) {
-            int n = f->kind == FD_TCP ? tcpsock_write(f->tcp, bounce, chunk) : pipe_write(f->pipe, bounce, chunk);
+        if (f->kind == FD_PIPE_W || f->kind == FD_TCP || f->kind == FD_TTY || f->kind == FD_PTY) {
+            int n = f->kind == FD_TCP   ? tcpsock_write(f->tcp, bounce, chunk)
+                    : f->kind == FD_TTY ? tty_write(ftty(f), (const char*)bounce, chunk)
+                    : f->kind == FD_PTY ? pty_master_write(f->tty, bounce, chunk)
+                                        : pipe_write(f->pipe, bounce, chunk);
             if (n <= 0) { err = n; break; }
             done += (uint32_t)n;
-            if ((uint32_t)n < chunk) break;  // the readers went away, or the connection did
+            if ((uint32_t)n < chunk) break;  // the readers went away, or the connection or terminal did
             continue;
         }
         if (f->flags & O_APPEND) f->offset = diskfs_size(f->node);
@@ -494,7 +566,7 @@ int file_write(int fd, const void* ubuf, uint32_t len) {
         if ((uint32_t)n < chunk) break;  // disk full
     }
     if (f->kind == FD_FILE) mutex_unlock(&f->lock);
-    if (f->kind == FD_CONSOLE_OUT) console_unlock();
+    if (f->kind == FD_TTY) tty_unlock_output(ftty(f));
     kfree(bounce);
     return done ? (int)done : err;
 }
