@@ -73,6 +73,7 @@ typedef struct {
     char menu_items[WM_MENU_MAX][24];
     wm_rect_t damage[WM_DAMAGE_MAX];
     int ndamage;
+    uint32_t desk_top, desk_bottom;  // the desktop's colours, top to bottom
 } wm_t;
 
 // Starts with no windows and the whole screen to draw.
@@ -92,6 +93,8 @@ void wm_move(wm_t* wm, int win, int x, int y);
 void wm_set_title(wm_t* wm, int win, const char* title);
 void wm_set_pixels(wm_t* wm, int win, const uint32_t* pixels);
 void wm_set_clock(wm_t* wm, const char* text);
+// The desktop: a gradient from top (under the bar) to bottom.
+void wm_set_desktop(wm_t* wm, uint32_t top, uint32_t bottom);
 
 // The frame of a window: border, title bar and content.
 wm_rect_t wm_frame(const wm_t* wm, int win);
@@ -122,6 +125,8 @@ int wm_take_damage(wm_t* wm, wm_rect_t* out);
 void wm_compose(wm_t* wm, wm_rect_t r);
 
 // The desktop's colour on row y, and the colours tests look for.
+#define WM_DESK_TOP    0x102A5C  // the desktop to start with: deep blue to teal
+#define WM_DESK_BOTTOM 0x146E80
 uint32_t wm_desktop(const wm_t* wm, int y);
 #define WM_C_BAR       0xD8DCE2
 #define WM_C_BORDER    0x1C2430

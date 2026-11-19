@@ -70,6 +70,16 @@ void win_title(win_t* win, const char* title) {
     send(win, &m);
 }
 
+void win_desktop(win_t* win, uint32_t top, uint32_t bottom) {
+    if (win->fd < 0) return;
+    ws_msg_t m;
+    memset(&m, 0, sizeof m);
+    m.type = WS_DESKTOP;
+    m.desktop.top = top;
+    m.desktop.bottom = bottom;
+    send(win, &m);
+}
+
 int win_event(win_t* win, ws_msg_t* ev, int timeout_ms) {
     if (win->fd < 0) return -EPIPE;
     pollfd_t p = { win->fd, POLLIN, 0 };
@@ -101,8 +111,13 @@ void win_fill(win_t* win, int x, int y, int w, int h, uint32_t color) {
 static uint8_t font[256 * 16];
 static int font_loaded;
 
-int win_text(win_t* win, int x, int y, const char* s, uint32_t color) {
+const uint8_t* win_font(void) {
     if (!font_loaded) font_loaded = sys_gfx_font(font) == 0;
+    return font;
+}
+
+int win_text(win_t* win, int x, int y, const char* s, uint32_t color) {
+    win_font();
     for (; *s; s++, x += 8) {
         const uint8_t* g = &font[(uint8_t)*s * 16];
         for (int row = 0; row < 16; row++)

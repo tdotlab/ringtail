@@ -135,16 +135,22 @@ def main():
         m.send("\x11")  # Ctrl+Q
         m.expect(qemu_test.PROMPT, 10)
 
-        # The desktop, with its About window open: About is the first
-        # icon, top left.
+        # The desktop: kenoma's Programs window, Files (the first
+        # program, selected, so Enter opens it) and Settings, from the
+        # bar's menu (its sixth item).
         m.send("run kenoma\r")
         qemu_test.kenoma_up(m)
-        time.sleep(1)
-        qemu_test.kenoma_click(m, 76, 90)
-        s.mouse(900, 330)  # beside the window, over no icon
-        time.sleep(1)
+        time.sleep(2)
+        s.key("ret")
+        time.sleep(2)
+        qemu_test.pointer_to(m, 20, 12)
+        s.click()
+        qemu_test.pointer_to(m, 20, 28 + 2 + 22 * 5 + 11)
+        s.click()
+        time.sleep(2)
+        qemu_test.pointer_to(m, 760, 560)  # on the desktop, clear of the windows
         s.shot("desktop")
-        s.key("esc")
+        s.key("ctrl-alt-backspace")
         m.expect(qemu_test.PROMPT, 10)
     finally:
         peer.close()

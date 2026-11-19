@@ -413,6 +413,19 @@ int main(void) {
     check(wm.menu_n == WM_MENU_MAX, "it holds WM_MENU_MAX items");
     wm_menu_close(&wm);
 
+    // ---- The desktop's colours ----
+    check(wm_desktop(&wm, WM_BAR_H) == WM_DESK_TOP && wm_desktop(&wm, H) == WM_DESK_BOTTOM,
+          "the desktop starts deep blue at the top, teal at the bottom");
+    take();
+    wm_set_desktop(&wm, 0xFF0000, 0x0000FF);
+    take();
+    check(ntaken == 1 && taken[0].y == WM_BAR_H && taken[0].h == H - WM_BAR_H && taken[0].w == W,
+          "new colours: the desktop to draw again, not the bar");
+    check(wm_desktop(&wm, WM_BAR_H) == 0xFF0000 && wm_desktop(&wm, H) == 0x0000FF, "from one colour");
+    check(wm_desktop(&wm, WM_BAR_H + (H - WM_BAR_H) / 2) == 0x80007F, "through the middle, channel by channel");
+    compose_all();
+    check(at(5, H - 1) == wm_desktop(&wm, H - 1) && at(W / 2, 5) == WM_C_BAR, "drawn so");
+
     printf("test_wm: %d of %d checks %s\n", checks - fails, checks, fails ? "passed, FAILURES above" : "passed");
     return fails != 0;
 }

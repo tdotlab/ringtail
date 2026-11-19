@@ -29,6 +29,8 @@ enum {
     WS_CREATE,     // create: a window of w x h pixels, in shared memory shm
     WS_DAMAGE,     // damage: the pixels in x, y, w, h changed
     WS_TITLE,      // title: a new title
+    WS_DESKTOP,    // desktop: the desktop's colours, top to bottom
+                   // (0xRRGGBB); for the whole desktop, not the window
     // Server to client.
     WS_SHOWN = 16, // shown.error: 0, the window is up; or why not
                    // (-EINVAL: bad size or memory, -ENOMEM: no room,
@@ -48,6 +50,7 @@ typedef struct {
         struct { uint32_t shm; int32_t w, h; char title[WS_TITLE_MAX]; } create;
         struct { int32_t x, y, w, h; } damage;
         struct { char title[WS_TITLE_MAX]; } title;
+        struct { uint32_t top, bottom; } desktop;
         struct { int32_t error; } shown;
         struct { int32_t x, y, buttons; } mouse;
         // key: the scancode (plus 0x100 after E0), 1 down or 0 up, the

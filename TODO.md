@@ -377,7 +377,7 @@ to change hands when a job stops as well as when it ends.
 **Clock discipline and better time.** Several servers and a choice between
 them, slewing instead of stepping, NTS. Each is a trust and design call.
 
-**The desktop, stage 4.** Stages 1 to 3 are done. Stage 1:
+**The desktop.** Stages 1 to 4 are done. Stage 1:
 GRUB's 1024x768 framebuffer, the console drawn in it
 (`src/drivers/console.c`, the `console` kernel task), native graphics at
 full size (`GFX_NATIVE`, `SYS_GFX_PUT`, `src/drivers/gfx.c`) and kenoma
@@ -391,20 +391,25 @@ per terminal with a controlling terminal per task (`src/drivers/tty.c`),
 pseudo-terminals (`SYS_PTY_OPEN`), the console's escape-sequence
 emulator moved into `src/lib/vt.c` so the kernel and programs share it,
 and wterm, which runs saklas on a pty in an 80x24 window. The shell,
-Octavo and gauge run in it unchanged. What is left:
-
-- A small toolkit (buttons, lists, text fields, menus) on the shared
-  buffers, and kenoma's launcher as a window-server client. Then a file
-  browser and a settings window.
+Octavo and gauge run in it unchanged. Stage 4: a toolkit
+(`lib/tk.c`, host-tested by `tests/test_tk.c`) with labels, buttons,
+check boxes, text fields, lists as rows or icons, a menu bar and
+dialogs; kenoma rebuilt as pleroma's Programs window (and the way onto
+the desktop); wfiles, a file browser; wprefs, the settings window
+(clock, desktop colours, the network); and `wterm -h`, which keeps a
+finished text program's window until a key.
 
 Smaller things the window system lacks: resizing (a CONFIGURE event
 and a client remapping bigger memory), minimising to the bar, the
 pointer leaving a window (no event says so), a pointer shape per
-window, and a way for the menu to list more than its four fixed
-entries. Once windows resize, a terminal needs SIGWINCH and a way to
+window, and a way for the menu to list programs other than its
+fixed seven. Once windows resize, a terminal needs SIGWINCH and a way to
 set a pty's size; wterm is 80x24 until then, has no scrollback, and
-cannot copy or paste. pleroma runs in mode 13h too but is cramped at 320x200; it
-could refuse below some size.
+cannot copy or paste. The toolkit has no multi-line text, no scrolling
+of a label, no drag and drop and no keyboard shortcuts beyond F10 and
+what each program reads itself; Files cannot copy or move. kenoma
+refuses screens under 640x480, so there is no desktop in VGA text mode
+(pleroma itself still starts at 320x200).
 
 **fork/exec**, **finer kernel locks**, **IPv6**, and **TLS session resumption**: each one
 reaches into the scheduler, memory, the syscall interface or the protocol

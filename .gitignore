@@ -22,3 +22,4 @@ tests/test_jncore
 tests/test_fcore
 tests/test_wm
 tests/test_vt
+tests/test_tk

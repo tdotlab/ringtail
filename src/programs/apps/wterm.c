@@ -5,9 +5,11 @@
 //
 //     wterm                  saklas in an 80x24 window
 //     wterm octavo notes.txt anything else that runs on a terminal
+//     wterm -h ls            and keep the window when it ends
 //
-// The window closes when the program ends; closing the window hangs the
-// pty up, which ends the program (SIGHUP).
+// The window closes when the program ends, or with -h stays, saying the
+// program has finished, until a key is pressed in it. Closing the
+// window hangs the pty up, which ends the program (SIGHUP).
 #include "ulib.h"
 #include "win.h"
 #include "keymap.h"
@@ -85,7 +87,13 @@ static void type(int master, const ws_msg_t* ev) {
 }
 
 int main(int argc, char** argv) {
-    int e = win_open(&w, COLS * GW, ROWS * GH, "Terminal");
+    int hold = argc > 1 && strcmp(argv[1], "-h") == 0;
+    if (hold) argc--, argv++;
+    char title[WS_TITLE_MAX];
+    snprintf(title, sizeof title, argc > 1 ? "Terminal: %s" : "Terminal", argc > 1 ? argv[1] : "");
+    for (char* t = title + 10; argc > 1 && *t; t++)  // after "Terminal: ", the name in lower case
+        if (*t >= 'A' && *t <= 'Z') *t = (char)(*t + 32);
+    int e = win_open(&w, COLS * GW, ROWS * GH, title);
     if (e < 0) {
         dprintf(STDERR_FILENO, "wterm: no window: %s\n", strerror(-e));
         return 1;
@@ -134,12 +142,19 @@ int main(int argc, char** argv) {
                 pollfd_t q = { master, POLLIN, 0 };
                 if (r <= 0 || got >= 16384 || sys_pollfd(&q, 1, 0) != 1) break;
             } while (1);
-            if (r <= 0) break;  // the program is done
+            if (r <= 0) {  // the program is done
+                if (!hold) break;
+                sys_close(master);
+                master = -1;
+                say("\r\n\x1b[0m\x1b[7m Finished: press a key to close \x1b[0m");
+                vt.cursor_hidden = 1;
+            }
         }
         ws_msg_t ev;
         int closing = 0;
         while (win_event(&w, &ev, 0) > 0) {
             if (ev.type == WS_KEY && master >= 0) type(master, &ev);
+            else if (ev.type == WS_KEY && ev.key.down && ev.key.code) closing = 1;
             if (ev.type == WS_CLOSE) closing = 1;
         }
         if (closing || (p[0].revents & (POLLHUP | POLLERR))) break;

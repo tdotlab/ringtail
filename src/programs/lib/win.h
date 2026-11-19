@@ -32,6 +32,8 @@ int win_open(win_t* win, int w, int h, const char* title);
 // The pixels in x, y, w, h changed; clipped to the window.
 void win_damage(win_t* win, int x, int y, int w, int h);
 void win_title(win_t* win, const char* title);
+// The desktop's colours, for everyone (WS_DESKTOP).
+void win_desktop(win_t* win, uint32_t top, uint32_t bottom);
 // The next event in *ev: 1; 0 when timeout_ms (negative: no limit)
 // passed first; -EPIPE when the server has gone.
 int win_event(win_t* win, ws_msg_t* ev, int timeout_ms);
@@ -43,5 +45,7 @@ void win_fill(win_t* win, int x, int y, int w, int h, uint32_t color);
 // 8x16 characters, the console's font; returns the x after the text.
 int win_text(win_t* win, int x, int y, const char* s, uint32_t color);
 void win_line(win_t* win, int x0, int y0, int x1, int y1, uint32_t color);
+// The console's font: 256 glyphs, 8x16, a byte a row (for tk.h).
+const uint8_t* win_font(void);
 
 #endif

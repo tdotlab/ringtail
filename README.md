@@ -30,11 +30,13 @@ bars, and every task with its state and memory, refreshed each second.
 port of the Win32 editor of the same name, with find, replace, undo and
 a status line.
 
-![kenoma, the desktop, with its About window open and the mouse pointer beside it](docs/desktop.png)
+![the desktop: the Programs window, Files showing the root directory, and Settings on top](docs/desktop.png)
 
-`run kenoma` is the desktop: drawn at the screen's full size, with a PS/2
-mouse, a clock, a launcher with an icon for every program and a window you
-can click. Esc leaves.
+`run kenoma` is the desktop: pleroma, the window server, with kenoma's
+Programs window, an icon for each window program, document and text
+program on the disk. Files browses the disk and Settings sets the clock
+and the desktop's colours. Ctrl+Alt+Backspace, or Leave in the RingTail
+menu, goes back to the shell.
 
 These pictures are taken from the real ISO by `tools/screenshots.py`, which
 boots it in QEMU, drives it the way the test suite does and saves what the
@@ -71,7 +73,8 @@ and `fsck.fat -n build/x86_64/disk.img` both read it.
 The display is a linear framebuffer from GRUB, 1024x768 at 32 bits a
 pixel, which makes the console 128 columns by 48 rows; the boot banner's
 `Display:` line says what it got. When GRUB cannot set a graphics mode
-the kernel falls back to VGA text, 80 by 25, and the desktop to mode 13h.
+the kernel falls back to VGA text, 80 by 25, and native graphics to mode 13h,
+320 by 200, which is too small for the desktop; kenoma says so and stops.
 The text ISO forces that fallback (`set gfxpayload=text` in its grub.cfg),
 and the test suite boots it too, so both paths stay working.
 
@@ -155,8 +158,14 @@ some keyboards send around them. `tests/test_wm.c` checks pleroma's
 window manager (`src/programs/lib/wm.c`) on a 640x480 frame: where
 windows go and how far they can be dragged, what is under each point,
 how damage rectangles merge, that drawing one touches nothing outside
-it, stacking and shadows, the bar's buttons and the menu. A mutation
-sweep checked that both notice when the code they cover is broken.
+it, stacking and shadows, the bar's buttons, the menu and the desktop's
+colours. `tests/test_tk.c` checks the toolkit (`src/programs/lib/tk.c`)
+by feeding it window events and reading its pixels: buttons, check
+boxes, focus and Tab, text fields, lists as rows and as icons with
+their scroll bars, double clicks and the keys that move through them,
+the menu bar by mouse and by keyboard, dialogs, and that it redraws
+only what changed. A mutation sweep checked that all three notice when
+the code they cover is broken.
 
 `tests/qemu_test.py` boots the real ISO in QEMU, on a machine with two
 CPUs, and drives the shell over a serial socket. It uses `build/x86_64/test-disk.img`, which adds the test
@@ -176,7 +185,11 @@ from the text ISO, in VGA text mode and mode 13h), the window system
 (pleroma with a test client that prints every event it gets: the
 pointer, buttons and keys reaching the right window, a drag, the menu,
 Clock and Paint, closing, and ending a client that will not close,
-all read back from screenshots), shared memory and channels (`shmtest`,
+all read back from screenshots), the desktop from kenoma (a text program,
+found by typing its name, in a terminal window that waits once it is done, a document in
+Octavo), Files making, renaming and deleting folders from the
+keyboard, and Settings changing the desktop's colours and pleroma
+keeping them for its next start, shared memory and channels (`shmtest`,
 `chantest`), reboot persistence and poweroff,
 and the network through QEMU's user network: DHCP at boot, `ping`,
 loopback, UDP and TCP sockets (`udptest`, `tcptest`), the random number
@@ -362,7 +375,9 @@ the display. A client makes shared memory for its pixels, connects to
 the channel `pleroma`, asks for a window and then draws whenever it
 likes, telling the server which rectangle changed; the server copies
 from the client's memory when it draws that part of the screen, and
-sends the client its pointer, button, key, focus and close events. The
+sends the client its pointer, button, key, focus and close events. A
+client can also set the desktop's two colours, which pleroma reads from
+`DESKTOP.CFG` when it starts (Settings writes both). The
 protocol is `src/programs/lib/wsys.h`, and `win.c` wraps it (open,
 draw, say what changed, read events). The server never waits on a
 client: when a client's queue is full, its events are dropped. Only the
@@ -374,6 +389,17 @@ its clients), and their output goes to the serial port and to the
 console behind the desktop. While pleroma runs, Ctrl+C and Ctrl+\ are
 keys for the focused window rather than signals for the desktop; three
 Ctrl+\ in two seconds still end it.
+
+The toolkit (`src/programs/lib/tk.h`) draws into a window's pixels and
+turns window events into its own: labels, buttons, check boxes, one-line
+text fields, lists shown as rows or as icons (with a scroll bar, double
+clicks, and keys to move; letters typed in quick succession go to the
+name they begin, and one letter again and again steps through the names
+that start with it), a menu bar the mouse or
+F10 opens, and dialogs that ask a question, with a field if wanted. It
+makes no system calls, so the host tests drive it directly. kenoma,
+Files and Settings are built on it; `desk.c` holds what they share,
+like which programs make their own windows and how to start the rest.
 
 Terminals: each terminal is a tty object with its own line editing,
 foreground job and mode, and each task has a controlling terminal, the
@@ -559,8 +585,9 @@ src/fs         FAT16 (diskfs.c), file descriptors (file.c) and channels (chan.c)
 src/lib        string and printf subset, SHA-256, ChaCha20, calendar dates and the terminal emulator (vt.c), shared by the kernel and programs
 src/include    kernel headers; ringtail/abi.h is the user/kernel contract
 src/programs   user programs in folders, their C library (lib/: runtime, malloc, DNS, SNTP, TLS, windows) and linker script
-  apps         the big interactive programs: saklas (the shell), kenoma, octavo, gauge,
-               pleroma (the window server) and its clients wclock, wpaint and wterm
+  apps         the big interactive programs: saklas (the shell), octavo, gauge,
+               pleroma (the window server) and its clients kenoma, wfiles, wprefs,
+               wclock, wpaint and wterm
   files        files and directories as things: ls, cp, mv, rm, mkdir, rmdir, touch, find, du, df, basename, dirname
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
@@ -636,11 +663,13 @@ Programs on the disk:
 | Program | What it does |
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
-| pleroma | The window system: a desktop with a bar (a menu, a button for each window, a clock) and windows that can be dragged by their title bars and closed. `run pleroma [PROGRAM...]` starts it with those programs in windows. Its menu (the RingTail button, or a right click on the desktop) starts Clock, Paint and Terminal, or leaves; so does Ctrl+Alt+Backspace. |
+| pleroma | The window system: a desktop with a bar (a menu, a button for each window, a clock) and windows that can be dragged by their title bars and closed. `run pleroma [PROGRAM...]` starts it with those programs in windows, or with kenoma. Its menu (the RingTail button, or a right click on the desktop) starts Programs, Files, Terminal, Clock, Paint and Settings, or leaves; so does Ctrl+Alt+Backspace. |
 | wclock | An analog clock in a window, for pleroma. |
 | wpaint | Painting in a window, for pleroma: drag with the left button to draw, the right to erase; pick a colour from the strip or with 1 to 8, and c or Clear clears. |
-| wterm | A terminal in a window, for pleroma: 80 by 24, running saklas, or the program it is given (`wterm gauge`, typed in another terminal). It closes when the program ends; closing it hangs the program up. |
-| kenoma | Desktop: a paged launcher for every program, and page icons for .txt, .lemur and .lem files that open them in Octavo. Esc quits. |
+| wterm | A terminal in a window, for pleroma: 80 by 24, running saklas, or the program it is given (`wterm gauge`, typed in another terminal). It closes when the program ends, or with `-h` waits for a key first; closing it hangs the program up. |
+| kenoma | The desktop's launcher: `run kenoma` starts pleroma if it is not running, with a Programs window holding an icon for each window program, each .txt, .lemur and .lem file in the root (opened in Octavo) and each text program (run in a terminal window). Double-click or Enter opens; typing the start of a name goes to it; View shows icons or rows. Needs a 640x480 screen. |
+| wfiles | Files, a file browser for pleroma: one directory, folders first, with sizes and dates. Opens folders, programs and documents; makes, renames and deletes through dialogs (F2 renames, Delete deletes, Backspace goes up). `wfiles [DIR]`. |
+| wprefs | Settings, for pleroma: sets the date and time or asks a time server, picks the desktop's colours (kept for next time), and shows the network's address, gateway, DNS and lease. |
 | saklas | The command line (the shell). init starts it at boot and again whenever it ends. It is on the disk a second time as `sh`, the name scripts use. |
 | gauge | System monitor: memory, disk and every task, redrawn each second. q quits, p pauses, + and - change the rate. `gauge -1` prints one plain snapshot, so it pipes. |
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
@@ -755,7 +784,8 @@ EINTR, no job control or SIGCHLD, and sockets do not send SIGPIPE). Only one CPU
 cannot); there is no mode setting after boot, and one program owns the
 graphics at a time. Windows in pleroma cannot be resized or minimised,
 a terminal window is 80 by 24 with no scrollback or copy and paste,
-and kenoma is a separate desktop rather than a client of it. The network has no IPv6, and the resolver does not retry over
+pleroma's menu is a fixed list, and the desktop needs at least 640x480,
+so it does not run in VGA text mode. The network has no IPv6, and the resolver does not retry over
 TCP, so DNS answers too big for UDP are an error. The resolver keeps no cache, nothing reads ICMP
 port unreachable for a socket (a dead DNS server is found out by
 timeout), and the DHCP client does not check that nobody else already

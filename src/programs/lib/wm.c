@@ -146,6 +146,8 @@ void wm_init(wm_t* wm, int W, int H, uint32_t* frame, const uint8_t* font) {
     wm->font = font;
     wm->focus = -1;
     wm->menu_hover = -1;
+    wm->desk_top = WM_DESK_TOP;
+    wm->desk_bottom = WM_DESK_BOTTOM;
     wm_damage(wm, 0, 0, W, H);
 }
 
@@ -252,6 +254,12 @@ void wm_set_clock(wm_t* wm, const char* text) {
     wm_damage(wm, clock_x(wm), 0, wm->W - clock_x(wm), WM_BAR_H);
 }
 
+void wm_set_desktop(wm_t* wm, uint32_t top, uint32_t bottom) {
+    wm->desk_top = top & 0xFFFFFF;
+    wm->desk_bottom = bottom & 0xFFFFFF;
+    wm_damage(wm, 0, WM_BAR_H, wm->W, wm->H - WM_BAR_H);
+}
+
 // ---- The menu ----
 
 void wm_menu_open(wm_t* wm, int x, int y, const char* const* items, int n) {
@@ -325,13 +333,15 @@ wm_hit_t wm_hit(const wm_t* wm, int x, int y) {
 // ---- Drawing, clipped to c ----
 
 uint32_t wm_desktop(const wm_t* wm, int y) {
-    // A vertical gradient, deep blue to teal, as Kenoma's.
+    // A vertical gradient, each channel on its own.
     int t = (y - WM_BAR_H) * 256 / MAX(1, wm->H - WM_BAR_H);
     t = MAX(0, MIN(256, t));
-    uint32_t r = (uint32_t)(0x10 + (0x14 - 0x10) * t / 256);
-    uint32_t g = (uint32_t)(0x2A + (0x6E - 0x2A) * t / 256);
-    uint32_t b = (uint32_t)(0x5C + (0x80 - 0x5C) * t / 256);
-    return r << 16 | g << 8 | b;
+    uint32_t c = 0;
+    for (int s = 0; s < 24; s += 8) {
+        int a = (int)(wm->desk_top >> s & 255), b = (int)(wm->desk_bottom >> s & 255);
+        c |= (uint32_t)(a + (b - a) * t / 256) << s;
+    }
+    return c;
 }
 
 static void fill(wm_t* wm, wm_rect_t c, wm_rect_t r, uint32_t color) {

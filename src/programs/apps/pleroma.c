@@ -1,9 +1,11 @@
 // Pleroma, the window server: takes the display, listens on the
 // WS_CHANNEL channel (wsys.h), and draws the windows its clients make
 // on a desktop with a bar. The programs named on its command line are
-// started with it; the RingTail button, or a right click on the
-// desktop, opens a menu that starts more or leaves. So does
-// Ctrl+Alt+Backspace (leaving).
+// started with it, or with none named, kenoma, the launcher; the
+// RingTail button, or a right click on the desktop, opens a menu that
+// starts more or leaves. So does Ctrl+Alt+Backspace (leaving). The
+// desktop's colours come from desk.h's file, and a client can change
+// them (the settings window does).
 //
 // Everything waits in one place, a poll of the keyboard and mouse, the
 // listener and every client. Each time round, what changed is drawn
@@ -20,6 +22,7 @@
 #include "keymap.h"
 #include "wm.h"
 #include "wsys.h"
+#include "desk.h"
 
 #define MAX_CLIENTS WM_MAX  // with stdin, stdout, stderr and the listener: MAX_FDS
 #define PTR_SHADOW 2
@@ -51,9 +54,9 @@ static int focused = -1;                 // the client last told it has the focu
 static int quit;
 static int started[32], nstarted;        // programs started here, which may be ended
 
-static const char* const menu_items[] = { "Clock", "Paint", "Terminal", "Leave" };
-static const char* const menu_programs[] = { "WCLOCK", "WPAINT", "WTERM", 0 };
-#define MENU_N 4
+static const char* const menu_items[] = { "Programs", "Files", "Terminal", "Clock", "Paint", "Settings", "Leave" };
+static const char* const menu_programs[] = { "KENOMA", "WFILES", "WTERM", "WCLOCK", "WPAINT", "WPREFS", 0 };
+#define MENU_N 7
 
 // ---- Clients ----
 
@@ -144,6 +147,9 @@ static void message(int c, ws_msg_t* m, int n) {
     case WS_TITLE:
         m->title.title[WS_TITLE_MAX - 1] = 0;
         if (k->win >= 0) wm_set_title(&wm, k->win, m->title.title);
+        break;
+    case WS_DESKTOP:
+        wm_set_desktop(&wm, m->desktop.top, m->desktop.bottom);
         break;
     }
 }
@@ -407,10 +413,13 @@ int main(int argc, char** argv) {
     signal(SIGQUIT, SIG_IGN);
     sys_gfx_font(font);
     wm_init(&wm, W, H, frame, font);
+    uint32_t top, bottom;
+    if (desk_colours_load(&top, &bottom) == 0) wm_set_desktop(&wm, top, bottom);
     for (int c = 0; c < MAX_CLIENTS; c++) clients[c].fd = -1, clients[c].win = -1;
     sys_mouse_state(&mouse);
     clock();
     for (int i = 1; i < argc; i++) start(argv[i]);
+    if (argc < 2) start("KENOMA");
 
     while (!quit) {
         draw();

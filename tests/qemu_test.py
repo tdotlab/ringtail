@@ -333,27 +333,91 @@ def kenoma_click(m, x, y):
     m.monitor_cmd("mouse_button 0")
 
 
-def kenoma_tests(m, t):
-    """The desktop, in native graphics: on a framebuffer at the screen's
-    size, in VGA text mode at 320x200 in mode 13h (QEMU dumps that
-    pixel-doubled, as 640x400)."""
+def kenoma_tests(m, t, colours=None):
+    """The desktop: "run kenoma" starts pleroma with kenoma's Programs
+    window. In VGA text mode native graphics is 320x200, too small, and
+    kenoma says so. colours: the desktop's bottom colour the settings
+    window left in DESKTOP.CFG, to see that pleroma read it."""
     fb = m.display()[0]
+    if not fb:
+        out = m.run("run kenoma")
+        t.check("kenoma refuses a screen smaller than 640x480",
+                "kenoma: the desktop needs a screen of at least 640x480; this one is 320x200" in out, out)
+        return
     m.send("run kenoma\r")
-    t.check("kenoma takes the screen in native graphics", kenoma_up(m), f"screen is {m.screen_size()}")
-    if fb:
-        w, h, _ = m.screenshot()
-        t.check("at the screen's own size", (w, h) == (1024, 768), f"{w}x{h}")
-        # The first column of icons: About, then the WELCOME page.
-        kenoma_click(m, 24 + 52, 48 + 96 + 20)
-    else:
-        kenoma_click(m, 10 + 40, 26 + 58 + 15)
-    row = m.wait_row(0, "Welcome to RingTail.")
-    t.check("a text file on the desktop opens in Octavo", row.startswith("Welcome to RingTail."), repr(row))
-    m.send("\x11")  # Ctrl+Q, nothing changed so no question
-    t.check("closing Octavo goes straight back to the desktop", kenoma_up(m), f"screen is {m.screen_size()}")
-    m.monitor_cmd("sendkey esc")
-    m.expect(PROMPT, 5)
-    t.check("Esc leaves kenoma and the console returns", m.console_shown())
+    t.check("kenoma starts the window server, in native graphics at the screen's size",
+            kenoma_up(m) and m.screen_size() == (1024, 768), f"screen is {m.screen_size()}")
+    pointer_to(m, 1000, 740)
+    time.sleep(1)
+    if colours:
+        got = m.pixel(512, 767)
+        t.check("pleroma starts with the desktop colours the settings window kept",
+                all(abs(a - b) <= 8 for a, b in zip(got, colours)), f"{got}, wanted about {colours}")
+        m.monitor_cmd("sendkey ctrl-alt-backspace")
+        m.expect(PROMPT, 10)
+        m.run("rm desktop.cfg")
+        m.send("run kenoma\r")
+        kenoma_up(m)
+        pointer_to(m, 1000, 740)
+        time.sleep(1)
+    # The Programs window, the first placed (its content's corner at
+    # 34, 69, the list 22 below): the light square behind the first
+    # icon, Files, which is selected, and none behind the second.
+    shot = m.screenshot()
+    t.check("with its Programs window, the first program selected",
+            m.pixel(65, 96, shot) == (0xC8, 0xD6, 0xEA) and m.pixel(65 + 96, 96, shot) == (0xFF, 0xFF, 0xFF),
+            (m.pixel(65, 96, shot), m.pixel(65 + 96, 96, shot)))
+
+    # Letters typed together go to the name they begin. (One letter
+    # would step to the next name with it, which depends on what earlier
+    # tests left in the root: copy.txt, say, comes before cal.)
+    type_keys(m, "cal\n")
+    corner = find_terminal(m)
+    t.check("Enter on a text program runs it in a terminal window", corner is not None)
+    if corner:
+        rows = wait_rows(m, corner, VGA_GREY, {0, 2})
+        banner = [r for r in range(24) if m.pixel(corner[0] + 4, corner[1] + r * 16 + 1) == VGA_GREY]
+        t.check("which, when the program is done, says so in reverse and waits", 0 in rows and banner, (rows, banner))
+        m.monitor_cmd("sendkey spc")
+        time.sleep(1.5)
+        t.check("and a key closes it", m.pixel(corner[0] + 4, corner[1] + 4) != (0, 0, 0),
+                m.pixel(corner[0] + 4, corner[1] + 4))
+
+    # The documents come after the window programs, before the text
+    # programs.
+    type_keys(m, "welcome\n")
+    corner = find_terminal(m)
+    ok = False
+    if corner:
+        for _ in range(20):
+            if m.pixel(corner[0] + 4, corner[1] + 23 * 16 + 8) == VGA_BLUE:
+                ok = True
+                break
+            time.sleep(0.3)
+    t.check("Enter on a document opens it in Octavo, in a terminal window", ok, corner)
+    if corner:
+        m.monitor_cmd("sendkey ctrl-q")
+        time.sleep(1.5)
+        t.check("and quitting Octavo closes the window", m.pixel(corner[0] + 4, corner[1] + 4) != (0, 0, 0),
+                m.pixel(corner[0] + 4, corner[1] + 4))
+
+    m.monitor_cmd("sendkey ctrl-alt-backspace")
+    m.expect(PROMPT, 10)
+    t.check("leaving the desktop brings back the console", m.console_shown())
+    out = m.run("tasks")
+    t.check("and kenoma went with it", "KENOMA" not in out and "PLEROMA" not in out, out)
+
+
+def find_terminal(m, timeout=8):
+    """The top left corner of a terminal window's 640x384 of black, once
+    one is on the screen; None if none comes."""
+    end = time.time() + timeout
+    while time.time() < end:
+        time.sleep(0.5)
+        box = find_colour(m.screenshot(), (0, 0, 0))
+        if box and box[2] - box[0] >= 639 and box[3] - box[1] >= 383:
+            return box[0], box[1]
+    return None
 
 
 def find_colour(shot, rgb):
@@ -562,7 +626,7 @@ def pleroma_tests(m, t):
     shot = m.screenshot()
     t.check("a right click on the desktop opens the menu there",
             m.pixel(700, 340, shot) == (0xF4, 0xF5, 0xF7), m.pixel(700, 340, shot))
-    pointer_to(m, 620, 313)  # its first item
+    pointer_to(m, 620, 300 + 2 + 22 * 3 + 11)  # Clock, its fourth item
     buttons(m, 1, 0)
     out = m.expect(rb"wintest: focus 0\r\n", 10)
     time.sleep(0.5)
@@ -574,7 +638,7 @@ def pleroma_tests(m, t):
 
     pointer_to(m, 20, 12)  # the bar's menu button
     buttons(m, 1, 0)
-    pointer_to(m, 20, 28 + 2 + 22 + 11)  # Paint, the second item
+    pointer_to(m, 20, 28 + 2 + 22 * 4 + 11)  # Paint, the fifth item
     buttons(m, 1, 0)
     time.sleep(2)
     sw = find_colour(m.screenshot(), PAINT_YELLOW)
@@ -596,6 +660,8 @@ def pleroma_tests(m, t):
         t.check("its close button closes it", find_colour(m.screenshot(), PAINT_YELLOW) is None)
 
     terminal_tests(m, t)
+    files_tests(m, t)
+    settings_tests(m, t)
 
     pointer_to(m, 104 + 70, 14)  # wintest's button on the bar
     buttons(m, 1, 0)
@@ -626,6 +692,90 @@ def pleroma_tests(m, t):
     out = m.run("cat wt.txt")
     t.check("having done what it was told", "hello" in out, out)
     m.run("rm wt.txt")
+    out = m.run("ls stage4").lower()
+    t.check("Files made, renamed and deleted in a folder it made, and would not delete a full one",
+            "renamed" in out and "inner" not in out and "gone" not in out and "no such" not in out, out)
+    m.run("rm -r stage4")
+    out = m.run("cat desktop.cfg")
+    t.check("the settings window kept the colours chosen", "2B1B4A C0605A" in out, out)
+
+
+def menu_start(m, item):
+    """Start the item'th program of pleroma's menu, from the bar's button."""
+    pointer_to(m, 20, 12)
+    buttons(m, 1, 0)
+    pointer_to(m, 20, 28 + 2 + 22 * item + 11)
+    buttons(m, 1, 0)
+    pointer_to(m, 1000, 740)
+    time.sleep(2)
+
+
+def keys(m, *names):
+    for k in names:
+        m.monitor_cmd("sendkey " + k)
+        time.sleep(0.15)
+
+
+def files_tests(m, t):
+    """wfiles, from the keyboard: a folder made in the root and opened,
+    one made in it and renamed, one made and deleted, then up again and
+    the full folder not deleted. What is on the disk is checked once
+    pleroma is gone."""
+    menu_start(m, 1)  # Files
+    keys(m, "f10", "down", "ret")  # File, New folder
+    time.sleep(0.5)
+    keys(m, "backspace", "backspace", "backspace")
+    type_keys(m, "stage4\n")
+    time.sleep(0.5)
+    keys(m, "ret")  # into it
+    time.sleep(0.5)
+    keys(m, "f10", "down", "ret", "backspace", "backspace", "backspace")
+    type_keys(m, "inner\n")
+    time.sleep(0.5)
+    keys(m, "f2", *["backspace"] * 5)
+    type_keys(m, "renamed\n")
+    time.sleep(0.5)
+    keys(m, "f10", "down", "ret", "backspace", "backspace", "backspace")
+    type_keys(m, "gone\n")
+    time.sleep(0.5)
+    keys(m, "delete")
+    time.sleep(0.5)
+    keys(m, "ret")  # Delete
+    time.sleep(0.5)
+    keys(m, "backspace")  # up, to the root, stage4 selected
+    time.sleep(0.5)
+    # A band of the list under stage4's row, its folder icon the only
+    # thing of that yellow on the screen: the dialog's place.
+    icon = find_colour(m.screenshot(), (0xF2, 0xC1, 0x4E))
+
+    def band():
+        w, h, px = m.screenshot()
+        x0, y0 = icon[0], icon[1] + 60
+        return b"".join(px[(y * w + x0) * 3:(y * w + x0 + 520) * 3] for y in range(y0, y0 + 200))
+
+    t.check("going up selects the folder it came from, shown with a folder's icon", icon is not None)
+    if not icon:
+        return
+    s0 = band()
+    keys(m, "delete")
+    time.sleep(0.5)
+    keys(m, "ret")  # Delete: refused, a folder with something in it
+    time.sleep(0.5)
+    s1 = band()
+    keys(m, "ret")  # OK
+    time.sleep(0.5)
+    t.check("Files says why when a delete is refused, in a dialog Enter closes", s1 != s0 and band() == s0)
+
+
+def settings_tests(m, t):
+    """wprefs: choosing other desktop colours changes them at once."""
+    before = m.pixel(512, 767)
+    menu_start(m, 5)  # Settings
+    keys(m, "down")  # Dusk, after Deep sea
+    time.sleep(1)
+    got = m.pixel(512, 767)
+    t.check("Settings changes the desktop's colours at once",
+            all(abs(a - b) <= 8 for a, b in zip(got, (0xC0, 0x60, 0x5A))), f"{before} then {got}")
 
 
 def card_interrupts(net_out):
@@ -1401,8 +1551,8 @@ def tests(m, t):
     out = m.run("echo after ctrl-c")
     t.check("Ctrl+C quits gauge too, leaving a usable terminal", "after ctrl-c" in out, out)
 
-    kenoma_tests(m, t)
     pleroma_tests(m, t)
+    kenoma_tests(m, t, colours=(0xC0, 0x60, 0x5A))
 
     out = m.run("mem")
     t.check("mem", "Frames:" in out and "Heap:" in out, out)
