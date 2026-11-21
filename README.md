@@ -594,7 +594,7 @@ src/programs   user programs in folders, their C library (lib/: runtime, malloc,
   util         small tools for building command lines: echo, seq, factor, sleep, xargs, cal, hello and the like
 tools          mkdisk.py, the FAT16 image builder; screenshots.py, which takes the pictures above;
                mkfont.py, which makes the console font from unscii-16
-docs           the screenshots
+docs           ARCHITECTURE.md, a map of the parts and how they fit together; the screenshots
 tests          host unit tests, the QEMU integration suite, test programs
 ```
 
