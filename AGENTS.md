@@ -34,14 +34,6 @@ Use the language or framework's conventional layout, keeping source, tests, docs
 
 Each project lives in its own clearly named subfolder with everything inside it, even if it's the only one, so a second project can sit beside it. The workspace root is a navigation layer: a README.md and AGENTS.md pointing to the subprojects. Other root files are fine; just keep project source out of it. Apply this to new work; don't reorganize existing projects unless I ask.
 
-### Shared Tools
-
-When a task needs an external application, check for a useful portable version with a command-line interface. Prefer an existing copy in ~/tools/. If a new one is worthwhile, get it from a reputable source, verify the download when possible, and keep it in ~/tools/ without changing the system installation or PATH. Use it directly and tell me what you added. Don't download tools for trivial tasks. Also local copies of open source code clones will be avaliable there.
-
-### Junk shelf
-
-~/tools/junk/ is a loose shelf for work worth keeping that doesn't belong in a repo (investigation notes, research, test scripts and results). If it might be wanted later, it can go there instead of the temp scratchpad; storage isn't a concern at megabyte scale. Its README has the light conventions.
-
 ### Instruction files
 
 Don't turn a direction I merely rejected or grumbled about once into a permanent rule or a "never". If I head in a direction a file says not to, you can flag it once, but my current word beats anything in a file. I wrote those files.
