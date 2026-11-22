@@ -656,7 +656,9 @@ static long sys_wait_job(uintptr_t job, uintptr_t b, uintptr_t c) {
 
 static long sys_kill(uintptr_t id, uintptr_t sig, uintptr_t c) {
     (void)c;
-    return task_signal_user((int)id, (int)sig);
+    int i = (int)id;
+    if (i < 0) return i == (int)0x80000000u ? -ESRCH : task_signal_job_user(-i, (int)sig);
+    return task_signal_user(i, (int)sig);
 }
 
 static long sys_readdir(uintptr_t upath, uintptr_t ucursor, uintptr_t uent) {

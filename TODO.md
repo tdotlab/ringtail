@@ -327,7 +327,8 @@ and a bigger save area, sized from CPUID.
 interrupted call always returns EINTR); siginfo and a ucontext for the
 handler (it gets only the number; a fault handler cannot see the address);
 `sigsuspend`/`pause` and `alarm`; SIGPIPE from sockets (they return EPIPE
-only); `kill` of a whole job (a negative id); and a fresh FPU state for a
+only); the shell's `kill` of a whole job (the system call takes a negative
+id now, for barb, but `kill` in saklas does not); and a fresh FPU state for a
 handler (it starts with the interrupted code's MXCSR and x87 stack, where
 Linux gives it the default).
 

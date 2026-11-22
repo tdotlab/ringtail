@@ -14,6 +14,7 @@ installed), which proves the kernel left a consistent FAT16 volume
 that other systems can read.
 """
 import argparse
+import json
 import datetime
 import os
 import re
@@ -834,7 +835,7 @@ def tests(m, t):
     t.check("and the new shell works", "0.28.0" in out, out)
 
     for prog in ["badptr", "kptr", "filedemo", "seekdemo", "listdemo", "bss", "stack", "heaptest", "pipetest", "fgspawn", "fdshare", "sigtest",
-                 "udptest", "tcptest", "rndtest", "sysregs", "shmtest", "chantest", "ptytest"]:
+                 "udptest", "tcptest", "rndtest", "sysregs", "shmtest", "chantest", "ptytest", "killjob"]:
         out = m.run("run " + prog, timeout=30)
         t.check(f"{prog} self-checks pass", f"{prog}: all" in out and "FAIL" not in out, out)
     out = m.run("run nullds")
@@ -1905,6 +1906,12 @@ class _Http(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", "100")
             self.end_headers()
             self.wfile.write(b"only a bit\n")
+        elif self.path == "/echo":
+            out = ("GET\ncontent-length: %s\n--\n" % self.headers.get("Content-Length", "none")).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
         elif self.path in pages:
             self.server.agents.append(self.headers.get("User-Agent", ""))
             self.send_response(200)
@@ -1913,6 +1920,31 @@ class _Http(http.server.BaseHTTPRequestHandler):
             self.wfile.write(pages[self.path])
         else:
             self.send_error(404, "Not Found")
+
+    def do_POST(self):
+        """For fetch -d: /echo answers with what arrived; /move307 and
+        /move303 send it on; /err fails with a body worth reading; /slow
+        thinks for three seconds first."""
+        n = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(n)
+        if self.path in ("/move307", "/move303"):
+            self.send_response(int(self.path[-3:]))
+            self.send_header("Location", "/echo")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/slow":
+            time.sleep(3)
+        if self.path == "/err":
+            out, code = b'{"error": "you asked for it"}\n', 429
+        else:
+            hdrs = "".join("%s: %s\n" % (k.lower(), v) for k, v in self.headers.items()
+                           if k.lower() not in ("host", "connection", "accept"))
+            out, code = ("POST\n%s--\n" % hdrs).encode() + body, 200
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
 
     def log_message(self, *a):
         pass
@@ -4063,6 +4095,215 @@ def _aes_only_server(pem, work):
     return proc, port
 
 
+def post_tests(m, t, base):
+    """fetch -d (a POST with a file as its body), -H (header lines from a
+    file or standard input, which is how barb hands fetch its API key
+    without putting it where the task table shows it), -e and -t."""
+    m.run("echo 'hello body' > body.txt")
+    out = plain(m.run("fetch -d body.txt %s/echo" % base, timeout=20))
+    t.check("fetch -d posts the file", out.startswith("POST\n") and "content-length: 11\n" in out and
+            out.endswith("--\nhello body"), out)
+    m.run("echo 'X-Test: from a file' > h.txt")
+    out = plain(m.run("fetch -d body.txt -H h.txt %s/echo" % base, timeout=20))
+    t.check("-H adds the lines of a file as headers", "x-test: from a file\n" in out, out)
+    out = plain(m.run("echo 'X-Secret: s3cr3t' | fetch -d body.txt -H - %s/echo" % base, timeout=20))
+    t.check("and -H - reads them from standard input", "x-secret: s3cr3t\n" in out, out)
+    for bad, why in [("'no colon here'", "is not \"Name: value\""), ("': no name'", "is not \"Name: value\""),
+                     ("'Two Words: x'", "a header name has a space in it")]:
+        out = plain(m.run("echo %s | fetch -d body.txt -H - %s/echo" % (bad, base), timeout=20))
+        t.check("a header line that is not one is refused: %s" % bad, why in out and "exit status 1" in out and
+                "POST" not in out, out)
+    out = plain(m.run("printf 'X-A: b\\rX-C: d\\n' | fetch -d body.txt -H - %s/echo" % base, timeout=20))
+    t.check("and one with a carriage return in it, which would start a header of its own",
+            "control character" in out and "exit status 1" in out, out)
+    out = plain(m.run("fetch -d nowhere.txt %s/echo" % base, timeout=20))
+    t.check("a body file that is not there is said so", "nowhere.txt" in out and "exit status 1" in out, out)
+    out = plain(m.run("fetch -d body.txt %s/err" % base, timeout=20))
+    t.check("an error status still hides its body", "HTTP 429" in out and "you asked for it" not in out, out)
+    out = plain(m.run("fetch -e -d body.txt %s/err" % base, timeout=20))
+    t.check("-e shows it, and the exit status is still 1",
+            "HTTP 429" in out and '{"error": "you asked for it"}' in out and "exit status 1" in out, out)
+    out = plain(m.run("fetch -d body.txt %s/move307" % base, timeout=20))
+    t.check("a 307 sends the POST again, body and all", out.startswith("POST\n") and out.endswith("hello body"), out)
+    out = plain(m.run("fetch -d body.txt %s/move303" % base, timeout=20))
+    t.check("a 303 turns it into a GET", out.startswith("GET\n") and "content-length: none" in out, out)
+    out = plain(m.run("fetch -t 1 -d body.txt %s/slow" % base, timeout=20))
+    t.check("-t 1 gives up on a server quiet for longer", "exit status 1" in out and "POST" not in out, out)
+    out = plain(m.run("fetch -t 10 -d body.txt %s/slow" % base, timeout=30))
+    t.check("-t 10 waits for it", out.startswith("POST\n"), out)
+    for bad in ["-t 0", "-t x", "-t", "-d", "-H"]:
+        out = plain(m.run("fetch %s %s/echo" % (bad, base), timeout=20))
+        t.check("fetch %s is a usage error" % bad, "usage" in out, out)
+    m.run("rm body.txt h.txt")
+
+
+class _FakeApi(http.server.BaseHTTPRequestHandler):
+    """The Anthropic Messages API, as far as barb's tests need it: each
+    request gets the next reply in server.script (a dict, a (status,
+    dict) pair, or a function of the request), and is kept, with the
+    headers it came with, in server.requests."""
+    def do_POST(self):
+        req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        req["_headers"] = {k.lower(): v for k, v in self.headers.items()}
+        self.server.requests.append(req)
+        item = self.server.script.pop(0) if self.server.script else (500, {"type": "error", "error": {"type": "api_error", "message": "script ran out"}})
+        if callable(item):
+            item = item(req)
+        status, reply = item if isinstance(item, tuple) else (200, item)
+        data = json.dumps(reply).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):
+        pass
+
+
+def _say(text):
+    return {"type": "message", "role": "assistant", "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn", "usage": {"input_tokens": 50, "output_tokens": 10}}
+
+
+def _use(name, args, n=[0]):
+    n[0] += 1
+    return {"type": "message", "role": "assistant", "stop_reason": "tool_use", "usage": {"input_tokens": 50, "output_tokens": 10},
+            "content": [{"type": "tool_use", "id": "toolu_%d" % n[0], "name": name, "input": args}]}
+
+
+def _results(req):
+    """The tool results in the last message of a request, by tool_use id."""
+    return {b["tool_use_id"]: b.get("content") for b in req["messages"][-1]["content"] if b.get("type") == "tool_result"}
+
+
+def _texts(req):
+    return [b.get("text") for b in req["messages"][-1]["content"] if b.get("type") == "text"]
+
+
+def barb_tests(m, t):
+    """barb, the coding agent (vendor/barb), against a scripted API on
+    the host: its settings file, the tools on RingTail's files and
+    shell, a background task that wakes it, a task read from a file,
+    and a session at the terminal (typing, a one-key answer, Ctrl-C
+    while it waits for the model, Ctrl-D)."""
+    api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeApi)
+    api.script, api.requests = [], []
+    threading.Thread(target=api.serve_forever, daemon=True).start()
+    key = "test-key-4b1d"
+    try:
+        out = plain(m.run("barb -V"))
+        t.check("barb runs", out.startswith("barb ") and "(RingTail)" in out, out)
+        out = plain(m.run("barb -p hi"))
+        t.check("with no settings it says where the key goes", 'Put a line "key = ..." in /barb.cfg' in out and
+                "exit status 2" in out, out)
+        m.run('echo "key = %s" > /barb.cfg' % key)
+        m.run('echo "url = http://10.0.2.2:%d" >> /barb.cfg' % api.server_port)
+        m.run('echo "bogus" >> barb2.cfg')
+        out = plain(m.run("barb --config barb2.cfg -p hi"))
+        t.check("a settings line it cannot read is pointed at", "barb2.cfg, line 1: expected name = value" in out, out)
+        m.run("rm barb2.cfg")
+
+        api.script = [_use("write_file", {"path": "bt/a.txt", "content": "one\ntwo\n"}),
+                      _use("read_file", {"path": "bt/a.txt"}),
+                      _use("edit_file", {"path": "bt/a.txt", "old_string": "two", "new_string": "2"}),
+                      _use("bash", {"command": "cat bt/a.txt; echo status; false"}),
+                      _say("all done")]
+        out = plain(m.run("barb -y -p 'make a note'", timeout=60))
+        t.check("barb -p carries out a task with the tools", "all done" in out and "exit status" not in out, out)
+        t.check("writing makes the directory, and editing changes the file", plain(m.run("cat bt/a.txt")) == "one\n2", "")
+        reqs = api.requests
+        t.check("the key reaches the API in its header", reqs and reqs[0]["_headers"].get("x-api-key") == key,
+                reqs[0]["_headers"] if reqs else None)
+        t.check("with the version and the content type", reqs and reqs[0]["_headers"].get("anthropic-version") == "2023-06-01"
+                and reqs[0]["_headers"].get("content-type") == "application/json", "")
+        t.check("the model is told it is on RingTail", reqs and "RingTail" in json.dumps(reqs[0].get("system")), "")
+        res = [_results(r) for r in reqs[1:5]] if len(reqs) >= 5 else []
+        flat = [v for r in res for v in r.values()]
+        t.check("each tool's result goes back", len(flat) == 4 and "Created bt/a.txt" in flat[0] and "two" in flat[1]
+                and "Edited bt/a.txt" in flat[2] and flat[3] == "one\n2\nstatus\n[exit code: 1]", flat)
+
+        api.requests.clear()
+        api.script = [_use("bash", {"command": "sleep 2; echo late > bt/late.txt", "run_in_background": True}),
+                      _say("waiting"), _say("it finished")]
+        out = plain(m.run("barb -y -p 'in the background'", timeout=60))
+        t.check("a background task wakes barb when it ends", "waiting for task" in out and "it finished" in out and
+                "finished with exit code 0" in out, out)
+        t.check("and nothing asked the model while it waited", len(api.requests) == 3, len(api.requests))
+        t.check("the task's output went where it said", plain(m.run("cat bt/late.txt")) == "late", "")
+
+        # Stopping: a command past its time limit, and a background task the model stops. Both
+        # are a job of their own, killed whole with kill(-job), so a child the shell started
+        # (the sleep) goes too.
+        def stop_it(req):
+            started = [v for v in _results(req).values() if v and v.startswith("Started background task ")]
+            n = int(started[0].split()[3].rstrip(".")) if started else 0
+            return _use("task_stop", {"task_id": n})
+        api.requests.clear()
+        # Each shell starts a second one, which writes its file after a few seconds unless it too
+        # is stopped; killing only the first would leave it to.
+        api.script = [_use("bash", {"command": "sh -c 'sleep 3; echo no > bt/never1.txt'; sleep 30", "timeout_ms": 1500}),
+                      _use("bash", {"command": "sh -c 'sleep 3; echo no > bt/never2.txt'; sleep 30", "run_in_background": True}),
+                      stop_it, _say("stopped"),
+                      # Slow, so barb is still running when a second shell that escaped would write
+                      # its file (barb stops every background job when it exits).
+                      lambda req: (time.sleep(4), _say("noted"))[1]]
+        t0 = time.time()
+        out = plain(m.run("barb -y -p 'stop things'", timeout=60))
+        took = time.time() - t0
+        flat = [v for r in api.requests for v in _results(r).values()]
+        t.check("a command past its time limit is stopped, and the model told",
+                any(v and "[killed: it ran longer than its limit of 1.5 seconds." in v for v in flat), flat)
+        t.check("task_stop stops a background task", any(v and v.startswith("Asked task ") for v in flat) and
+                "was killed by a signal" in out, out)
+        t.check("both without waiting out their sleeps", took < 20, took)
+        time.sleep(4)   # past the second shells' sleep
+        out = plain(m.run("ls bt"))
+        t.check("and what the shells started is gone too", "never1" not in out and "never2" not in out, out)
+
+        api.requests.clear()
+        api.script = [_say("read it")]
+        m.run("echo 'a task from a file, longer than' > bt/task.txt")
+        m.run("echo 'the shell would take on one line' >> bt/task.txt")
+        out = plain(m.run("barb -p - < bt/task.txt", timeout=60))
+        t.check("barb -p - reads the task from standard input", "read it" in out and api.requests and
+                "from a file, longer than\nthe shell would" in (_texts(api.requests[0]) or [""])[0], out)
+
+        api.requests.clear()
+        api.script = [_say("Hi."), _use("write_file", {"path": "bt/asked.txt", "content": "x"}), _say("Wrote it."),
+                      lambda req: (time.sleep(5), _say("too late"))[1], _say("Carrying on.")]
+        m.send("barb\r")
+        m.expect(rb"Ctrl-D to exit\.", 20)
+        m.send("helX\x7flo\r")
+        m.expect(rb"Hi\.", 20)
+        m.send("write it\r")
+        m.expect(rb"Allow\?", 20)
+        m.send("y")
+        m.expect(rb"Wrote it\.", 20)
+        m.send("think hard\r")
+        m.expect(rb"waiting for the model", 20)
+        m.send("\x03")
+        m.expect(rb"Interrupted\.", 20)
+        m.send("go on\r")
+        m.expect(rb"Carrying on\.", 20)
+        m.send("\x04")
+        m.expect(PROMPT, 20)
+        reqs = api.requests
+        t.check("at the terminal, Backspace edits the line", reqs and _texts(reqs[0]) == ["hello"], reqs and _texts(reqs[0]))
+        t.check("one key answers a question", plain(m.run("cat bt/asked.txt")) == "x", "")
+        t.check("Ctrl-C while it waits tells the model, with the next message",
+                len(reqs) == 5 and _texts(reqs[4]) == ["think hard", "[barb] The user interrupted you here, before you replied.", "go on"],
+                [_texts(r) for r in reqs])
+        out = plain(m.run("echo the shell is back"))
+        t.check("Ctrl-D leaves barb, and the terminal works as before", out == "the shell is back", out)
+    finally:
+        m.run("rm /barb.cfg")
+        m.run("rm -r bt")
+        m.run("rm -r .barb")   # the background tasks' logs; later tests count the directories in /
+        api.shutdown()
+        api.server_close()
+
+
 def tls_tests(m, t, web):
     """fetch over TLS 1.3, against OpenSSL (through Python's ssl) on the
     host: the certificate checked, against a test CA the guest is handed
@@ -4240,6 +4481,8 @@ def tcp_tests(m, t):
         out = plain(m.run("wc big.bin"))
         t.check("all of it", "300000 big.bin" in out, out)
         http11_tests(m, t, "http://" + url)
+        post_tests(m, t, "http://" + url)
+        barb_tests(m, t)
         tls_tests(m, t, web)
 
         def counts(c):

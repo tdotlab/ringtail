@@ -26,6 +26,13 @@ void* memset(void* dst, int c, size_t n) {
     return ret;
 }
 
+void* memchr(const void* s, int c, size_t n) {
+    const uint8_t* p = s;
+    for (size_t i = 0; i < n; i++)
+        if (p[i] == (uint8_t)c) return (void*)(p + i);
+    return 0;
+}
+
 int memcmp(const void* a, const void* b, size_t n) {
     const uint8_t* x = a;
     const uint8_t* y = b;

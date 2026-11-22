@@ -112,6 +112,7 @@ int task_sleep_ticks(uint32_t ticks);
 // dropped. Sending signal 0 only checks that the task is there.
 int task_signal(int id, int sig);
 int task_signal_user(int id, int sig);  // for programs: -EPERM for kernel tasks
+int task_signal_job_user(int job, int sig);  // for programs: every user task of a job; -ESRCH if none
 void task_signal_job(int job, int sig);
 struct tty;
 void task_signal_tty(struct tty* tty, int sig);  // every task it is the terminal of

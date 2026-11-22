@@ -22,7 +22,7 @@ fix the map.
   programs (ring 3, one address space each, static ELF from the disk)
   ┌───────────────────────────────────────────────────────────────────────┐
   │ saklas (shell)  octavo  gauge   pleroma (window server)  kenoma wfiles │
-  │ 68 programs: ls cp grep sed diff sort fetch httpd sntp ... wterm wprefs│
+  │ 69 programs: ls cp grep sed diff sort fetch httpd sntp ... barb wprefs │
   ├───────────────────────────────────────────────────────────────────────┤
   │ libu.a: ulib (syscall wrappers), crt0, malloc, lineio                  │
   │   cores, no system calls: shcore regex diffcore pfcore tk wm tls x509  │
@@ -269,7 +269,7 @@ with `tk.c`. pleroma never waits on a client: a full queue drops events.
 | interrupts, APIC routing | `kernel/interrupt.c`, `drivers/apic.c`, `acpi.c` | `qemu_test.py`, and reading against the MADT and datasheet (TODO.md) |
 | scheduling, waiting, joining | `kernel/task.c`, `include/task.h` | `qemu_test.py` (`spin`, `waitdemo`, `cpus`) |
 | a system call | `kernel/syscall.c`, `ringtail/abi.h`, `programs/lib/ulib.*` | a program in `tests/programs`, `fuzz.c` |
-| signals | `kernel/signal.c`, `arch/x86_64/sigframe.c` | `sigtest`, `sysregs` |
+| signals | `kernel/signal.c`, `arch/x86_64/sigframe.c`; a whole job: `task_signal_job_user` in `task.c` | `sigtest`, `sysregs`, `killjob` |
 | program loading | `kernel/loader.c`, `programs/user.ld`, `crt0.c` | `qemu_test.py` (`badptr`, `bss`, `stack`, `crash`) |
 | the filesystem | `fs/diskfs.c`, `fs/file.c` | `test_heap_diskfs`, then `fsck.fat` and mtools in `qemu_test.py` |
 | the disk driver | `drivers/ata.c` | `test_ata`, and the slow and failing disks in `qemu_test.py` |
@@ -277,6 +277,8 @@ with `tk.c`. pleroma never waits on a client: a full queue drops events.
 | the network below TCP, DHCP | `net/net.c`, `udp.c`, `dhcp.c`, `dhcpmsg.c` | `test_netmsg`, `tests/net_peer.py` |
 | TCP | `net/tcp.c` (engine), `tcpsock.c` (kernel side) | `test_tcp`, `tcptest` |
 | DNS, SNTP | `programs/lib/dns.c`, `dnsmsg.c`, `ntpmsg.c`, `programs/net/sntp.c` | `test_netmsg`, `tests/dns_server.py`, `tests/ntp_server.py` |
+| barb, the coding agent | the barb repository (`src/core`, `src/ringtail`), then its `tools/to_ringtail.sh`; `vendor/barb` here is a copy | `barb_tests` in `qemu_test.py`; the core's own tests in the barb repository |
+| fetch -d, -H, -e, -t | `programs/net/fetch.c` | `post_tests` in `qemu_test.py` |
 | TLS, certificates, crypto | `programs/lib/tls.c`, `x509.c`, `sig.c`, `aesgcm.c`, `chachapoly.c`, `x25519.c` | `test_tls`, `test_x509`, `test_sig`, `test_crypto` (`gen_*` scripts make the cases) |
 | the shell language | `programs/lib/shcore.c`, `sh.h` | `test_sh` (cases from `gen_sh_cases.py`, run against dash and bash) |
 | the shell at the console (editing, Tab, history, built-ins) | `programs/apps/saklas.c` | `qemu_test.py` |
@@ -290,7 +292,12 @@ with `tk.c`. pleroma never waits on a client: a full queue drops events.
 
 Every `.c` file one folder down in `src/programs` is a program: `apps`
 (the big interactive ones), `files`, `text`, `net` and `util`. The
-Makefile finds them, so a new program is a new file. Each one links
+Makefile finds them, so a new program is a new file. The one exception
+is `barb`, several files from `vendor/barb` (a copy of the barb
+repository's portable core and its RingTail platform), which the
+Makefile links into one program; change it in the barb repository and
+copy it over with that repository's `tools/to_ringtail.sh`. Its core
+includes `<string.h>`, which `vendor/barb/include` points at `lib.h`. Each one links
 statically against `crt0.o` and `libu.a`, an archive, so a program pulls
 in only the parts it uses. Programs go flat into the root of the disk
 under their names in capitals, so a name is at most 8 characters and

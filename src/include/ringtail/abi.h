@@ -39,7 +39,8 @@
 #define SYS_SAVE        29  // (name, buf, len)        -> 0; replaces the file whole or not at all (len <= 1 MB)
 #define SYS_TTY_FG      30  // (job)                   -> 0; hand the terminal to a job, or take it back
 #define SYS_WAIT_JOB    31  // (job)                   -> 0 once no task of the job is alive
-#define SYS_KILL        32  // (task id, signal)       -> 0; signal 0 only checks the task is there; not kernel tasks
+#define SYS_KILL        32  // (task id, signal)       -> 0; signal 0 only checks the task is there; not kernel tasks.
+                            //    A negative id -J signals every task of job J (-ESRCH if none is alive)
 #define SYS_READDIR     33  // (path, int* cursor, dirent_t*) -> 1 with an entry, 0 after the last; *cursor starts at 0
 #define SYS_KINFO       34  // (KINFO_*, buf, size)    -> length of the full text; buf gets as much as fits, NUL-terminated
 #define SYS_SET_COLOR   35  // (VGA attribute)         -> 0; the console's default colour

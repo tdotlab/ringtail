@@ -1,10 +1,21 @@
-// fetch [-i] [-k] [--ca FILE] [-o FILE] URL    get a page over HTTP or HTTPS
+// fetch [-i] [-e] [-k] [--ca FILE] [-o FILE] [-d FILE] [-H FILE] [-t SECS] URL
+//                                     get a page over HTTP or HTTPS, or post to it
 //
 // URL is [http://|https://]HOST[:PORT][/PATH]. The body goes to the
 // screen, or to FILE with -o; -i prints the response headers first.
 // Redirects are followed, five at most, from either scheme to the
 // other. An error status (400 and up) is reported and its body left
-// unread.
+// unread, unless -e asks for it too (an API's error says what went
+// wrong in its body); the exit status is 1 either way.
+//
+// -d FILE sends a POST with FILE's contents as the body. A 307 or 308
+// redirect sends it again to the new place; 301, 302 and 303 turn it
+// into a GET, as browsers do. -H FILE adds the header lines in FILE
+// ("Name: value", one a line) to the request; FILE "-" reads them from
+// standard input, which keeps a secret such as an API key out of the
+// task table, where the arguments of every program can be read. -t
+// gives up when the server is quiet for SECS seconds instead of 30
+// (a server that thinks before it answers may need longer).
 //
 // https is TLS 1.3 (lib/tls.h), and the server must prove who it is: a
 // certificate for the name in the URL, on a path to one of the roots in
@@ -18,13 +29,17 @@
 #include "tls.h"
 #include "x509.h"
 
-#define IDLE_MS 30000        // give up when the server goes quiet this long
+#define IDLE_MS 30000        // give up when the server goes quiet this long, unless -t says otherwise
 #define MAX_REDIRECTS 5
+#define MAX_BODY (16u << 20)  // -d: the most fetch will send
+#define MAX_EXTRA 8192        // -H: the most header text
 
 static int usage(void) {
-    dprintf(STDERR_FILENO, "usage: fetch [-i] [-k] [--ca FILE] [-o FILE] URL\n");
+    dprintf(STDERR_FILENO, "usage: fetch [-i] [-e] [-k] [--ca FILE] [-o FILE] [-d FILE] [-H FILE] [-t SECS] URL\n");
     return 2;
 }
+
+static int idle_ms = IDLE_MS;
 
 static char host[256], path[1024];
 static uint32_t port;
@@ -123,7 +138,7 @@ static tls_t* tls;
 static int sock_read(void* ctx, void* p, uint32_t n) {
     (void)ctx;
     pollfd_t pf = { sock, POLLIN, 0 };
-    int r = sys_pollfd(&pf, 1, IDLE_MS);
+    int r = sys_pollfd(&pf, 1, idle_ms);
     if (r < 0) return r;
     if (r == 0) return -ETIMEDOUT;
     return sys_read(sock, p, n);
@@ -322,13 +337,100 @@ static int dechunk(char* p, int n) {
     return out;
 }
 
+// All of a file (or of standard input, for "-"), up to `max` bytes, in
+// memory that ends with a 0. 0, or a message.
+static const char* slurp(const char* name, uint32_t max, char** data, uint32_t* len) {
+    static char msg[160];
+    int fd = strcmp(name, "-") ? sys_open(name, O_RDONLY) : STDIN_FILENO;
+    if (fd < 0) {
+        snprintf(msg, sizeof msg, "%s: %s", name, strerror(fd));
+        return msg;
+    }
+    // Read up to one byte past the limit: getting it means too much.
+    uint32_t cap = 4096, n = 0;
+    char* b = malloc(cap + 1);
+    const char* e = b ? 0 : "out of memory";
+    while (!e) {
+        if (n == cap) {
+            if (cap > max) break;
+            cap = cap * 2 > max + 1 ? max + 1 : cap * 2;
+            char* nb = realloc(b, cap + 1);
+            if (!nb) { e = "out of memory"; break; }
+            b = nb;
+        }
+        int r = sys_read(fd, b + n, cap - n);
+        if (r == 0) break;
+        if (r < 0) {
+            snprintf(msg, sizeof msg, "%s: %s", name, strerror(r));
+            e = msg;
+        } else n += (uint32_t)r;
+    }
+    if (fd != STDIN_FILENO) sys_close(fd);
+    if (!e && n > max) {
+        snprintf(msg, sizeof msg, "%s: more than %u bytes", name, max);
+        e = msg;
+    }
+    if (e) {
+        free(b);
+        return e;
+    }
+    b[n] = 0;
+    *data = b;
+    *len = n;
+    return 0;
+}
+
+// Checks the -H lines and turns them into "Name: value\r\n" each, in
+// `out`. 0, or a message.
+static const char* header_lines(const char* in, uint32_t len, char* out, uint32_t size) {
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < len;) {
+        uint32_t j = i;
+        while (j < len && in[j] != '\n') j++;
+        uint32_t e = j;
+        if (e > i && in[e - 1] == '\r') e--;
+        if (e > i) {
+            uint32_t colon = 0;
+            for (uint32_t k = i; k < e; k++) {
+                unsigned char c = (unsigned char)in[k];
+                if (c < 32 && c != '\t') return "a header line has a control character in it";
+                if (c == ':' && !colon) colon = k;
+            }
+            if (!colon || colon == i) return "a header line is not \"Name: value\"";
+            for (uint32_t k = i; k < colon; k++)
+                if (in[k] == ' ' || in[k] == '\t') return "a header name has a space in it";
+            if (o + (e - i) + 2 >= size) return "the header lines are too long";
+            memcpy(out + o, in + i, e - i);
+            o += e - i;
+            out[o++] = '\r';
+            out[o++] = '\n';
+        }
+        i = j + 1;
+    }
+    out[o] = 0;
+    return 0;
+}
+
 int main(int argc, char** argv) {
-    int show = 0;
+    int show = 0, error_body = 0;
     const char* out = 0;
     const char* url = 0;
+    const char* body_file = 0;
+    const char* header_file = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-i")) show = 1;
-        else if (!strcmp(argv[i], "-k")) insecure = 1;
+        else if (!strcmp(argv[i], "-e")) error_body = 1;
+        else if (!strcmp(argv[i], "-d")) {
+            if (++i == argc) return usage();
+            body_file = argv[i];
+        } else if (!strcmp(argv[i], "-H")) {
+            if (++i == argc) return usage();
+            header_file = argv[i];
+        } else if (!strcmp(argv[i], "-t")) {
+            uint32_t secs;
+            if (++i == argc || parse_uint(argv[i], &secs) || secs == 0 || secs > 86400) return usage();
+            idle_ms = (int)secs * 1000;
+        } else if (!strcmp(argv[i], "-k")) insecure = 1;
         else if (!strcmp(argv[i], "--ca")) {
             if (++i == argc) return usage();
             ca_file = argv[i];
@@ -344,6 +446,23 @@ int main(int argc, char** argv) {
         dprintf(STDERR_FILENO, "fetch: %s\n", err);
         return 1;
     }
+    char* body = 0;
+    uint32_t body_len = 0;
+    if (body_file && (err = slurp(body_file, MAX_BODY, &body, &body_len))) {
+        dprintf(STDERR_FILENO, "fetch: %s\n", err);
+        return 1;
+    }
+    static char extra[MAX_EXTRA + 1];
+    if (header_file) {
+        char* h;
+        uint32_t hlen;
+        if ((err = slurp(header_file, MAX_EXTRA, &h, &hlen)) || (err = header_lines(h, hlen, extra, sizeof extra))) {
+            dprintf(STDERR_FILENO, "fetch: %s%s\n", strcmp(header_file, "-") ? "" : "the headers: ", err);
+            return 1;
+        }
+        free(h);
+    }
+    int post = body != 0;
 
     int status = 0, redirects = 0;
     for (;;) {
@@ -368,13 +487,18 @@ int main(int argc, char** argv) {
         }
         // HTTP/1.1, because plenty of servers now turn 1.0 away, but one
         // request per connection: the server is asked to close after it.
+        const char* method = post ? "POST" : "GET";
         int n = port == (secure ? 443u : 80u) ? snprintf(buf, sizeof buf,
-                                                         "GET %s HTTP/1.1\r\nHost: %s\r\n", path, host)
+                                                         "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host)
                                               : snprintf(buf, sizeof buf,
-                                                         "GET %s HTTP/1.1\r\nHost: %s:%u\r\n", path, host, port);
+                                                         "%s %s HTTP/1.1\r\nHost: %s:%u\r\n", method, path, host, port);
         n += snprintf(buf + n, sizeof buf - (size_t)n,
-                      "User-Agent: fetch (RingTail OS)\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+                      "User-Agent: fetch (RingTail OS)\r\nAccept: */*\r\nConnection: close\r\n");
+        if (post) n += snprintf(buf + n, sizeof buf - (size_t)n, "Content-Length: %u\r\n", body_len);
         r = write_all(buf, (uint32_t)n);
+        if (r >= 0 && extra[0]) r = write_all(extra, (uint32_t)strlen(extra));
+        if (r >= 0) r = write_all("\r\n", 2);
+        if (r >= 0 && post && body_len) r = write_all(body, body_len);
         if (r < 0) {
             dprintf(STDERR_FILENO, "fetch: %s\n", tls_strerror(r));
             return 1;
@@ -436,13 +560,18 @@ int main(int argc, char** argv) {
                 dprintf(STDERR_FILENO, "fetch: redirect to %s: %s\n", loc, err);
                 return 1;
             }
+            if (status != 307 && status != 308) post = 0;  // the others become a GET
             continue;
         }
+        int failed_status = 0;
         if (status >= 400) {
-            char* reason = hdr + 9;
-            cut_line(reason);
+            char reason[64];
+            int k = 0;
+            for (const char* c = hdr + 9; *c && *c != '\r' && *c != '\n' && k < (int)sizeof reason - 1; c++) reason[k++] = *c;
+            reason[k] = 0;
             dprintf(STDERR_FILENO, "fetch: HTTP %s\n", reason);
-            return 1;
+            if (!error_body) return 1;
+            failed_status = 1;
         }
         // Where the body ends: after a stated length, at the last chunk,
         // or, with neither, when the server closes the connection.
@@ -515,6 +644,6 @@ int main(int argc, char** argv) {
             if (fail) sys_delete(out);
             else dprintf(STDERR_FILENO, "saved %u bytes to %s\n", got, out);
         }
-        return fail;
+        return fail || failed_status;
     }
 }

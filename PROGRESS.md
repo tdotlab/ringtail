@@ -3098,3 +3098,38 @@ names, at boot, with no DNS lookup, and fall back on the pool after
 `net static`. Also fixed: the sntp tests waited out TIME-WAIT before
 their memory check, and PLAN-TLS.md is gone (all of it is done).
 Host 244 + 170 + 163 + 21394 + 2024 + 3795 + 1307 + 8076 + 1618, QEMU 2066.
+
+---
+## Since v0.28.0 (not yet a release)
+
+The desktop came in four stages after v0.28.0; git has those. This part is
+Barb, a coding agent, and what RingTail needed for it.
+
+- `barb`: Barb's core (the agent, its six tools, the API and JSON code,
+  which does no I/O) and a platform layer for RingTail, copied into
+  `vendor/barb` from the barb repository by its `tools/to_ringtail.sh`. The
+  platform runs `sh -c` for the bash tool, each command a job of its own;
+  sees a command end by asking `kill(id, 0)`; posts to the API through
+  `fetch`, with the API key on fetch's standard input rather than in its
+  arguments; and edits the line itself in raw mode, so it can keep serving
+  the agent while someone types. Settings in `/barb.cfg`. It has done a
+  real task against a live model (DeepSeek, through a relay on the test
+  host): wrote a script for saklas, ran and checked it, and slept through a
+  background task until it ended.
+- `fetch -d FILE` posts, `-H FILE` (or `-H -`) adds header lines, `-e`
+  keeps the body of an error response, `-t SECS` changes the idle limit.
+  A 307 or 308 posts again; 301 to 303 become a GET.
+- `SYS_KILL` with a negative id signals every user task of a job
+  (`task_signal_job_user`), so a command can be stopped with what it
+  started.
+- `memchr` in `src/lib/string.c`.
+
+Testing: `killjob` (a job's leader and a child it started, both reached,
+and the error cases), `post_tests` (the method, body and headers arriving,
+bad header lines refused before anything is sent, -e, 307 and 303, -t),
+and `barb_tests` against a scripted API (tools on the real disk and shell,
+the key in its header, a background task waking it, a command past its
+limit and a task the model stops, each killed with the shell it started,
+and a session at the terminal). Mutation-checked: a kill that reaches only
+the leader, in the kernel or in barb, and fetch dropping the -H lines, each
+fail a test. `test_heap_diskfs` checks memchr against the obvious loop.

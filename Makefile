@@ -65,7 +65,11 @@ ULIB := $(BUILD)/u/libu.a
 # the library, not programs. The binaries all go flat in build/programs,
 # since the disk has one directory and names must fit 8.3.
 PROGRAM_SRCS := $(filter-out src/programs/lib/%,$(wildcard src/programs/*/*.c))
-PROGRAMS := $(notdir $(basename $(PROGRAM_SRCS)))
+# Barb, the coding agent, is several files and one program. vendor/barb is a copy made by the barb
+# repository's tools/to_ringtail.sh; change Barb there, not here.
+BARB_SRCS := $(wildcard vendor/barb/core/*.c vendor/barb/ringtail/*.c)
+BARB_OBJS := $(BARB_SRCS:%.c=$(BUILD)/u/%.o)
+PROGRAMS := $(notdir $(basename $(PROGRAM_SRCS))) $(if $(BARB_SRCS),barb)
 ifneq ($(words $(PROGRAMS)),$(words $(sort $(PROGRAMS))))
 DUPLICATES := $(strip $(foreach n,$(sort $(PROGRAMS)),$(if $(filter-out 1,$(words $(filter $(n),$(PROGRAMS)))),$(n))))
 $(error more than one program is called $(DUPLICATES) (they would share one name on the disk): $(filter %/$(firstword $(DUPLICATES)).c,$(PROGRAM_SRCS)))
@@ -130,6 +134,12 @@ $(BUILD)/programs/$(notdir $(basename $(1))): $(BUILD)/u/$(1:.c=.o) $(CRT0) $(UL
 endef
 $(foreach s,$(PROGRAM_SRCS),$(eval $(call PROGRAM_RULE,$(s))))
 
+# Its core includes <string.h>, which vendor/barb/include turns into lib.h.
+$(BARB_OBJS): UCFLAGS += -Ivendor/barb/include
+$(BUILD)/programs/barb: $(BARB_OBJS) $(CRT0) $(ULIB) src/programs/user.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $(BARB_OBJS) $(CRT0) $(ULIB) -lgcc
+
 $(BUILD)/test-programs/%: $(BUILD)/u/tests/programs/%.o $(CRT0) $(ULIB) src/programs/user.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -T src/programs/user.ld -o $@ $< $(CRT0) $(ULIB) -lgcc
@@ -192,5 +202,5 @@ clean:
 
 # The header each object was built from (-MMD), so changing a header
 # rebuilds every kernel file, library file and program that includes it.
--include $(KERNEL_OBJS:.o=.d) $(ULIB_OBJS:.o=.d) $(PROGRAM_SRCS:%.c=$(BUILD)/u/%.d) \
+-include $(KERNEL_OBJS:.o=.d) $(ULIB_OBJS:.o=.d) $(PROGRAM_SRCS:%.c=$(BUILD)/u/%.d) $(BARB_OBJS:.o=.d) \
 	$(patsubst %.c,$(BUILD)/u/%.d,$(wildcard tests/programs/*.c))

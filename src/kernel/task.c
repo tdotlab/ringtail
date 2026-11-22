@@ -379,6 +379,28 @@ int task_job_mine(int job) {
     return ok;
 }
 
+// SYS_KILL with a negative id: every live user task of job `job`, as
+// kill(-pgid) does on Unix. -ESRCH if none is alive. A job is the
+// tasks a leader started without SPAWN_NEW_JOB, so this reaches a
+// command's children, which killing the leader alone would leave
+// running.
+int task_signal_job_user(int job, int sig) {
+    if (sig < 0 || sig >= NSIG) return -EINVAL;
+    if (job <= 0) return -ESRCH;
+    uint32_t f = irq_save();
+    int found = 0;
+    task_t* t = task_list_head;
+    do {
+        if (t->job == job && t->state != TASK_DEAD && !t->is_idle && t->user) {
+            found = 1;
+            if (sig) task_signal(t->id, sig);
+        }
+        t = t->next;
+    } while (t != task_list_head);
+    irq_restore(f);
+    return found ? 0 : -ESRCH;
+}
+
 void task_signal_job(int job, int sig) {
     if (job <= 0) return;
     uint32_t f = irq_save();

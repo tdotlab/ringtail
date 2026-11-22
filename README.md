@@ -9,6 +9,8 @@ It is on the network too: an Intel e1000 driver, ARP, IPv4, ICMP,
 UDP and TCP, an address from DHCP, a DNS resolver, an SNTP client to
 set the clock and a TLS 1.3 client, so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
+It runs Barb, a coding agent: a model at the other end of `fetch` reads
+and edits files and runs commands in RingTail's own shell.
 Current version: **v0.28.0 "Time Will Tell"**. See PROGRESS.md for the history.
 
 ![RingTail booting in QEMU: the banner, an address from DHCP, the clock set over the network, then a few commands at the shell](docs/boot.png)
@@ -194,7 +196,12 @@ keeping them for its next start, shared memory and channels (`shmtest`,
 and the network through QEMU's user network: DHCP at boot, `ping`,
 loopback, UDP and TCP sockets (`udptest`, `tcptest`), the random number
 generator (`rndtest`), `fetch` and `nc`
-against an HTTP server and an echo server on the host, `fetch` over TLS
+against an HTTP server and an echo server on the host (posting too:
+`fetch -d` and `-H` against a server that echoes what it got), barb
+against a scripted API on the host (the tools on the real disk and shell,
+a background task that wakes it, a command past its time limit and a
+task it stops, both killed with everything they started, and a session
+at the terminal with a one-key answer, Ctrl-C and Ctrl-D), `fetch` over TLS
 against OpenSSL on the host with certificates the test makes (a
 certificate from no trusted root refused by default, accepted with
 --ca; an RSA-PSS server; a wrong name and an expired certificate
@@ -316,7 +323,9 @@ redirected to; that is how `more` can wait for a key at the end of a pipe.
 
 Signals: 15 of them, numbered as on Linux (SIGINT 2, SIGKILL 9, SIGTERM 15
 and so on), sent with `kill`, by the terminal, by a pipe with no reader
-or by a fault. Each one's default ends the program, whose exit status then
+or by a fault. The system call takes a negative id for a whole job, as
+`kill(-pgid)` does on Unix, which stops a command together with whatever
+it started (the shell's `kill` still takes one task). Each one's default ends the program, whose exit status then
 says which signal it was. `sigaction` sets a handler or ignores one
 (SIGKILL can be neither), with a mask of signals to hold off while the
 handler runs and the flags SA_RESETHAND and SA_NODEFER; `sigmask` blocks
@@ -592,6 +601,7 @@ src/programs   user programs in folders, their C library (lib/: runtime, malloc,
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
   util         small tools for building command lines: echo, seq, factor, sleep, xargs, cal, hello and the like
+vendor/barb    Barb, the coding agent: its portable core and its RingTail platform, copied from the barb repository
 tools          mkdisk.py, the FAT16 image builder; screenshots.py, which takes the pictures above;
                mkfont.py, which makes the console font from unscii-16
 docs           ARCHITECTURE.md, a map of the parts and how they fit together; the screenshots
@@ -675,7 +685,8 @@ Programs on the disk:
 | ping | `ping [-c COUNT] [-s SIZE] [-W MS] HOST`: ICMP echo, a second apart, with round trips and a summary. HOST is an address or a name. |
 | host | `host [-p PORT] NAME [SERVER]`: asks DNS about a name, or about an address for its name, and prints the answer the way BIND's `host` does. |
 | sntp | `sntp [-q] [-b] [-p PORT] [SERVER]`: asks a time server (default: the ones DHCP named, else pool.ntp.org) how far off the clock is and sets it, unless it is right to within half a second; `-q` only asks, `-b` is quick and says it all in one line, as at boot. Refuses a time before the system was built. |
-| fetch | `fetch [-i] [-k] [--ca FILE] [-o FILE] URL`: gets a page over HTTP/1.1, or over HTTPS when the URL starts with `https://`, following up to five redirects. -i shows the headers, -o saves the body. HTTPS checks the server's certificate against the roots in `/roots.pem`, or against the certificates in FILE with --ca; -k skips the check and says so each time. |
+| fetch | `fetch [-i] [-e] [-k] [--ca FILE] [-o FILE] [-d FILE] [-H FILE] [-t SECS] URL`: gets a page over HTTP/1.1, or over HTTPS when the URL starts with `https://`, following up to five redirects. -i shows the headers, -o saves the body, -e shows the body of an error response too. -d FILE posts FILE's contents (a 307 or 308 posts them again to the new place; 301 to 303 become a GET), -H FILE adds its "Name: value" lines as headers (`-H -` reads them from standard input, which keeps a secret out of the task table), and -t gives up on a server quiet for SECS seconds instead of 30. HTTPS checks the server's certificate against the roots in `/roots.pem`, or against the certificates in FILE with --ca; -k skips the check and says so each time. |
+| barb | `barb [-p TASK] [-y] [-m MODEL] [-C DIR]`: Barb, a coding agent. Type a task and a model (through the Anthropic Messages API, or anything that speaks it) reads and edits files and runs commands with `sh`, asking first (one key: y, n, or a for always). A slow command goes to the background and barb sleeps until it ends, making no model calls meanwhile. The key and the address go in `/barb.cfg` (`key = ...`, `url = ...`, `model = ...`), since programs have no environment. `-p TASK` does one task and exits; `-p -` reads a task longer than the shell's line from standard input. It reads `AGENTS.md` from the directory it works in. See vendor/barb. |
 | httpd | `httpd [-p PORT] [-q] [DIR]`: serves DIR (default: the current directory) over HTTP on port 8080, one connection at a time. A directory gives its index.html or a listing; `..` is refused. Logs each request unless -q. Ctrl+C stops it. |
 | nc | `nc [-C] [-v] [-w SECS] HOST PORT` or `nc -l PORT`: a TCP connection between the terminal (or stdin) and the other end. -C sends CR LF line ends. |
 | sleep | `sleep <seconds>`, up to an hour. |
@@ -813,4 +824,11 @@ one key exchange (X25519); nearly every server on the internet takes
 X25519, and one that does not is refused with a message saying so. There is no session resumption, no early data, no
 client certificate and no ALPN. `fetch` makes one request per
 connection, does not ask for compressed pages, and has no cookies or
-logins.
+logins; it posts at most 16 MB.
+
+Barb keeps its API key in `/barb.cfg` as plain text, and FAT has no
+permissions, so anyone at the machine can read it. Its replies are not
+streamed (a line counts the seconds meanwhile), and the commands it runs
+get no terminal: their input is empty. The shell's line, and the
+terminal's in cooked mode, holds 255 characters, so a longer task goes
+through `barb -p - < FILE`.

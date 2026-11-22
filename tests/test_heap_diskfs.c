@@ -846,7 +846,27 @@ static void test_bad_volumes(void) {
     CHECK(diskfs_init() == -EIO, "no disk at all is -EIO");
 }
 
+// memchr, from src/lib/string.c (linked in place of the host's), against
+// the obvious loop: every length, every position, a byte that is there
+// once, twice or not at all, and c taken as an unsigned char.
+static void test_memchr(void) {
+    uint8_t buf[40];
+    int bad = 0;
+    for (size_t n = 0; n <= sizeof buf; n++)
+        for (int at = -1; at < (int)n; at++) {
+            for (size_t i = 0; i < sizeof buf; i++) buf[i] = (uint8_t)('a' + i % 7);
+            if (at >= 0) buf[at] = 0xE9;
+            if (at >= 0 && at + 3 < (int)n) buf[at + 3] = 0xE9;
+            const void* want = at >= 0 ? buf + at : 0;
+            if (memchr(buf, 0xE9, n) != want) bad++;
+            if (memchr(buf, 0xE9 - 256, n) != want) bad++;   // -23 is 0xE9 as an unsigned char
+        }
+    CHECK(bad == 0, "memchr finds the first match, and nothing past n");
+    CHECK(memchr("abc", 0, 4) != 0 && *(const char*)memchr("abc", 0, 4) == 0, "memchr finds a NUL like any byte");
+}
+
 int main(void) {
+    test_memchr();
     test_heap();
     heap_init(heap_area, sizeof heap_area);
     test_names();
