@@ -10,7 +10,7 @@
 int kinfo_format(int what, sbuf_t* sb) {
     switch (what) {
     case KINFO_VERSION:
-        sbprintf(sb, "RingTail OS v%s \"%s\"\n", RINGTAIL_VERSION, RINGTAIL_CODENAME);
+        sbprintf(sb, "Ringtail OS v%s \"%s\"\n", RINGTAIL_VERSION, RINGTAIL_CODENAME);
         return 0;
     case KINFO_MEM: {
         uint32_t total, free;

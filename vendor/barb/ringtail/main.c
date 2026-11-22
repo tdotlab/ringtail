@@ -1,9 +1,9 @@
-// barb for RingTail: the command line, the terminal, and the loop that joins the agent to the system.
+// barb for Ringtail: the command line, the terminal, and the loop that joins the agent to the system.
 //
 //   barb                       an interactive session (type a task; /help for commands)
 //   barb -p "task"             do one task and exit; the answer goes to standard output
 //
-// RingTail programs have no environment, so the key, the endpoint and the model come from a file,
+// Ringtail programs have no environment, so the key, the endpoint and the model come from a file,
 // /barb.cfg by default ("key = ...", "url = ...", "model = ...", "ca = ..."; # starts a comment).
 // The options override it.
 //
@@ -14,7 +14,7 @@
 // when the agent is idle, or once something has been typed.
 //
 // Like the Linux version, the loop sleeps in sys_pollfd when nothing is happening. The one
-// difference: RingTail tells no one when a program ends, so while one runs, the loop looks every
+// difference: Ringtail tells no one when a program ends, so while one runs, the loop looks every
 // 50 ms (250 ms for background tasks). That costs a system call, never a model call.
 #include "ulib.h"
 #include "../core/agent.h"
@@ -452,7 +452,7 @@ int main(int argc, char** argv) {
         const char* a = argv[i];
         int has_val = i + 1 < argc;
         if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(STDOUT_FILENO); return 0; }
-        else if (!strcmp(a, "-V") || !strcmp(a, "--version")) { printf("barb %s (RingTail)\n", VERSION); return 0; }
+        else if (!strcmp(a, "-V") || !strcmp(a, "--version")) { printf("barb %s (Ringtail)\n", VERSION); return 0; }
         else if (!strcmp(a, "-y") || !strcmp(a, "--yes")) yes = 1;
         else if (!strcmp(a, "--no-instructions")) no_instructions = 1;
         else if (!strcmp(a, "-p") && has_val) prompt = argv[++i];
@@ -504,12 +504,12 @@ int main(int argc, char** argv) {
     for (char* p = ver; *p; p++) if (*p == '\n') *p = 0;
     // What the model would otherwise spend its first calls finding out.
     snprintf(plat, sizeof plat,
-             "RingTail (%s), a small hobby OS, not Unix. bash runs saklas, a POSIX-like sh with pipes, "
+             "Ringtail (%s), a small hobby OS, not Unix. bash runs saklas, a POSIX-like sh with pipes, "
              "redirection, $(( )) and while/if, but no job control. The programs are files in / (ls / lists "
              "them): ls cat cp mv rm mkdir grep sed sort uniq head tail wc diff tr cut find xargs printf seq "
              "sleep echo fetch and more. There is no compiler, no Python and no package manager. File names "
              "are FAT long names: ASCII, case-insensitive.",
-             ver[0] ? ver : "RingTail OS");
+             ver[0] ? ver : "Ringtail OS");
 
     static char task[65536];
     if (prompt && !strcmp(prompt, "-")) {

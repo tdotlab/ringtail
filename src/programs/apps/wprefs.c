@@ -160,7 +160,7 @@ int main(void) {
     show_network();
 
     char v[80];
-    if (sys_kinfo(KINFO_VERSION, v, sizeof v) < 0) strlcpy(v, "RingTail", sizeof v);
+    if (sys_kinfo(KINFO_VERSION, v, sizeof v) < 0) strlcpy(v, "Ringtail", sizeof v);
     char* nl = strchr(v, '\n');
     if (nl) *nl = 0;
     tk_label(&tk, PAD, wh - 16 - PAD, ww - 2 * PAD, v);

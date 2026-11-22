@@ -1,4 +1,4 @@
-// Octavo for RingTail: a small text editor for the terminal.
+// Octavo for Ringtail: a small text editor for the terminal.
 //
 // This is a port of Octavo (github.com/tdotlab/octavo), a Win32 editor
 // written in C++ to learn how an editor works. The design is the same:

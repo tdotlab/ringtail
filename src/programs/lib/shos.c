@@ -1,4 +1,4 @@
-// shos.h over RingTail's system calls: what the shell's core (shcore.c)
+// shos.h over Ringtail's system calls: what the shell's core (shcore.c)
 // runs on here. The host test has its own (tests/shos_host.c).
 #include "ulib.h"
 #include "sh.h"

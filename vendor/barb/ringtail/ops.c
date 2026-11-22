@@ -1,6 +1,6 @@
-// What the agent's actions turn into on RingTail: programs, HTTP through fetch, files, timers.
+// What the agent's actions turn into on Ringtail: programs, HTTP through fetch, files, timers.
 //
-// RingTail has no fork, no environment and nothing like SIGCHLD, so this is shaped differently
+// Ringtail has no fork, no environment and nothing like SIGCHLD, so this is shaped differently
 // from src/posix/ops.c while doing the same job:
 //
 // - A command is `sh -c CMD`, spawned as a job of its own (SPAWN_NEW_JOB), so kill(-job) stops
@@ -263,7 +263,7 @@ void ops_http(int64_t id, str_t path, str_t body) {
     memset(h, 0, sizeof h);
     sys_close(in[1]);
     char url[sizeof g_url + 256];
-    snprintf(url, sizeof url, "%s%s", g_url, path.p);   // RingTail's printf has no precision; path ends with a NUL
+    snprintf(url, sizeof url, "%s%s", g_url, path.p);   // Ringtail's printf has no precision; path ends with a NUL
     const char* argv[16];
     int a = 0;
     argv[a++] = "fetch"; argv[a++] = "-i"; argv[a++] = "-e";

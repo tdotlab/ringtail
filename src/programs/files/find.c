@@ -8,7 +8,7 @@
 //
 // Tests (true or false for an entry):
 //   -name PAT     the entry's own name matches the glob PAT (* ? [a-z] [!x])
-//   -iname PAT    the same. RingTail's disk ignores case, so -name does too
+//   -iname PAT    the same. Ringtail's disk ignores case, so -name does too
 //   -path PAT     the whole path matches PAT; here * also matches "/"
 //   -type f|d     a file, or a directory
 //   -size [+-]N[bckMG]

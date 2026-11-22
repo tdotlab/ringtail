@@ -1,4 +1,4 @@
-# RingTail architecture
+# Ringtail architecture
 
 This is the map: what the parts are, where each one lives, how they talk
 to each other, and the rules that keep them working. It is for whoever
@@ -59,7 +59,7 @@ As of fa3929a, in lines of C, assembly and Python:
 
 So the system is about 48,000 lines, two thirds of it user space, and
 with the tests written by hand about 65,000. The tests are part of the
-work, not packing around it: most of what RingTail can be trusted to do
+work, not packing around it: most of what Ringtail can be trusted to do
 is known because a test does it. The generated case tables are expected
 outputs recorded from GNU tools, OpenSSL and Wycheproof by the `gen_*`
 scripts (which are counted with the hand-written tests); nobody edits
@@ -82,7 +82,7 @@ reference: GNU's tools, dash and bash, OpenSSL, the RFCs' own examples.
 
 | Core | Joined to the system by | Host test |
 |---|---|---|
-| `programs/lib/shcore.c` (the shell language) | `shos.c` (RingTail) / `tests/shos_host.c` (POSIX) | `test_sh`, against dash and bash |
+| `programs/lib/shcore.c` (the shell language) | `shos.c` (Ringtail) / `tests/shos_host.c` (POSIX) | `test_sh`, against dash and bash |
 | `net/tcp.c` (the TCP engine) | `net/tcpsock.c` | `test_tcp`, on a lossy simulated network |
 | `programs/lib/tls.c` | three callbacks the caller passes (send, receive, random) | `test_tls`, 218 recorded conversations |
 | `programs/lib/x509.c`, `sig.c` | a verifier handed to `tls.c` | `test_x509`, `test_sig` |
@@ -294,7 +294,7 @@ Every `.c` file one folder down in `src/programs` is a program: `apps`
 (the big interactive ones), `files`, `text`, `net` and `util`. The
 Makefile finds them, so a new program is a new file. The one exception
 is `barb`, several files from `vendor/barb` (a copy of the barb
-repository's portable core and its RingTail platform), which the
+repository's portable core and its Ringtail platform), which the
 Makefile links into one program; change it in the barb repository and
 copy it over with that repository's `tools/to_ringtail.sh`. Its core
 includes `<string.h>`, which `vendor/barb/include` points at `lib.h`. Each one links
@@ -309,7 +309,7 @@ returns, a result or `-errno`. Everything else in `programs/lib` is
 either a core (above) or glue for one family of programs. `lineio`
 buffers the text tools' input and output, `dns` and `dial` look up
 names and connect, `win` and `desk` serve the desktop programs, and
-`shos` runs the shell on RingTail.
+`shos` runs the shell on Ringtail.
 
 ## Building and testing
 

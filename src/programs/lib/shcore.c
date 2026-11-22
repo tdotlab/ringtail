@@ -17,7 +17,7 @@
 #include "shos.h"
 #include "pfcore.h"
 
-// The C library: RingTail's (lib.h) or the host's.
+// The C library: Ringtail's (lib.h) or the host's.
 void* memcpy(void* dst, const void* src, size_t n);
 void* memmove(void* dst, const void* src, size_t n);
 void* memset(void* dst, int c, size_t n);
@@ -32,7 +32,7 @@ void free(void* p);
 int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
 int snprintf(char* buf, size_t size, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
 
-// errno and signal numbers: RingTail's are Linux's.
+// errno and signal numbers: Ringtail's are Linux's.
 #define E_NOENT  2
 #define E_INTR   4
 #define E_NOEXEC 8

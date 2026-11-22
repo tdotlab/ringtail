@@ -1,7 +1,7 @@
 // touch [-c] FILE...    make sure files exist
 //
 // A FILE that is not there is created empty. One that is there is left
-// alone and that is not an error. RingTail has no call to set a time on
+// alone and that is not an error. Ringtail has no call to set a time on
 // an old file, so unlike the usual touch this does not bump its date.
 // -c creates nothing: a missing FILE is skipped without a word.
 #include "ulib.h"

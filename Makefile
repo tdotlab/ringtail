@@ -1,4 +1,4 @@
-# RingTail build. Everything goes into build/$(ARCH)/.
+# Ringtail build. Everything goes into build/$(ARCH)/.
 #   make          kernel, programs, disk image and bootable ISO
 #   make run      boot in QEMU (screen + serial on this terminal)
 #   make test     host unit tests, then the QEMU integration tests
@@ -167,7 +167,7 @@ $(TEST_DISK): $(PROGRAM_BINS) $(TEST_PROGRAM_BINS) disk/welcome.txt disk/roots.p
 define make_iso
 	@mkdir -p $(1)/boot/grub
 	cp $(KERNEL) $(1)/boot/ringtail.bin
-	printf 'set timeout=0\nset default=0\ninsmod all_video\nmenuentry "RingTail" {\n  multiboot /boot/ringtail.bin\n$(2)  boot\n}\n' > $(1)/boot/grub/grub.cfg
+	printf 'set timeout=0\nset default=0\ninsmod all_video\nmenuentry "Ringtail" {\n  multiboot /boot/ringtail.bin\n$(2)  boot\n}\n' > $(1)/boot/grub/grub.cfg
 	grub-mkrescue -o $@ $(1) 2>/dev/null
 endef
 

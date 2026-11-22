@@ -1,4 +1,4 @@
-# RingTail OS
+# Ringtail OS
 
 A small 64-bit x86 (x86_64) operating system written from scratch in
 freestanding C and NASM. GRUB boots it through Multiboot. It runs ELF programs from a
@@ -10,10 +10,10 @@ UDP and TCP, an address from DHCP, a DNS resolver, an SNTP client to
 set the clock and a TLS 1.3 client, so `ping example.com` works and `fetch` gets a page over HTTP or HTTPS,
 with the server's certificate checked against Mozilla's list of roots.
 It runs Barb, a coding agent: a model at the other end of `fetch` reads
-and edits files and runs commands in RingTail's own shell.
+and edits files and runs commands in Ringtail's own shell.
 Current version: **v0.28.0 "Time Will Tell"**. See PROGRESS.md for the history.
 
-![RingTail booting in QEMU: the banner, an address from DHCP, the clock set over the network, then a few commands at the shell](docs/boot.png)
+![Ringtail booting in QEMU: the banner, an address from DHCP, the clock set over the network, then a few commands at the shell](docs/boot.png)
 
 A boot in QEMU. The address, the clock and the ping reply come from a small
 script that plays DHCP, DNS, NTP and a router for the test suite, so none of
@@ -37,7 +37,7 @@ a status line.
 `run kenoma` is the desktop: pleroma, the window server, with kenoma's
 Programs window, an icon for each window program, document and text
 program on the disk. Files browses the disk and Settings sets the clock
-and the desktop's colours. Ctrl+Alt+Backspace, or Leave in the RingTail
+and the desktop's colours. Ctrl+Alt+Backspace, or Leave in the Ringtail
 menu, goes back to the shell.
 
 These pictures are taken from the real ISO by `tools/screenshots.py`, which
@@ -63,7 +63,7 @@ make clean
 `ARCH` picks the machine, and x86_64 is the only one. What differs between
 machines lives in `src/arch/$(ARCH)` and builds into `build/$(ARCH)/`, so
 a second port is a new folder there and a few lines in the Makefile.
-(RingTail was 32-bit i386 up to v0.28; the commit that dropped it says
+(Ringtail was 32-bit i386 up to v0.28; the commit that dropped it says
 what to revert to bring it back.)
 
 The disk image (`build/x86_64/disk.img`) is ordinary FAT16. It holds the
@@ -601,7 +601,7 @@ src/programs   user programs in folders, their C library (lib/: runtime, malloc,
   text         what is inside files and pipes: cat, grep, sed, sort, diff, od and the rest of the filters
   net          talks to the network: ping, host, nc, fetch, httpd, sntp
   util         small tools for building command lines: echo, seq, factor, sleep, xargs, cal, hello and the like
-vendor/barb    Barb, the coding agent: its portable core and its RingTail platform, copied from the barb repository
+vendor/barb    Barb, the coding agent: its portable core and its Ringtail platform, copied from the barb repository
 tools          mkdisk.py, the FAT16 image builder; screenshots.py, which takes the pictures above;
                mkfont.py, which makes the console font from unscii-16
 docs           ARCHITECTURE.md, a map of the parts and how they fit together; the screenshots
@@ -673,7 +673,7 @@ Programs on the disk:
 | Program | What it does |
 |---|---|
 | octavo | Text editor. `run octavo [file]`. |
-| pleroma | The window system: a desktop with a bar (a menu, a button for each window, a clock) and windows that can be dragged by their title bars and closed. `run pleroma [PROGRAM...]` starts it with those programs in windows, or with kenoma. Its menu (the RingTail button, or a right click on the desktop) starts Programs, Files, Terminal, Clock, Paint and Settings, or leaves; so does Ctrl+Alt+Backspace. |
+| pleroma | The window system: a desktop with a bar (a menu, a button for each window, a clock) and windows that can be dragged by their title bars and closed. `run pleroma [PROGRAM...]` starts it with those programs in windows, or with kenoma. Its menu (the Ringtail button, or a right click on the desktop) starts Programs, Files, Terminal, Clock, Paint and Settings, or leaves; so does Ctrl+Alt+Backspace. |
 | wclock | An analog clock in a window, for pleroma. |
 | wpaint | Painting in a window, for pleroma: drag with the left button to draw, the right to erase; pick a colour from the strip or with 1 to 8, and c or Clear clears. |
 | wterm | A terminal in a window, for pleroma: 80 by 24, running saklas, or the program it is given (`wterm gauge`, typed in another terminal). It closes when the program ends, or with `-h` waits for a key first; closing it hangs the program up. |
@@ -754,7 +754,7 @@ test disk.
 ### Octavo
 
 A port of [Octavo](https://github.com/tdotlab/octavo), a small Win32
-editor, to the RingTail terminal. Word wrap is on by default; Alt+Z
+editor, to the Ringtail terminal. Word wrap is on by default; Alt+Z
 toggles it.
 
 | Action | Keys |

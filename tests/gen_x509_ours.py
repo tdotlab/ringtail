@@ -241,7 +241,7 @@ def leaf_exts(*names):
 
 def ours():
     root_key = ec_key(0x5EED0001)
-    root = Cert(name(("CN", "Test Root"), ("O", "RingTail")), root_key, exts=ca_exts())
+    root = Cert(name(("CN", "Test Root"), ("O", "Ringtail")), root_key, exts=ca_exts())
     rsa_ca_key = rsa_key(2048, 1)
     inter = Cert(name(("CN", "Test RSA Intermediate")), rsa_ca_key, root, exts=ca_exts(0))
     leaf_key = ec_key(0x5EED0002)

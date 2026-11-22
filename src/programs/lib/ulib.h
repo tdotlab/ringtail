@@ -1,4 +1,4 @@
-// RingTail user library: system call wrappers and a few helpers.
+// Ringtail user library: system call wrappers and a few helpers.
 // Wrappers return what the kernel returns: a result, or -errno.
 #ifndef RINGTAIL_ULIB_H
 #define RINGTAIL_ULIB_H

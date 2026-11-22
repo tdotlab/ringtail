@@ -91,7 +91,7 @@ static const char* mime(const char* path) {
 // The status line and headers. length < 0: not known, the body just ends.
 static void head(int c, int status, const char* type, int64_t length, const char* location) {
     char line[160];
-    snprintf(line, sizeof line, "HTTP/1.0 %d %s\r\nServer: httpd (RingTail OS)\r\nConnection: close\r\n", status,
+    snprintf(line, sizeof line, "HTTP/1.0 %d %s\r\nServer: httpd (Ringtail OS)\r\nConnection: close\r\n", status,
              reason(status));
     emits(c, line);
     if (type) {

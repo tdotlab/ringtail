@@ -2,7 +2,7 @@
 // WS_CHANNEL channel (wsys.h), and draws the windows its clients make
 // on a desktop with a bar. The programs named on its command line are
 // started with it, or with none named, kenoma, the launcher; the
-// RingTail button, or a right click on the desktop, opens a menu that
+// Ringtail button, or a right click on the desktop, opens a menu that
 // starts more or leaves. So does Ctrl+Alt+Backspace (leaving). The
 // desktop's colours come from desk.h's file, and a client can change
 // them (the settings window does).

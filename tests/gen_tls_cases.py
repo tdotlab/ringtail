@@ -333,7 +333,7 @@ CERT_OBJECT = make_certificate(KEY)
 CERT = CERT_OBJECT.public_bytes(serialization.Encoding.DER)
 KEY384 = ec.derive_private_key(0x52696e675461696c20502d333834, ec.SECP384R1())
 CERT384 = make_certificate(KEY384, hashes.SHA384()).public_bytes(serialization.Encoding.DER)
-RSA_KEY = rsa_key(b'RingTail TLS test RSA key')
+RSA_KEY = rsa_key(b'Ringtail TLS test RSA key')
 RSA_CERT = make_certificate(RSA_KEY).public_bytes(serialization.Encoding.DER)
 
 

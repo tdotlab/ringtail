@@ -147,8 +147,8 @@ long_entry:
     mov rax, high_entry
     jmp rax
 
-msg_bad_boot: db "RingTail: not loaded by a multiboot loader", 0
-msg_no_long_mode: db "RingTail needs a 64-bit (x86-64) CPU", 0
+msg_bad_boot: db "Ringtail: not loaded by a multiboot loader", 0
+msg_no_long_mode: db "Ringtail needs a 64-bit (x86-64) CPU", 0
 
 ; The GDT that gets the CPU into 64-bit mode; gdt_init loads the real
 ; one, with the same kernel selectors, later. The accessed bits are

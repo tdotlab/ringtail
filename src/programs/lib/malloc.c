@@ -1,4 +1,4 @@
-// malloc for RingTail programs, on top of the program break.
+// malloc for Ringtail programs, on top of the program break.
 //
 // The heap is one run of blocks from the first break upward. Each
 // block has a 16-byte header with its own size and its lower

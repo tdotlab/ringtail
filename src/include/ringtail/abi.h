@@ -1,4 +1,4 @@
-// RingTail system call ABI, shared by the kernel and user programs.
+// Ringtail system call ABI, shared by the kernel and user programs.
 //
 // Calling convention: int $0x80 with the call number in rax and up
 // to three arguments in rdi, rsi, rdx. The result comes back in rax.

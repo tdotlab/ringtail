@@ -131,7 +131,7 @@ static void open_item(int i) {
 
 static void about(void) {
     char v[80], text[TK_DLG_MAX];
-    if (sys_kinfo(KINFO_VERSION, v, sizeof v) < 0) strlcpy(v, "RingTail", sizeof v);
+    if (sys_kinfo(KINFO_VERSION, v, sizeof v) < 0) strlcpy(v, "Ringtail", sizeof v);
     char* nl = strchr(v, '\n');
     if (nl) *nl = 0;
     snprintf(text, sizeof text, "%s\n\nKenoma starts programs and opens\ndocuments. Double-click one, or\nselect it and press Enter.", v);

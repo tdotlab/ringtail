@@ -12,7 +12,7 @@
 //   5. Each run of changes slides as far down as it can, then back up to
 //      meet a run in the other file if there is one.
 // The names and order of the steps are GNU's (analyze.c, diffseq.h); the
-// code is written for RingTail.
+// code is written for Ringtail.
 #include <stddef.h>
 #include <stdint.h>
 #include "diffcore.h"

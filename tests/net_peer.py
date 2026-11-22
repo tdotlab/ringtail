@@ -1,4 +1,4 @@
-"""A second machine on RingTail's network, played by this script.
+"""A second machine on Ringtail's network, played by this script.
 
 QEMU's socket network carries each Ethernet frame as one UDP datagram,
 so the test can put any frame it likes on the wire, well formed or

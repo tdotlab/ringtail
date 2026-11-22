@@ -101,7 +101,7 @@ static void setup_memory(void) {
 }
 
 static void banner(void) {
-    console_puts_color("RingTail OS ", COLOR_TITLE);
+    console_puts_color("Ringtail OS ", COLOR_TITLE);
     kprintf_color(COLOR_TITLE, "v%s \"%s\"\n", RINGTAIL_VERSION, RINGTAIL_CODENAME);
     heap_stats_t h;
     heap_get_stats(&h);

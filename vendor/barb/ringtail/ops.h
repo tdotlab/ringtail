@@ -1,4 +1,4 @@
-// What the agent's actions turn into on RingTail: programs, HTTP through fetch, files, timers.
+// What the agent's actions turn into on Ringtail: programs, HTTP through fetch, files, timers.
 //
 // The same shape as src/posix/ops.h. Every operation ends in exactly one event handed to the
 // deliver callback (or none, if it was cancelled), and the callback only queues it: it must not

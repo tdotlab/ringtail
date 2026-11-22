@@ -390,7 +390,7 @@ static void draw_bar(wm_t* wm, wm_rect_t c) {
     fill(wm, c, rect(0, 0, wm->W, WM_BAR_H - 1), WM_C_BAR);
     fill(wm, c, rect(0, WM_BAR_H - 1, wm->W, 1), 0x9AA2AE);
     fill(wm, c, menu_button(), WM_C_TITLE);
-    centred(wm, c, menu_button(), "RingTail", WM_C_WHITE);
+    centred(wm, c, menu_button(), "Ringtail", WM_C_WHITE);
     int slot = 0, slots = bar_slots(wm);
     for (int i = 0; i < WM_MAX && slot < slots; i++) {
         if (!wm->win[i].used) continue;

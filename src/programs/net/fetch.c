@@ -511,7 +511,7 @@ int main(int argc, char** argv) {
                                               : snprintf(buf, sizeof buf,
                                                          "%s %s HTTP/1.1\r\nHost: %s:%u\r\n", method, path, host, port);
         n += snprintf(buf + n, sizeof buf - (size_t)n,
-                      "User-Agent: fetch (RingTail OS)\r\nAccept: */*\r\nConnection: close\r\n");
+                      "User-Agent: fetch (Ringtail OS)\r\nAccept: */*\r\nConnection: close\r\n");
         if (post) n += snprintf(buf + n, sizeof buf - (size_t)n, "Content-Length: %u\r\n", body_len);
         r = write_all(buf, (uint32_t)n);
         if (r >= 0 && extra[0]) r = write_all(extra, (uint32_t)strlen(extra));

@@ -249,7 +249,7 @@ cleanly and never read or write out of bounds. Then the QEMU test with
 
 ## After the move to 64-bit
 
-RingTail went from i386 to x86_64 after v0.28.0, and i386 was dropped
+Ringtail went from i386 to x86_64 after v0.28.0, and i386 was dropped
 once the whole suite passed on x86_64 (to bring it back, revert the commit
 "drop i386: x86_64 is the only target"; the port before it built both).
 Everything below was left out of that move on purpose, to keep it to one
@@ -272,7 +272,7 @@ product. Montgomery's reduction can stay (it still saves the division);
 only the product changes. Time it on the suite's big semiprimes, and the
 GNU cases say whether the answers stay right.
 
-**UEFI.** GRUB boots RingTail through Multiboot 1 from a BIOS. Most real
+**UEFI.** GRUB boots Ringtail through Multiboot 1 from a BIOS. Most real
 machines boot UEFI. Multiboot2 through GRUB's EFI build is the small step;
 a loader of our own (or Limine) is the big one. The console already draws
 on a linear framebuffer (GRUB's, see `read_framebuffer` in kernel.c), so

@@ -1,7 +1,7 @@
 // The agent: a state machine that turns events into actions.
 //
 // Barb's core does no I/O. The platform (src/posix, later Windows and
-// RingTail) feeds it events (a line the user typed, an HTTP reply, a file's
+// Ringtail) feeds it events (a line the user typed, an HTTP reply, a file's
 // contents, a process that exited, a timer that fired) and carries out the
 // actions it returns (print this, POST that, read this file, run this
 // command, wake me in 60 seconds). Between events the core is not running,

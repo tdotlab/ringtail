@@ -56,7 +56,7 @@ In a project, CLAUDE.md contains just @AGENTS.md. The instructions live in AGENT
 
 If a command using the claude CLI fails with an expired-login error (for example "OAuth session expired and could not be refreshed"), or claude auth status shows loggedIn false, tell T right away. Scheduled jobs such as the Claude Code journal depend on that login and fail silently when it lapses. Fix: claude auth login; T can finish the login on his phone.
 
-## RingTail-specific instructions
+## Ringtail-specific instructions
 
 Read these before changing code:
 

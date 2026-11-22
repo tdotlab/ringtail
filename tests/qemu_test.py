@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RingTail integration tests: boot the real ISO in QEMU and drive the
+"""Ringtail integration tests: boot the real ISO in QEMU and drive the
 shell over the serial port, the way a person at a terminal would.
 
     python3 tests/qemu_test.py --iso build/x86_64/ringtail.iso --disk build/x86_64/test-disk.img
@@ -786,7 +786,7 @@ def card_interrupts(net_out):
 
 def tests(m, t):
     boot = m.expect(PROMPT, 30).replace("\r\n", "\n")
-    t.check("boots to the shell", "RingTail OS v0.28.0" in boot, boot)
+    t.check("boots to the shell", "Ringtail OS v0.28.0" in boot, boot)
     t.check("finds the FAT16 disk", re.search(r"Disk: 16 MB FAT16, \d+ files", boot), boot)
     # QEMU's pc machine has ACPI tables with an MADT, one I/O APIC, and
     # a local APIC timer that counts at 1 GHz. This one has two CPUs, so
@@ -801,14 +801,14 @@ def tests(m, t):
     readme = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "README.md")).read()
     cur = re.search(r'Current version: \*\*(v[\d.]+) "([^"]+)"\*\*', readme)
     t.check("the banner names the release the README says is current",
-            cur and f'RingTail OS {cur.group(1)} "{cur.group(2)}"' in boot, f"{cur and cur.groups()}: {boot}")
+            cur and f'Ringtail OS {cur.group(1)} "{cur.group(2)}"' in boot, f"{cur and cur.groups()}: {boot}")
 
     out = m.run("help")
     t.check("help lists commands", "help [command]" in out and "poweroff" in out and " run " in out, out)
     out = m.run("ls")
     t.check("ls shows programs and files", "HELLO" in out and "WELCOME.TXT" in out and "KB free" in out, out)
     out = m.run("cat welcome.txt")
-    t.check("cat reads a file", "Welcome to RingTail." in out, out)
+    t.check("cat reads a file", "Welcome to Ringtail." in out, out)
     out = m.run("frobnicate")
     t.check("unknown command is reported", "Unknown command" in out, out)
 
@@ -1118,7 +1118,7 @@ def tests(m, t):
     out = m.run("cat ../keep.txt")
     t.check(".. is the parent", "survives" in out, out)
     out = m.run("cat /welcome.txt")
-    t.check("a leading / starts at the root", "Welcome to RingTail." in out, out)
+    t.check("a leading / starts at the root", "Welcome to Ringtail." in out, out)
     out = m.run("hello")
     t.check("programs still come from / in a directory", "Hello from disk!" in out, out)
     out = m.run("run filedemo", timeout=30)
@@ -1225,7 +1225,7 @@ def tests(m, t):
     out = plain(m.run("hell\t"))
     t.check("Tab completes a program name in lower case", "Hello from disk!" in out, out)
     out = plain(m.run("ver\t"))
-    t.check("Tab completes a built-in", "RingTail OS v0.28.0" in out, out)
+    t.check("Tab completes a built-in", "Ringtail OS v0.28.0" in out, out)
     out = plain(m.run("run arg\t a b"))
     t.check("Tab completes the program after run", "argc=3" in out, out)
     m.run('cd "Tab Test"')
@@ -1484,7 +1484,7 @@ def tests(m, t):
 
     # Gauge, the system monitor. gauge -1 is one plain snapshot.
     out = m.run("gauge -1")
-    t.check("gauge -1 shows the version and clock", "RingTail OS v0.28.0" in out and " up " in out, out)
+    t.check("gauge -1 shows the version and clock", "Ringtail OS v0.28.0" in out and " up " in out, out)
     mem = re.search(r"Frames\s+\[([#.]{30})\]\s+(\d+)%\s+(\d+) KB used of (\d+) KB", out)
     t.check("gauge shows frame usage that adds up", mem and int(mem.group(3)) < int(mem.group(4)), out)
     t.check("and heap and disk usage", re.search(r"Heap\s+\[[#.]{30}\]\s+\d+%", out) and
@@ -1501,7 +1501,7 @@ def tests(m, t):
 
     m.send("gauge\r")
     first = m.wait_row(0, " Gauge ")
-    t.check("gauge draws a title row", first.startswith(" Gauge  RingTail OS v0.28.0"), repr(first))
+    t.check("gauge draws a title row", first.startswith(" Gauge  Ringtail OS v0.28.0"), repr(first))
     title, attrs = m.screen_row(0)
     t.check("the title is black on grey across the row", set(attrs) == {0x70}, f"{attrs[:3]} .. {attrs[-3:]}")
     t.check("and the footer lists the keys", "q quit" in m.wait_row(m.rows - 1, "q quit"))
@@ -1560,7 +1560,7 @@ def tests(m, t):
 
     m.send("reboot\r")
     out = m.expect(PROMPT, 30)
-    t.check("reboot comes back up", "RingTail OS" in out, out)
+    t.check("reboot comes back up", "Ringtail OS" in out, out)
     out = m.run("cat keep.txt")
     t.check("files survive a reboot", "survives a power cycle" in out, out)
     out = m.run("cat keepdir/deep.txt")
@@ -3507,7 +3507,7 @@ def gnu_text_tests(m, t):
     run("rmdir shd")
 
 
-    # ---- v0.33.0: printf (the program; `printf` alone is the shell's): what GNU's cannot show (usage errors, the options it has and has not, %q and the floating point conversions, which RingTail's does not do) ----
+    # ---- v0.33.0: printf (the program; `printf` alone is the shell's): what GNU's cannot show (usage errors, the options it has and has not, %q and the floating point conversions, which Ringtail's does not do) ----
     usage = "usage: printf FORMAT [ARG...]"
     out, rc = st("run printf")
     t.check("printf with no operand: the message and the usage, status 2", out == "printf: missing operand\n" + usage and rc == 2, (out, rc))
@@ -4026,9 +4026,9 @@ def _test_pki(work):
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     span = lambda a, b: g.seq(g.utc((now + datetime.timedelta(days=a)).strftime("%y%m%d%H%M%SZ")),
                               g.utc((now + datetime.timedelta(days=b)).strftime("%y%m%d%H%M%SZ")))
-    root = g.Cert(g.name(("CN", "RingTail Test Root")), g.ec_key(0x7E57_0001), exts=g.ca_exts())
+    root = g.Cert(g.name(("CN", "Ringtail Test Root")), g.ec_key(0x7E57_0001), exts=g.ca_exts())
     root.f["validity"] = span(-1, 3)
-    inter = g.Cert(g.name(("CN", "RingTail Test Intermediate")), g.rsa_key(2048, 0x7E57), root, exts=g.ca_exts(0))
+    inter = g.Cert(g.name(("CN", "Ringtail Test Intermediate")), g.rsa_key(2048, 0x7E57), root, exts=g.ca_exts(0))
     inter.f["validity"] = span(-1, 3)
 
     def server(key, issuer, names, days=(-1, 2), h="sha256"):
@@ -4234,7 +4234,7 @@ def _texts(req):
 
 def barb_tests(m, t):
     """barb, the coding agent (vendor/barb), against a scripted API on
-    the host: its settings file, the tools on RingTail's files and
+    the host: its settings file, the tools on Ringtail's files and
     shell, a background task that wakes it, a task read from a file,
     and a session at the terminal (typing, a one-key answer, Ctrl-C
     while it waits for the model, Ctrl-D)."""
@@ -4244,7 +4244,7 @@ def barb_tests(m, t):
     key = "test-key-4b1d"
     try:
         out = plain(m.run("barb -V"))
-        t.check("barb runs", out.startswith("barb ") and "(RingTail)" in out, out)
+        t.check("barb runs", out.startswith("barb ") and "(Ringtail)" in out, out)
         out = plain(m.run("barb -p hi"))
         t.check("with no settings it says where the key goes", 'Put a line "key = ..." in /barb.cfg' in out and
                 "exit status 2" in out, out)
@@ -4268,7 +4268,7 @@ def barb_tests(m, t):
                 reqs[0]["_headers"] if reqs else None)
         t.check("with the version and the content type", reqs and reqs[0]["_headers"].get("anthropic-version") == "2023-06-01"
                 and reqs[0]["_headers"].get("content-type") == "application/json", "")
-        t.check("the model is told it is on RingTail", reqs and "RingTail" in json.dumps(reqs[0].get("system")), "")
+        t.check("the model is told it is on Ringtail", reqs and "Ringtail" in json.dumps(reqs[0].get("system")), "")
         res = [_results(r) for r in reqs[1:5]] if len(reqs) >= 5 else []
         flat = [v for r in res for v in r.values()]
         t.check("each tool's result goes back", len(flat) == 4 and "Created bt/a.txt" in flat[0] and "two" in flat[1]
@@ -4416,7 +4416,7 @@ def tls_tests(m, t, web):
         out = plain(m.run("%s %s/hello.txt" % (fetch, base), timeout=20))
         t.check("with --ca, fetch gets a page over TLS 1.3, its certificate checked",
                 out.endswith("hello from the host") and "exit status" not in out and warning not in out, out)
-        t.check("the server got the request", sweb.agents and sweb.agents[-1].startswith("fetch (RingTail OS"), str(sweb.agents))
+        t.check("the server got the request", sweb.agents and sweb.agents[-1].startswith("fetch (Ringtail OS"), str(sweb.agents))
         out = plain(m.run("fetch -k %s/hello.txt" % base, timeout=20))
         t.check("-k gets it unchecked, and says so", out.endswith("hello from the host") and warning in out
                 and "nothing proves who is at the other end" in out, out)
@@ -4511,7 +4511,7 @@ def tcp_tests(m, t):
     try:
         out = plain(m.run("fetch http://%s/hello.txt" % url, timeout=20))
         t.check("fetch gets a page", out.strip() == "hello from the host", out)
-        t.check("and says who it is", web.agents and web.agents[-1].startswith("fetch (RingTail OS"), str(web.agents))
+        t.check("and says who it is", web.agents and web.agents[-1].startswith("fetch (Ringtail OS"), str(web.agents))
         out = plain(m.run("fetch -i %s/moved" % url, timeout=20))
         t.check("fetch follows a redirect, -i shows both responses",
                 "302" in out and "200 OK" in out and out.endswith("hello from the host"), out)
@@ -5059,12 +5059,12 @@ sector = "{hello}"
         return (f"if=ide,index=0,format=raw,file.driver=blkdebug,"
                 f"file.config={conf},file.image.filename={img}")
     boot("flaky disk", flaky, None,
-         [("cat WELCOME.TXT", "Welcome to RingTail.", 10),
+         [("cat WELCOME.TXT", "Welcome to Ringtail.", 10),
           ("echo written once > once.txt", "", 10),
           ("cat once.txt", "written once", 10),
           ("run hello", "hello: I/O error", 10),
           ("echo after the bad sector > after.txt", "", 10),
-          ("cat after.txt WELCOME.TXT", "after the bad sector\nWelcome to RingTail.", 10)])
+          ("cat after.txt WELCOME.TXT", "after the bad sector\nWelcome to Ringtail.", 10)])
 
 
 def memory_tests(iso, disk, work, t):

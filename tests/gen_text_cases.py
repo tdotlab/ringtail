@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Makes tests/text_cases.py: shell commands for the text tools (cut, tr,
 tee, ...) together with what the real GNU tools print for them. The QEMU
-test types each command into RingTail's shell and compares.
+test types each command into Ringtail's shell and compares.
 
-Every command is plain enough to mean the same to bash and to RingTail's
+Every command is plain enough to mean the same to bash and to Ringtail's
 shell: quotes, pipes, echo -e, redirections. A command starting
 with "?" may fail (the test strips the "?"; the shell then prints the
 exit status, which is part of the expected output). Each case is a list of
@@ -983,10 +983,10 @@ case("seq 1 20 | xargs -n5 echo | tail -n 2", "seq 1 20 | xargs -n5 echo | wc -l
      "seq 1 6 | xargs -n3 echo | xargs -n1 echo")
 
 # -------------------------------------------------------------- du
-# GNU is run with --apparent-size. RingTail counts whole clusters (512 bytes
+# GNU is run with --apparent-size. Ringtail counts whole clusters (512 bytes
 # on the test disk), which comes out the same in 1K blocks for any file, and
 # in -h for files whose size is a multiple of 512 (64 lines of 8 bytes). A
-# directory's own space is not counted by RingTail, so the cases that
+# directory's own space is not counted by Ringtail, so the cases that
 # list directories keep to the lines about files.
 # ---------------------------------------------------------------- base64
 # (the parts that decide what is written, byte for byte, are checked against
@@ -1141,7 +1141,7 @@ case("mkdir dir", "mkdir dir/sub", mk("dir/f1", 192), mk("dir/sub/f2", 1344), mk
 # tests/test_pfcore.c; these are the program: the arguments reaching the format,
 # standard output and standard error in order, the statuses. The program is GNU's
 # printf, run as printf by name. %q and the floating point conversions are not
-# in RingTail's printf: they are in qemu_test.py.)
+# in Ringtail's printf: they are in qemu_test.py.)
 case("printf 'hello\\n'", "printf hello", "printf '%s\\n' abc", "printf '%s\\n' 'two words' three", "printf '[%s]\\n'", "printf '[%d]\\n'", "printf '[%c]\\n' | od -c",
      "printf '%s %s\\n' a b c d e", "printf '%%\\n'", "printf '100%%\\n' x y", "printf 'a\\tb\\\\c\\n'", "printf '%s\\n' 'a\\tb'", "printf '%b\\n' 'a\\tb\\\\c'")
 case("printf '%d\\n' 1 -2 +3 0x1f 010 0b101 0XFF -0x10", "printf '%i|%u\\n' 5 7 -5 -7", "printf '%x %X %o\\n' 255 255 8 3054 3054 64", "printf '%#x %#X %#o\\n' 255 255 8", "printf '%#x|%#o\\n' 0 0",
@@ -1173,7 +1173,7 @@ case("?printf -- '%s\\n' a b", "?printf -- -", "?printf -- --", "?printf -- '-%s
 # -------------------------------------------------------------- cal
 # The oracle is BSD's cal (Debian's ncal package), not util-linux's: the
 # layout, the Julian calendar up to September 1752 and the argument rules
-# are RingTail's, and util-linux prints differently. Only fixed months and
+# are Ringtail's, and util-linux prints differently. Only fixed months and
 # years go here, since "now" cannot be compared; the no-argument forms and
 # the highlight are in qemu_test.py. Errors are piped through cat so that
 # the message is compared and the exit status (64 there, 2 here) is not.
@@ -1473,13 +1473,13 @@ def run_all():
         parts = []
         for c in cmds:
             may_fail = c.startswith("?")
-            # stderr is merged in order: RingTail's console shows both, and a
+            # stderr is merged in order: Ringtail's console shows both, and a
             # tool flushes what it wrote before it complains
             # du: GNU's numbers are for what a file holds, not for clusters; the
             # cases use files whose sizes come out the same (see the du section)
             pre = 'du() { command du --apparent-size "$@"; }; ' if re.search(r"(^|[ |;])du ", c) else ""
             # printf and sha256: bash's own printf is a builtin, and GNU's sha256sum is
-            # not named sha256; exec -a gives the messages the name RingTail's tools use
+            # not named sha256; exec -a gives the messages the name Ringtail's tools use
             if re.search(r"(^|[ |;(])printf( |$)", c.lstrip("?")):
                 pre += 'printf() ( exec -a printf /usr/bin/printf "$@" ); '
             if re.search(r"(^|[ |;(])sha256( |$)", c.lstrip("?")):
@@ -1488,7 +1488,7 @@ def run_all():
             if p.returncode and not may_fail:
                 bad.append(f"{c!r}: {p.stdout.decode('latin-1').strip()!r}")
                 break
-            # a program that fails makes RingTail's shell print its status
+            # a program that fails makes Ringtail's shell print its status
             # older diffutils say "char" where newer ones say "byte"
             parts.append(p.stdout.decode("latin-1").replace(" differ: char ", " differ: byte ").replace(": No such file or directory", ": no such file or directory").replace(": Is a directory", ": is a directory").replace("\u00e2\u0080\u0098", "'").replace("\u00e2\u0080\u0099", "'") + (f"[exit status {p.returncode}]" if p.returncode else ""))
         out.append((cmds, tuple(parts)))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a RingTail FAT16 disk image.
+"""Build a Ringtail FAT16 disk image.
 
     mkdisk.py -o disk.img HELLO:build/programs/hello WELCOME.TXT:disk/welcome.txt
 
@@ -55,7 +55,7 @@ def fat_layout(total_sectors):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build a RingTail FAT16 disk image")
+    ap = argparse.ArgumentParser(description="Build a Ringtail FAT16 disk image")
     ap.add_argument("-o", "--output", required=True, help="disk image to write")
     ap.add_argument("--size-mb", type=int, default=16, help="image size in MB (default 16)")
     ap.add_argument("files", nargs="+", help="name:file pairs to pack")

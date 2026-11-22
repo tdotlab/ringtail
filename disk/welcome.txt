@@ -1,4 +1,4 @@
-Welcome to RingTail.
+Welcome to Ringtail.
 
 Try:  ls               the files on this disk
       run hello        a program from the disk

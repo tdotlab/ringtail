@@ -1,8 +1,8 @@
-// What the shell's core (shcore.c) asks of the system it runs on. RingTail
+// What the shell's core (shcore.c) asks of the system it runs on. Ringtail
 // has one set (shos.c, over the system calls) and the host test another
 // (tests/shos_host.c, over POSIX), so the same interpreter runs in both.
 //
-// Errors come back as a negative errno; RingTail's numbers are Linux's.
+// Errors come back as a negative errno; Ringtail's numbers are Linux's.
 #ifndef RINGTAIL_SHOS_H
 #define RINGTAIL_SHOS_H
 
@@ -31,7 +31,7 @@ const char* shos_strerror(const char* what, int e);
 #define SHOS_SAVE_FIRST 10
 #define SHOS_SAVE_END   16
 
-// Whether file names match in either case (RingTail's FAT: 1), for
+// Whether file names match in either case (Ringtail's FAT: 1), for
 // wildcards and the order they list in.
 extern const int shos_fold_names;
 
@@ -49,7 +49,7 @@ __attribute__((noreturn)) void shos_exit(int status);
 
 // Starting a program. fds[0..2] are the caller's descriptors that become
 // the child's 0, 1 and 2; -1 asks for it closed where the system can do
-// that (RingTail cannot: the child gets the caller's own). fd3, unless it
+// that (Ringtail cannot: the child gets the caller's own). fd3, unless it
 // is -1, becomes the child's 3. path is
 // the program, as typed (a bare name is looked up where programs are),
 // or SHOS_SELF for the shell itself. how says which job it goes in:

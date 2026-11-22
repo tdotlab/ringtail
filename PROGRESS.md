@@ -1,4 +1,4 @@
-# RingTail
+# Ringtail
 
 v0.0.1 - Multiboot + stack
 v0.0.2 - one char
@@ -20,7 +20,7 @@ Current (v0.2.0):
 
 Test:
 touch hello.txt
-write hello.txt Hello RingTail!
+write hello.txt Hello Ringtail!
 ls
 cat hello.txt
 rm hello.txt
@@ -320,7 +320,7 @@ pass, not a milestone)
   output. Typed echo interleaving still visible and expected.
 
 v0.6.0 - Program layer: user mode, syscalls, first real programs
-- What changed, in one line: RingTail now has programs, not just
+- What changed, in one line: Ringtail now has programs, not just
   tasks. A task was a function the kernel ran; a program is code
   that runs ON the kernel, in ring 3, and asks the kernel for
   things instead of calling it. The shell command is `run
@@ -655,7 +655,7 @@ v0.7.2 - File syscalls: programs can open, read, write, close, and delete files
   the loader); errors are all -1, with no reason given.
 
 v0.8.0 - Mouse + graphics: PS/2 mouse, VGA mode 13h, drawing primitives
-- What changed, in one line: RingTail can now see a mouse and
+- What changed, in one line: Ringtail can now see a mouse and
   draw pixels. The shell gains two commands: `mouse` (position,
   buttons, packet count) and `gfx` (a graphics demo that draws
   shapes and text, shows a cursor that follows the mouse, draws
@@ -922,8 +922,8 @@ as a contained swap, with the same diskfs API throughout
 - What changed, in one line: the disk is now FAT16, the
 standard filing system used by DOS, Windows, USB sticks, and
 SD cards, instead of the homemade RTFS flat layout, so a
-RingTail disk is readable by real tools and a disk made by a
-real tool is readable by RingTail, with no change to the ATA
+Ringtail disk is readable by real tools and a disk made by a
+real tool is readable by Ringtail, with no change to the ATA
 driver, the loader, the syscalls, or the shell's file commands
 beyond the version strings and one error message.
 - Layout: superfloppy (no partition table, FAT starts at
@@ -999,7 +999,7 @@ mock FAT to be 5,6,7,11,12, jumping over C), a disk-full
 write one byte over the remaining free space (fails, old
 file still readable), and a FAT12 mock (init refused,
 create returns -4). QEMU, all passing: boot prints
-"RingTail v0.10.0 - FAT filesystem" and "Disk: FAT16, 8
+"Ringtail v0.10.0 - FAT filesystem" and "Disk: FAT16, 8
 files"; ls, cat (lowercase and uppercase input), touch,
 write, rm, and the 8.3 error messages all behave as above;
 run hello, run count, run filedemo (twice, idempotent),
@@ -1010,13 +1010,13 @@ GRUB ISO boots with the FAT disk; no-disk boot still says
 "Disk: not found" and the shell still works. External
 tools, both directions, installed for the test via apt
 (dosfstools, mtools; apt tools do not survive VM
-replacement): fsck.fat on a RingTail-written disk is clean
+replacement): fsck.fat on a Ringtail-written disk is clean
 (10 files, 19 clusters used, free space matching the
 cluster arithmetic exactly); mdir lists the same files;
 mcopy reads PERSIST.TXT back byte-for-byte; and a disk
 made by mkfs.fat -F 16 -s 1 (whose BPB turns out identical
 to ours: same FAT size, same data start, same cluster
-count) with files copied in by mcopy boots in RingTail,
+count) with files copied in by mcopy boots in Ringtail,
 lists 2 files (volume skipped), cats, and runs hello.
 Kernel size 59,688 bytes (was 59,340), 0 warnings.
 - Honest limits, updated: no long file names (a file made
@@ -1227,7 +1227,7 @@ order, spawns hello (which now prints "Hello from
 disk!", after the esp0 fix), and fails the missing
 file correctly; ls agrees with LIST on names, order,
 and sizes; cat welcome.txt prints "Welcome to
-RingTail!"; run seekdemo, filedemo, fault, and gui
+Ringtail!"; run seekdemo, filedemo, fault, and gui
 all still behave as before; run gui shows nine green
 program icons in LIST order (HELLO, COUNT, FAULT,
 CRASH, BADPTR, FILEDEMO, GUI, SEEKDEMO, LISTDEMO),
@@ -1382,7 +1382,7 @@ not wait for another input first. Program-icon
 launch still exits directly via sys_exit inside
 the loop, so it never reaches the wait. About
 version updated to v0.10.3. Kernel banner and
-shell version updated to "RingTail v0.10.3 -
+shell version updated to "Ringtail v0.10.3 -
 Input wait + fault log".
 
 Demos. waitdemo (272 bytes, _start 08000000):
@@ -1439,7 +1439,7 @@ consume behavior, not a bug: the waking key stays
 queued, so the shell then types it before
 "version". Wait, mouse wake: v103waitm-2 shows
 "Woke up on input." after a mouse move, then a
-clean "version" -> "RingTail v0.10.3 - Input
+clean "version" -> "Ringtail v0.10.3 - Input
 wait + fault log", because a mouse wake leaves
 no key queued for the shell. Fault log:
 v103fault-1 "No faults logged." on a fresh boot;
@@ -1458,7 +1458,7 @@ task killed." GUI regression with the wait loop:
 v103gui-1 desktop, 9 green icons in LIST order,
 top bar X=160 Y=100; v103gui-2 Welcome window
 after a click, X=35 Y=43, "Welcome to
-RingTail!", "Click me", "Clicked: 0";
+Ringtail!", "Click me", "Clicked: 0";
 v103gui-3 Esc exit, version v0.10.3, shell alive,
 proving mouse-move, click, and Esc-key wakes all
 work through WAIT. Regression: v103reg-1 listdemo
@@ -1548,7 +1548,7 @@ entries. Each entry gives base (8 bytes), length
 (8 bytes), type (4 bytes, 1 = usable RAM). Only
 type 1 is usable; reserved, ACPI, and bad are
 skipped, conservatively (ACPI reclaimable could be
-reused after ACPI init, but RingTail has no ACPI,
+reused after ACPI init, but Ringtail has no ACPI,
 so it stays reserved). Entries with a nonzero base
 or length high word are skipped, not misread: this
 is 32-bit with no PAE, and a 64-bit address cannot
@@ -2377,7 +2377,7 @@ Host 244 + 82, QEMU 419.
 
 ## v0.24.0 "Handshake"
 
-TCP, and a page fetched over HTTP from inside RingTail.
+TCP, and a page fetched over HTTP from inside Ringtail.
 
 The engine (`src/net/tcp.c`) is pure protocol and runs the same in the
 kernel and on the host: the RFC 9293 state machine with the MSS option,
@@ -2766,9 +2766,9 @@ The pipeline tools that sort, uniq, grep and wc had been waiting for.
   blocks, and a growing line type. The next text tools use it.
 
 Testing: `tests/gen_text_cases.py` runs 231 command lines (about 130 for cut, 90
-for tr, 11 for tee, in every form that bash and RingTail's shell both read)
+for tr, 11 for tee, in every form that bash and Ringtail's shell both read)
 through the real GNU tools and writes the outputs to `tests/text_cases.py`;
-`gnu_text_tests` types them into RingTail and compares, in a fresh directory
+`gnu_text_tests` types them into Ringtail and compares, in a fresh directory
 each. Messages, which GNU words differently, are checked by hand: 16 checks.
 QEMU 1208.
 
@@ -2787,7 +2787,7 @@ The small tools every pipeline and script reaches for.
   lists every difference as decimal offset and octal values (offset column as
   wide as the shorter file's size, like GNU), "EOF on F after byte N" on
   stderr, statuses 0/1/2. GNU 3.7 and older say "char" where newer say "byte";
-  RingTail says "byte".
+  Ringtail says "byte".
 - `yes`, `true`, `false`.
 
 Testing: 185 more generated cases against GNU (basename, dirname, seq in
@@ -3103,10 +3103,10 @@ Host 244 + 170 + 163 + 21394 + 2024 + 3795 + 1307 + 8076 + 1618, QEMU 2066.
 ## Since v0.28.0 (not yet a release)
 
 The desktop came in four stages after v0.28.0; git has those. This part is
-Barb, a coding agent, and what RingTail needed for it.
+Barb, a coding agent, and what Ringtail needed for it.
 
 - `barb`: Barb's core (the agent, its six tools, the API and JSON code,
-  which does no I/O) and a platform layer for RingTail, copied into
+  which does no I/O) and a platform layer for Ringtail, copied into
   `vendor/barb` from the barb repository by its `tools/to_ringtail.sh`. The
   platform runs `sh -c` for the bash tool, each command a job of its own;
   sees a command end by asking `kill(id, 0)`; posts to the API through

@@ -1,6 +1,6 @@
 // df [-h] [-k] [FILE...]    free space on the disk
 //
-// RingTail has one filesystem, so there is one row; a FILE just has to
+// Ringtail has one filesystem, so there is one row; a FILE just has to
 // exist, and the row is the same. Sizes are in 1K blocks, or with -h
 // in the largest unit that keeps the number short (K, M, G, rounded
 // up, like GNU df). -k is the default, spelled out for scripts.
