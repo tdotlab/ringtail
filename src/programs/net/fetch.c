@@ -13,7 +13,10 @@
 // into a GET, as browsers do. -H FILE adds the header lines in FILE
 // ("Name: value", one a line) to the request; FILE "-" reads them from
 // standard input, which keeps a secret such as an API key out of the
-// task table, where the arguments of every program can be read. -t
+// task table, where the arguments of every program can be read. Those
+// headers (and a body that would be sent again) never leave the origin
+// they were given for: a redirect to another host, another port, or
+// from https to http is refused, since the headers are usually a key. -t
 // gives up when the server is quiet for SECS seconds instead of 30
 // (a server that thinks before it answers may need longer).
 //
@@ -104,6 +107,15 @@ static const char* parse_url(const char* url) {
     if (*rest && *rest != '#') return "URL too long";
     path[n] = 0;
     return 0;
+}
+
+static int same_name(const char* a, const char* b) {  // host names, ignoring case
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a;
+        char y = *b >= 'A' && *b <= 'Z' ? (char)(*b + 32) : *b;
+        if (x != y) return 0;
+    }
+    return *a == *b;
 }
 
 // Follow a Location: an absolute URL, //host/path, /path, or relative
@@ -463,6 +475,12 @@ int main(int argc, char** argv) {
         free(h);
     }
     int post = body != 0;
+    // Where the request was first aimed. Headers from -H and a POST body
+    // are for this place only.
+    char origin_host[sizeof host];
+    memcpy(origin_host, host, sizeof host);
+    uint32_t origin_port = port;
+    int origin_secure = secure;
 
     int status = 0, redirects = 0;
     for (;;) {
@@ -561,6 +579,14 @@ int main(int argc, char** argv) {
                 return 1;
             }
             if (status != 307 && status != 308) post = 0;  // the others become a GET
+            if ((extra[0] || post) && (secure != origin_secure || port != origin_port || !same_name(host, origin_host))) {
+                dprintf(STDERR_FILENO,
+                        "fetch: not following the redirect to %s: it leaves %s://%s:%u, and the %s "
+                        "meant for that place only. Nothing was sent there.\n",
+                        loc, origin_secure ? "https" : "http", origin_host, origin_port,
+                        !post ? "-H headers were" : extra[0] ? "-H headers and body were" : "body was");
+                return 1;
+            }
             continue;
         }
         int failed_status = 0;

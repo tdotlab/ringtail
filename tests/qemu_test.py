@@ -1859,6 +1859,7 @@ class _Http(http.server.BaseHTTPRequestHandler):
     the other's port (server.other) so a redirect can cross over."""
     timeout = 30
     extra = {}  # more pages, which a test puts here
+    away = ""   # where /away, /away307 and /away303 send you: another origin
 
     def do_GET(self):
         pages = {"/hello.txt": b"hello from the host\n", "/rel/b": b"relative ok\n", "/big.bin": BIG,
@@ -1870,7 +1871,7 @@ class _Http(http.server.BaseHTTPRequestHandler):
         moves = {"/moved": "/hello.txt", "/rel/a": "b", "/loop": "/loop",
                  "/abs": "http://10.0.2.2:%d/hello.txt" % (other if secure else here),
                  "/secure": "https://10.0.2.2:%d/hello.txt" % (here if secure else other),
-                 "/same": "//10.0.2.2:%d/hello.txt" % here}
+                 "/same": "//10.0.2.2:%d/hello.txt" % here, "/away": self.away}
         head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
         # Sent as they are, each piece in a segment of its own.
         raw = {"/chunked": [head] + [_chunked(BIG, [1, 2, 4095, 4096, 4097, 17, 65536],
@@ -1927,9 +1928,9 @@ class _Http(http.server.BaseHTTPRequestHandler):
         thinks for three seconds first."""
         n = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(n)
-        if self.path in ("/move307", "/move303"):
+        if self.path in ("/move307", "/move303", "/away307", "/away303"):
             self.send_response(int(self.path[-3:]))
-            self.send_header("Location", "/echo")
+            self.send_header("Location", self.away if self.path.startswith("/away") else "/echo")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -4095,6 +4096,25 @@ def _aes_only_server(pem, work):
     return proc, port
 
 
+class _Spy(http.server.BaseHTTPRequestHandler):
+    """Another origin, for a redirect to leave for: it keeps whatever
+    arrives in server.seen, so a test can say that nothing did."""
+    def handle_one(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(n)
+        self.server.seen.append((self.command, {k.lower(): v for k, v in self.headers.items()}, body))
+        out = b"away\n"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    do_GET = do_POST = handle_one
+
+    def log_message(self, *a):
+        pass
+
+
 def post_tests(m, t, base):
     """fetch -d (a POST with a file as its body), -H (header lines from a
     file or standard input, which is how barb hands fetch its API key
@@ -4127,6 +4147,37 @@ def post_tests(m, t, base):
     t.check("a 307 sends the POST again, body and all", out.startswith("POST\n") and out.endswith("hello body"), out)
     out = plain(m.run("fetch -d body.txt %s/move303" % base, timeout=20))
     t.check("a 303 turns it into a GET", out.startswith("GET\n") and "content-length: none" in out, out)
+    out = plain(m.run("echo 'X-Secret: s3cr3t' | fetch -d body.txt -H - %s/move307" % base, timeout=20))
+    t.check("a redirect that stays where it was keeps the -H headers",
+            "x-secret: s3cr3t\n" in out and out.endswith("hello body"), out)
+
+    # A redirect to another origin must not carry the key (or the body)
+    # along: a different port here, but a different host or https to
+    # http is the same check.
+    spy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Spy)
+    spy.seen = []
+    threading.Thread(target=spy.serve_forever, daemon=True).start()
+    _Http.away = "http://10.0.2.2:%d/echo" % spy.server_port
+    try:
+        for route, what in [("away307", "a 307, which would send the body again"),
+                            ("away303", "a 303, which would send only the headers")]:
+            out = plain(m.run("echo 'X-Secret: s3cr3t' | fetch -d body.txt -H - %s/%s" % (base, route), timeout=20))
+            t.check("-H headers do not follow %s to another origin" % what,
+                    "not following the redirect" in out and "exit status 1" in out and spy.seen == [], out)
+        out = plain(m.run("fetch -d body.txt %s/away307" % base, timeout=20))
+        t.check("nor does a POST body, even with no headers",
+                "not following the redirect" in out and "body was" in out and "exit status 1" in out, out)
+        t.check("and nothing reached the other place", spy.seen == [], str(spy.seen))
+        out = plain(m.run("fetch %s/away" % base, timeout=20))
+        t.check("a plain GET with nothing to protect still goes anywhere",
+                out.strip() == "away" and len(spy.seen) == 1 and spy.seen[0][0] == "GET", out)
+        out = plain(m.run("echo 'X-Secret: s3cr3t' | fetch -H - %s/away" % base, timeout=20))
+        t.check("but a GET with -H headers stays put too", "not following the redirect" in out and
+                "exit status 1" in out and len(spy.seen) == 1, out)
+    finally:
+        _Http.away = ""
+        spy.shutdown()
+        spy.server_close()
     out = plain(m.run("fetch -t 1 -d body.txt %s/slow" % base, timeout=20))
     t.check("-t 1 gives up on a server quiet for longer", "exit status 1" in out and "POST" not in out, out)
     out = plain(m.run("fetch -t 10 -d body.txt %s/slow" % base, timeout=30))

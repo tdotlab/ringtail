@@ -3133,3 +3133,12 @@ limit and a task the model stops, each killed with the shell it started,
 and a session at the terminal). Mutation-checked: a kill that reaches only
 the leader, in the kernel or in barb, and fetch dropping the -H lines, each
 fail a test. `test_heap_diskfs` checks memchr against the obvious loop.
+
+Fix (a review of the fetch change): `-H` headers, which carry Barb's API
+key, and a POST body were sent again on every redirect, even to another
+host or port or from https to http. `fetch` now remembers the origin of the
+first request and refuses a redirect that leaves it while it holds headers
+or a body to re-send ("not following the redirect ... Nothing was sent
+there"); a plain GET still follows redirects anywhere. `post_tests` has a
+second server that records what reaches it: after a 307 or 303 away, a
+body alone, and a GET with -H, it has seen nothing.
