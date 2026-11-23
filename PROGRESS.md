@@ -3142,3 +3142,10 @@ or a body to re-send ("not following the redirect ... Nothing was sent
 there"); a plain GET still follows redirects anywhere. `post_tests` has a
 second server that records what reaches it: after a 307 or 303 away, a
 body alone, and a GET with -H, it has seen nothing.
+
+Barb shows what ran. With "always" or `-y` nobody is asked, and the screen
+showed only the model's own title and "exit 0". Barb (vendored at 73939df)
+now prints the command when nobody was asked, and previews every bash call's
+output (20 lines, then "... N more lines"; control and malformed bytes show as
+"?"). The model still gets the full output. `barb_tests` checks it over the
+serial console.
