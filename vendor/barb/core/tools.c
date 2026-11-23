@@ -658,6 +658,63 @@ static void t_edit(agent_t* g, call_t* c, const ev_t* ev) {
 
 // ---- bash ----
 
+// The length of the well-formed UTF-8 sequence of two or more bytes at s[0..n), or 0 if there is none. C1 control
+// characters (U+0080 to U+009F) count as none: some terminals obey them.
+static size_t utf8_seq(const unsigned char* s, size_t n) {
+    if (n >= 2 && s[0] >= 0xC2 && s[0] <= 0xDF && (s[1] & 0xC0) == 0x80) return (s[0] == 0xC2 && s[1] < 0xA0) ? 0 : 2;
+    if (n >= 3 && s[0] >= 0xE0 && s[0] <= 0xEF && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80) {
+        if (s[0] == 0xE0 && s[1] < 0xA0) return 0;   // overlong
+        if (s[0] == 0xED && s[1] >= 0xA0) return 0;  // surrogate
+        return 3;
+    }
+    if (n >= 4 && s[0] >= 0xF0 && s[0] <= 0xF4 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        if (s[0] == 0xF0 && s[1] < 0x90) return 0;   // overlong
+        if (s[0] == 0xF4 && s[1] >= 0x90) return 0;  // past U+10FFFF
+        return 4;
+    }
+    return 0;
+}
+
+// Output the user should see: up to SHOW_LINES lines of a command's output, each cut at SHOW_COLS bytes, with
+// control characters and malformed bytes made harmless (the output is whatever the command printed, and it goes to a
+// terminal). The model gets the real output; this is only the preview.
+static void say_output(agent_t* g, str_t out) {
+    enum { SHOW_LINES = 20, SHOW_COLS = 120 };
+    if (out.n == 0) return;
+    int total = 0;
+    for (size_t k = 0; k < out.n; k++) if (out.p[k] == '\n') total++;
+    if (out.p[out.n - 1] != '\n') total++;
+    sb_t b;
+    sb_init(&b, &g->tmp);
+    int shown = 0;
+    size_t i = 0;
+    while (i < out.n && shown < SHOW_LINES) {
+        size_t j = i;
+        while (j < out.n && out.p[j] != '\n') j++;
+        if (shown) sb_putc(&b, '\n');
+        sb_putz(&b, "  | ");
+        size_t k = i;
+        while (k < j) {
+            unsigned char ch = (unsigned char)out.p[k];
+            size_t len = ch >= 0x80 ? utf8_seq((const unsigned char*)out.p + k, j - k) : 1;
+            if (k - i + (len ? len : 1) > SHOW_COLS) break;
+            if (len > 1) sb_put(&b, out.p + k, len);
+            else sb_putc(&b, (len == 1 && (ch == '\t' || (ch >= 32 && ch < 127))) ? (char)ch : '?');
+            k += len ? len : 1;
+        }
+        if (k < j) sb_putz(&b, " ...");
+        shown++;
+        i = j + 1;
+    }
+    if (total > shown) {
+        sb_putz(&b, "\n  | ... ");
+        sb_puti(&b, total - shown);
+        sb_putz(&b, total - shown == 1 ? " more line" : " more lines");
+    }
+    say(g, SAY_TOOL, sb_str(&b));
+}
+
+
 enum { B_ASKED = 1, B_RUNNING };
 
 static void t_bash(agent_t* g, call_t* c, const ev_t* ev) {
@@ -683,6 +740,14 @@ static void t_bash(agent_t* g, call_t* c, const ev_t* ev) {
         if (bg) sb_putz(&w, "(background) ");
         sb_puts(&w, desc.n ? desc : first_line(cmd, 100));
         say_tool(g, "bash", sb_str(&w));
+        if (!needs_ask(g, BIT_BASH)) {
+            // Nobody is being asked, so the command itself goes on the screen: the title above is the model's own words.
+            sb_t shown;
+            sb_init(&shown, &g->tmp);
+            sb_putz(&shown, "  $ ");
+            sb_puts(&shown, first_line(cmd, 120));
+            say(g, SAY_TOOL, sb_str(&shown));
+        }
         if (needs_ask(g, BIT_BASH)) {
             sb_t d;
             sb_init(&d, &g->tmp);
@@ -748,6 +813,7 @@ static void t_bash(agent_t* g, call_t* c, const ev_t* ev) {
         finish_call(g, sb_str(&r), 1, 0);
         return;
     }
+    say_output(g, out);
     if (out.n) { sb_puts(&r, out); if (out.p[out.n - 1] != '\n') sb_putc(&r, '\n'); }
     else sb_putz(&r, "(no output)\n");
     int is_error = 0;

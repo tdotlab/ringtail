@@ -4262,6 +4262,8 @@ def barb_tests(m, t):
                       _say("all done")]
         out = plain(m.run("barb -y -p 'make a note'", timeout=60))
         t.check("barb -p carries out a task with the tools", "all done" in out and "exit status" not in out, out)
+        t.check("with -y the command itself is shown, and what it printed",
+                "$ cat bt/a.txt; echo status; false" in out and "| one" in out and "| status" in out, out)
         t.check("writing makes the directory, and editing changes the file", plain(m.run("cat bt/a.txt")) == "one\n2", "")
         reqs = api.requests
         t.check("the key reaches the API in its header", reqs and reqs[0]["_headers"].get("x-api-key") == key,
